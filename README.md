@@ -63,7 +63,7 @@ See [Architecture](docs/architecture.md#execution-flow) for details.
 
 ![CLI input, controlled MySQL run, and replayable failure evidence.](assets/readme/run-cli.svg)
 
-> **Pre-release:** requires Go 1.25+ and Docker/MySQL 8.4; interfaces may change before 1.0.
+> **Pre-release:** running requires Docker/MySQL 8.4; building from source or using `go install` requires Go 1.25+. Interfaces may change before 1.0.
 
 ```console
 $ go build -o weavegate ./cmd/weavegate
@@ -75,7 +75,8 @@ $ ./weavegate run --config fixtures/matching-slice/.weavegate/config.yaml --scen
 - **Output · exit 2** — `WG001` writes run evidence.
 - **Replay ·** saved schedule — test vulnerable or fixed code.
 
-See [Quickstart](docs/quickstart.md) for installs, output, and replay.
+See [Installation](docs/install.md) for the archive, source, and go install
+routes, and [Quickstart](docs/quickstart.md) for output and replay.
 
 ## Contributing / License
 

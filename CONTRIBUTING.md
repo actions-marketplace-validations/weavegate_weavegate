@@ -274,9 +274,10 @@ decision requires a human to inspect the complete behavior.
 7. Create a dry-run archive with
    `goreleaser release --snapshot --clean --skip=publish`, inspect it with
    `tar -tzf`, and extract it. Confirm that extraction creates one top-level
-   directory, the README release-archive installation commands work from inside
-   it, and the bundled `fixtures/matching-slice/.weavegate/config.yaml` path
-   matches the README run example.
+   directory, the [release-archive installation commands](docs/install.md#from-a-release-archive)
+   work from inside it, and the bundled
+   `fixtures/matching-slice/.weavegate/config.yaml` path matches the
+   [Quickstart run example](docs/quickstart.md#2-reproduce-the-violation).
 8. Confirm that the release workflow will use that CHANGELOG section as its
    release notes, then create the tag manually. The workflow publishes that
    section as the release body and verifies the remote body before succeeding;

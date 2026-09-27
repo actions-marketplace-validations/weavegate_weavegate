@@ -2,13 +2,16 @@
 
 This map covers the documentation shipped in this repository; choose the section that matches the question you need to answer.
 
-This repository-relative map is bundled in release archives, but targets outside `docs/`—including `fixtures/`, `internal/`, `cmd/`, and `CONTRIBUTING.md`—remain in the [weavegate repository](https://github.com/weavegate/weavegate).
+This map is bundled in release archives with the matching-slice configuration,
+migration, and seed. Source-tree paths such as `internal/`, `cmd/`, and
+`CONTRIBUTING.md` remain in the [weavegate repository](https://github.com/weavegate/weavegate).
 
 ## Start here
 
 Use these guides when you are new to weavegate or ready to create and instrument a fixture.
 
-- [Quickstart](quickstart.md) — Install weavegate and reproduce the bundled matching-slice failure.
+- [Install weavegate](install.md) — Choose a release archive, source checkout, or go install route and locate the example fixture.
+- [Quickstart](quickstart.md) — Reproduce the bundled matching-slice failure and replay its fix.
 - [Instrument a workflow](howto/instrument.md) — Place sync-points around a contested decision without changing its semantics.
 - [Write a fixture](howto/write-a-fixture.md) — Package a schema, seed data, adapter, schedules, and oracle as a reusable fixture.
 - [Gate GitHub Actions with weavegate](howto/ci-gate.md) — Run a checksum-verified release, retain failed-run evidence, and replay a downloaded schedule.
