@@ -1,0 +1,96 @@
+name: weavegate gate
+description: Run a published weavegate release and retain evidence before applying its exit-code gate
+inputs:
+  version:
+    description: Published weavegate release tag (for example v0.1.0-alpha)
+    required: true
+  config:
+    description: Configuration file path, relative to the caller workspace or absolute
+    required: true
+  scenario:
+    description: Scenario name from the configuration
+    required: true
+  variant:
+    description: Optional SUT variant override
+    required: false
+    default: ''
+  replay:
+    description: Optional schedule ID or file path to replay
+    required: false
+    default: ''
+  repeat:
+    description: Optional positive replay count override
+    required: false
+    default: ''
+  artifact-name:
+    description: Unique name for this invocation's retained evidence artifact
+    required: false
+    default: weavegate-evidence
+outputs:
+  verdict:
+    description: Report headline verdict (PASS, FAIL, or FLAKY) when a complete report exists
+    value: ${{ steps.run.outputs.verdict }}
+  exit-code:
+    description: Actual weavegate process exit code, when launched
+    value: ${{ steps.run.outputs.exit_code }}
+  run-directory:
+    description: Absolute run directory path on the runner, when printed and present
+    value: ${{ steps.run.outputs.run_directory }}
+  schedule-id:
+    description: Schedule content ID when saved
+    value: ${{ steps.run.outputs.schedule_id }}
+  report-path:
+    description: Absolute report.md path on the runner, when present
+    value: ${{ steps.run.outputs.report_path }}
+  evidence-directory:
+    description: Absolute upload directory on the runner
+    value: ${{ steps.prepare.outputs.evidence_dir }}
+  artifact-url:
+    description: Uploaded evidence artifact URL, when upload succeeded
+    value: ${{ steps.upload.outputs.artifact-url }}
+runs:
+  using: composite
+  steps:
+    - id: prepare
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/scripts/actions-gate.py" prepare
+    - id: install
+      shell: bash
+      env:
+        WEAVEGATE_VERSION: ${{ inputs.version }}
+        WEAVEGATE_EVIDENCE_DIR: ${{ steps.prepare.outputs.evidence_dir }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/actions-gate.py" install
+    - id: run
+      if: steps.install.outcome == 'success'
+      shell: bash
+      env:
+        WEAVEGATE_BINARY: ${{ steps.install.outputs.binary }}
+        WEAVEGATE_EVIDENCE_DIR: ${{ steps.prepare.outputs.evidence_dir }}
+        WEAVEGATE_CONFIG: ${{ inputs.config }}
+        WEAVEGATE_SCENARIO: ${{ inputs.scenario }}
+        WEAVEGATE_VARIANT: ${{ inputs.variant }}
+        WEAVEGATE_REPLAY: ${{ inputs.replay }}
+        WEAVEGATE_REPEAT: ${{ inputs.repeat }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/actions-gate.py" run
+    - id: upload
+      if: always() && steps.prepare.outcome == 'success'
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.prepare.outputs.evidence_dir }}
+        if-no-files-found: error
+    - id: summary
+      if: always()
+      shell: bash
+      env:
+        WEAVEGATE_EVIDENCE_DIR: ${{ steps.prepare.outputs.evidence_dir }}
+        WEAVEGATE_UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        WEAVEGATE_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/actions-gate.py" summary
+    - id: gate
+      if: always()
+      shell: bash
+      env:
+        WEAVEGATE_EVIDENCE_DIR: ${{ steps.prepare.outputs.evidence_dir }}
+        WEAVEGATE_UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/actions-gate.py" gate

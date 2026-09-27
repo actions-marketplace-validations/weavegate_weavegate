@@ -408,6 +408,9 @@ jobs:
             fi
           done
 
+      - name: Test reusable gate boundaries
+        run: python3 -B scripts/test-actions-gate.py
+
       - name: Lint Markdown
         uses: DavidAnson/markdownlint-cli2-action@v24
         with:
@@ -585,3 +588,60 @@ jobs:
             ./internal/orchestrator/... ./internal/report/... ./internal/scenario/... \
             ./internal/sut ./internal/sut/external ./internal/syncpoint/... ./internal/trace/... ./rules/... -count=1
           printf 'TOOLCHAIN_RESULT go=%s scope=non-container build=ok\n' "$(go env GOVERSION)"
+
+  reusable-gate:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: vulnerable
+            exit_code: '2'
+            verdict: FAIL
+            action_outcome: failure
+          - variant: fixed
+            exit_code: '0'
+            verdict: PASS
+            action_outcome: success
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Run the published release through the local gate
+        id: gate
+        uses: ./
+        continue-on-error: true
+        with:
+          version: v0.1.0-alpha
+          config: fixtures/matching-slice/.weavegate/config.yaml
+          scenario: concurrent-assign
+          variant: ${{ matrix.variant }}
+          replay: sch_ba00582f9632
+          artifact-name: weavegate-gate-${{ matrix.variant }}
+
+      - name: Verify gate result and outputs after artifact upload
+        if: always()
+        env:
+          ACTUAL_OUTCOME: ${{ steps.gate.outcome }}
+          ACTUAL_EXIT: ${{ steps.gate.outputs.exit-code }}
+          ACTUAL_VERDICT: ${{ steps.gate.outputs.verdict }}
+          ACTUAL_SCHEDULE: ${{ steps.gate.outputs.schedule-id }}
+          ACTUAL_REPORT: ${{ steps.gate.outputs.report-path }}
+          ACTUAL_ARTIFACT: ${{ steps.gate.outputs.artifact-url }}
+          EXPECTED_OUTCOME: ${{ matrix.action_outcome }}
+          EXPECTED_EXIT: ${{ matrix.exit_code }}
+          EXPECTED_VERDICT: ${{ matrix.verdict }}
+        run: |
+          test "$ACTUAL_OUTCOME" = "$EXPECTED_OUTCOME"
+          test "$ACTUAL_EXIT" = "$EXPECTED_EXIT"
+          test "$ACTUAL_VERDICT" = "$EXPECTED_VERDICT"
+          test "$ACTUAL_SCHEDULE" = sch_ba00582f9632
+          test -f "$ACTUAL_REPORT"
+          test -n "$ACTUAL_ARTIFACT"
+          printf 'ACTION_GATE_RESULT variant=%s exit=%s verdict=%s artifact=uploaded outputs=usable\n' \
+            '${{ matrix.variant }}' "$ACTUAL_EXIT" "$ACTUAL_VERDICT"
