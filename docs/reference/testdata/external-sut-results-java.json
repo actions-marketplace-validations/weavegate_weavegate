@@ -3,8 +3,8 @@
   "target": "java",
   "vector": {
     "path": "docs/reference/testdata/external-sut-v1.json",
-    "revision": "ee6b037255a499bedf7f88971a448bd343151dee",
-    "sha256": "06d29218799be40013e09920d3d6075fe234ac7021950a89138119231143edd4"
+    "revision": "f32cd292246287a22c1a057012dd468f25c41c7d",
+    "sha256": "a04520c31157d9eedd174a9ed3c12bc54a9676b2e9a7fda6b04fa1c591563450"
   },
   "run": null,
   "results": {
@@ -36,6 +36,18 @@
     "case/java_stop_watchdog_expires": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "case/duplicate_invoke_java": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "case/active_stop_cancel_watchdog_expires": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_unknown_command": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_unknown_point": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_wrong_direction": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_immutable_worker": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_semantic_duplicate_start": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_semantic_duplicate_invoke": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_released_arrival_duplicate": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_retired_cancel": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_sequence_gap": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_capacity_exceeded": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_outbound_sequence_exhausted": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/java_arrival_sequence_exhausted": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "framing/fragmented_valid_frame": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "framing/zero_length": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "framing/oversized_length": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
@@ -51,6 +63,7 @@
     "requirement/java-wire-matrix": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "requirement/java-real-pipes": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "requirement/spring-transactions": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "requirement/java-jdk-command": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "requirement/disabled-instrumentation": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "requirement/java-success-lifecycle": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "requirement/command-exception-shape": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},

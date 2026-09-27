@@ -10,8 +10,10 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLClientInfoException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
+import java.util.Set;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
@@ -24,6 +26,17 @@ import javax.sql.DataSource;
  * for cancellation.
  */
 final class TrackingDataSource implements DataSource {
+    private static final Set<String> SESSION_MUTATORS = Set.of(
+            "abort", "setCatalog", "setSchema", "setHoldability", "setTypeMap", "setClientInfo",
+            "setShardingKey", "setShardingKeyIfValid", "beginRequest", "endRequest");
+    private static final Set<String> RESOURCE_FACTORIES = Set.of(
+            "createArrayOf", "createBlob", "createClob", "createNClob", "createSQLXML", "createStruct");
+    private static final Set<String> RESULT_RESOURCES = Set.of(
+            "getArray", "getBlob", "getClob", "getNClob", "getSQLXML", "getRef", "getObject",
+            "getAsciiStream", "getBinaryStream", "getCharacterStream", "getNCharacterStream",
+            "getUnicodeStream");
+    private static final Set<String> RESULT_MUTATORS = Set.of(
+            "insertRow", "deleteRow", "moveToInsertRow", "moveToCurrentRow", "cancelRowUpdates", "refreshRow");
     private static final Pattern TRANSACTION_SQL = Pattern.compile("(?is)^(?:BEGIN\\b|START\\s+TRANSACTION\\b|"
             + "COMMIT\\b|ROLLBACK\\b|SAVEPOINT\\b|RELEASE\\s+SAVEPOINT\\b|"
             + "SET\\s+(?:(?:SESSION|LOCAL|GLOBAL)\\s+)?TRANSACTION\\b|"
@@ -35,6 +48,11 @@ final class TrackingDataSource implements DataSource {
     private static final Pattern TIMEOUT_HINT = Pattern.compile("(?is)\\bMAX_EXECUTION_TIME\\s*\\(");
     private static final Pattern NAMED_LOCK_SQL = Pattern.compile(
             "(?is)(?<![\\w$])(?:GET_LOCK|RELEASE_LOCK|RELEASE_ALL_LOCKS)\\s*\\(");
+    private static final Pattern SUPPORTED_SQL = Pattern.compile("(?is)^(?:SELECT|INSERT|UPDATE|DELETE)\\b");
+    private static final Pattern SESSION_EFFECT_SQL = Pattern.compile(
+            "(?is)(?<![<>=!:]):=|(?<![\\w$])(?:LAST_INSERT_ID|"
+            + "SLEEP|BENCHMARK|MASTER_POS_WAIT|GET_MASTER_PUBLIC_KEY)\\s*\\(");
+    private static final Pattern SELECT_INTO = Pattern.compile("(?is)\\bINTO\\b");
     private static final Pattern NONTRANSACTIONAL_SQL = Pattern.compile("(?is)^(?:"
             + "(?:ALTER|ANALYZE|CACHE|CHECK|CREATE|DROP|FLUSH|GRANT|INSTALL|LOCK|OPTIMIZE|RENAME|REPAIR|"
             + "RESET|REVOKE|TRUNCATE|UNINSTALL|UNLOCK)\\b|"
@@ -146,6 +164,14 @@ final class TrackingDataSource implements DataSource {
             if (transactionControl(method.getName()) && !transactionControlAllowed()) {
                 throw new SQLFeatureNotSupportedException("application-managed transaction control is unsupported");
             }
+            if ((SESSION_MUTATORS.contains(method.getName()) || RESOURCE_FACTORIES.contains(method.getName())
+                    || method.getName().equals("setReadOnly") || method.getName().equals("setTransactionIsolation"))
+                    && !transactionControlAllowed()) {
+                if (method.getName().equals("setClientInfo")) {
+                    throw new SQLClientInfoException("application-managed session state is unsupported", null);
+                }
+                throw new SQLFeatureNotSupportedException("application-managed session state or JDBC resources are unsupported");
+            }
             rejectUnsupportedSql(method, args);
             rejectNetworkTimeout(method, args);
             rejectValidationTimeout(method, args);
@@ -180,6 +206,10 @@ final class TrackingDataSource implements DataSource {
                         case "hashCode" -> { return System.identityHashCode(proxy); }
                         case "toString" -> { return "TrackedResultSet"; }
                         default -> { }
+                    }
+                    if (RESULT_RESOURCES.contains(method.getName()) || method.getName().startsWith("update")
+                            || RESULT_MUTATORS.contains(method.getName())) {
+                        throw new SQLFeatureNotSupportedException("result-set resources and mutations are unsupported");
                     }
                     if (invocation == null || cancel == null) {
                         return call(rows, method, args);
@@ -228,7 +258,17 @@ final class TrackingDataSource implements DataSource {
                 default -> { }
             }
             rejectUnsupportedSql(method, args);
+            if (method.getName().equals("addBatch") || method.getName().equals("executeBatch")
+                    || method.getName().equals("executeLargeBatch")) {
+                throw new SQLFeatureNotSupportedException("JDBC batch execution is unsupported");
+            }
             rejectQueryTimeout(method, args);
+            if (method.getName().equals("getMetaData") || method.getName().equals("getParameterMetaData")) {
+                throw new SQLFeatureNotSupportedException("JDBC metadata access is unsupported");
+            }
+            if (method.getName().equals("closeOnCompletion")) {
+                throw new SQLFeatureNotSupportedException("untracked automatic statement close is unsupported");
+            }
             boolean cancellable = method.getName().startsWith("execute") || method.getName().equals("close")
                     || method.getName().equals("getMoreResults");
             if (invocation == null || !cancellable) {
@@ -289,7 +329,8 @@ final class TrackingDataSource implements DataSource {
         String name = method.getName();
         if (name.startsWith("execute") || name.equals("addBatch") || name.startsWith("prepare")) {
             String normalized = normalizeSql(sql).stripLeading();
-            if (NAMED_LOCK_SQL.matcher(unquotedSql(normalized)).find()) {
+            String code = unquotedSql(normalized);
+            if (NAMED_LOCK_SQL.matcher(code).find()) {
                 throw new SQLFeatureNotSupportedException("session-scoped named locks are unsupported");
             }
             if (DYNAMIC_SQL.matcher(normalized).find()) {
@@ -304,6 +345,15 @@ final class TrackingDataSource implements DataSource {
             if (NONTRANSACTIONAL_SQL.matcher(normalized).find()) {
                 peer.unsupported("transaction", "nontransactional SQL is unsupported");
                 throw new SQLFeatureNotSupportedException("nontransactional SQL is unsupported");
+            }
+            // This is deliberately a small admission rule, not a MySQL parser.
+            // The application and fixture must meet the SQL obligations in the
+            // Java reference; guard the paths that can escape a transaction here.
+            if (!SUPPORTED_SQL.matcher(code).find() || code.indexOf(';') >= 0 || code.indexOf('@') >= 0
+                    || SESSION_EFFECT_SQL.matcher(code).find()
+                    || (code.regionMatches(true, 0, "SELECT", 0, 6) && SELECT_INTO.matcher(code).find())) {
+                peer.unsupported("transaction", "SQL outside the supported subset");
+                throw new SQLFeatureNotSupportedException("SQL outside the supported subset");
             }
         }
     }
@@ -338,7 +388,8 @@ final class TrackingDataSource implements DataSource {
                 i = appendQuoted(sql, i, normalized);
                 continue;
             }
-            if (current == '#' || (current == '-' && i + 1 < sql.length() && sql.charAt(i + 1) == '-')) {
+            if (current == '#' || (current == '-' && i + 2 < sql.length()
+                    && sql.charAt(i + 1) == '-' && Character.isWhitespace(sql.charAt(i + 2)))) {
                 int line = i;
                 while (line < sql.length() && sql.charAt(line) != '\n' && sql.charAt(line) != '\r') {
                     line++;

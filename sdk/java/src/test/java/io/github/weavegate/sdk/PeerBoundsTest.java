@@ -7,6 +7,28 @@ import org.junit.jupiter.api.Test;
 /** Independently written deadline regressions outside the shared vector inventory. */
 class PeerBoundsTest {
     @Test
+    void failedAcceptanceRetiresUndispatchedInvocationBeforeCleanup() {
+        for (boolean sequenceExhausted : new boolean[] {false, true}) {
+            VectorHarness h = Scripted.ready(1);
+            if (sequenceExhausted) {
+                h.peer.sent = Wire.MAX_SEQ;
+            } else {
+                h.output.closed = true;
+            }
+            h.host.shutdown.signal();
+            h.peer.receive(Scripted.invoke(2, Scripted.I1, "w1", "assign"));
+            h.activity.awaitIdle();
+            Peer.Invocation invocation = h.peer.invocations.get(Scripted.I1);
+            assertThat(invocation.proxy).isEqualTo(Peer.Proxy.SKIPPED);
+            assertThat(invocation.retired).isTrue();
+            assertThat(invocation.dispatches).isZero();
+            assertThat(h.peer.live).isZero();
+            assertThat(h.host.closeCompleted).isTrue();
+            assertThat(h.exit.status()).isEqualTo(1);
+        }
+    }
+
+    @Test
     void fatalCleanupBoundSurvivesRetirementOfTheInvocationThatOwnedIt() {
         VectorHarness h = Scripted.ready(2);
         h.peer.receive(Scripted.invoke(2, Scripted.I1, "w1", "assign"));

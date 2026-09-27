@@ -2,8 +2,8 @@
   "format": 1,
   "vector": {
     "path": "docs/reference/testdata/external-sut-v1.json",
-    "revision": "ee6b037255a499bedf7f88971a448bd343151dee",
-    "sha256": "06d29218799be40013e09920d3d6075fe234ac7021950a89138119231143edd4"
+    "revision": "f32cd292246287a22c1a057012dd468f25c41c7d",
+    "sha256": "a04520c31157d9eedd174a9ed3c12bc54a9676b2e9a7fda6b04fa1c591563450"
   },
   "requirements": [
     {"id": "go-dispatch", "targets": ["go"], "owner": 108, "description": "Real handlers for every applicable event, argument shape and assertion; reject unknown names, fields and arguments before injection. Observers never synthesize input, completion, reaping or failure."},
@@ -13,6 +13,7 @@
     {"id": "go-real-pipes", "targets": ["go"], "owner": 108, "description": "Actual blocked/broken writer and EOF at startup, active, post-terminal and Stop; parent cleanup, bounded deadlines and process reaping. Fake-clock data validation is insufficient."},
     {"id": "java-real-pipes", "targets": ["java"], "owner": 109, "description": "Actual blocked/broken writer and EOF at startup, active, post-terminal and Stop; watchdog self-termination with parent cleanup independently observed. Fake-clock data validation is insufficient."},
     {"id": "spring-transactions", "targets": ["java"], "owner": 109, "description": "Pinned Spring manager, driver and pool prove begin failure, rollback-only, unknown rollback and suppressed lease-close failure, with independently observed proxy, transaction and lease milestones."},
+    {"id": "java-jdk-command", "targets": ["java"], "owner": 109, "description": "A selected command runs through its actual JDK proxy and the pinned Spring/MySQL transaction; independent driver and lease observations precede terminal publication."},
     {"id": "disabled-instrumentation", "targets": ["java"], "owner": 109, "description": "Inactive sync points return immediately without stdin, protocol loops or transaction changes."},
     {"id": "go-success-lifecycle", "targets": ["go"], "owner": 108, "description": "Required startup/invoke/terminal/Stop/stopped/EOF/exit-zero/Reset family has an executable predicate and friendly missing-case failure."},
     {"id": "java-success-lifecycle", "targets": ["java"], "owner": 109, "description": "Required startup/invoke/terminal/Stop/stopped/EOF/exit-zero family has an executable predicate; Reset is observed in Go/paired evidence."},

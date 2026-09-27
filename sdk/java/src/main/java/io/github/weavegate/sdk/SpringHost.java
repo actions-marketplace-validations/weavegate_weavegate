@@ -19,6 +19,7 @@ import javax.sql.DataSource;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.aop.support.AopUtils;
+import org.springframework.aop.support.DefaultPointcutAdvisor;
 import org.springframework.aop.Advisor;
 import org.springframework.aop.PointcutAdvisor;
 import org.springframework.aop.framework.Advised;
@@ -158,12 +159,13 @@ final class SpringHost implements Seams.Host {
                     throw new IllegalStateException(
                             "command transaction must be REQUIRED without timeout and roll back on cancellation");
                 }
-                observeCommand(bean, method, user, manager);
+                Method invocable = AopUtils.selectInvocableMethod(method, bean.getClass());
+                Method pointcutMethod = AopUtils.isJdkDynamicProxy(bean) ? invocable : method;
+                observeCommand(bean, pointcutMethod, user, manager);
                 Set<String> declared = new HashSet<>(List.of(command.points()));
                 if (!declared.stream().allMatch(Wire::name)) {
                     throw new IllegalStateException("invalid point registration");
                 }
-                Method invocable = AopUtils.selectInvocableMethod(method, bean.getClass());
                 ReflectionUtils.makeAccessible(invocable);
                 registered.put(command.value(), new Registered(bean, invocable, Set.copyOf(declared)));
             }
@@ -178,27 +180,28 @@ final class SpringHost implements Seams.Host {
         return Map.copyOf(selected);
     }
 
-    private static void observeCommand(Object bean, Method method, Class<?> user, TransactionManager manager) {
+    private static void observeCommand(Object bean, Method pointcutMethod,
+                                       Class<?> user, TransactionManager manager) {
         if (!(bean instanceof Advised advised) || advised.isFrozen()) {
             throw new IllegalStateException("command proxy must expose its transaction advice");
         }
         Advisor[] advisors = advised.getAdvisors();
         int transaction = -1;
-        boolean observed = false;
+        int observer = -1;
         for (int i = 0; i < advisors.length; i++) {
             Advisor advisor = advisors[i];
+            if (!matchesCommand(advisor, pointcutMethod, user)) {
+                continue;
+            }
             if (advisor.getAdvice() instanceof FailureObserver) {
-                observed = true;
+                if (observer != -1) {
+                    throw new IllegalStateException("duplicate command failure observer");
+                }
+                observer = i;
             }
             if (advisor.getAdvice() instanceof TransactionInterceptor interceptor) {
                 if (advisor instanceof PointcutAdvisor pointcut) {
-                    var matcher = pointcut.getPointcut().getMethodMatcher();
-                    // Spring excludes static nonmatches from this method's chain.
-                    if (!pointcut.getPointcut().getClassFilter().matches(user)
-                            || !matcher.matches(method, user)) {
-                        continue;
-                    }
-                    if (matcher.isRuntime()) {
+                    if (pointcut.getPointcut().getMethodMatcher().isRuntime()) {
                         throw new IllegalStateException("runtime transaction pointcuts are unsupported");
                     }
                 }
@@ -207,7 +210,7 @@ final class SpringHost implements Seams.Host {
                         // A null manager resolves by type; the context check above makes that
                         // the one SDK manager. A directly configured manager must be identical.
                         || (configured != null && configured != manager)
-                        || !supportedTransaction(interceptor.getTransactionAttributeSource().getTransactionAttribute(method, user))) {
+                        || !supportedTransaction(interceptor.getTransactionAttributeSource().getTransactionAttribute(pointcutMethod, user))) {
                     throw new IllegalStateException("command requires one matching weavegate transaction advice");
                 }
                 transaction = i;
@@ -216,11 +219,35 @@ final class SpringHost implements Seams.Host {
         if (transaction == -1) {
             throw new IllegalStateException("command lacks transaction advice");
         }
-        if (!observed) {
+        if (observer != -1) {
+            if (observer < transaction) {
+                throw new IllegalStateException("command failure observer must be inside transaction advice");
+            }
+            for (int i = transaction + 1; i < observer; i++) {
+                if (matchesCommand(advisors[i], pointcutMethod, user)) {
+                    throw new IllegalStateException("command failure observer must be inside transaction advice");
+                }
+            }
+        }
+        if (observer == -1) {
             // Inside the transaction interceptor: observe a body failure before
             // Spring rolls back or returns the lease. Spring keeps all decisions.
-            advised.addAdvice(transaction + 1, new FailureObserver());
+            if (advisors[transaction] instanceof PointcutAdvisor pointcut) {
+                advised.addAdvisor(transaction + 1,
+                        new DefaultPointcutAdvisor(pointcut.getPointcut(), new FailureObserver()));
+            } else {
+                advised.addAdvice(transaction + 1, new FailureObserver());
+            }
         }
+    }
+
+    private static boolean matchesCommand(Advisor advisor, Method method, Class<?> user) {
+        if (!(advisor instanceof PointcutAdvisor pointcut)) {
+            return true;
+        }
+        // Spring excludes static nonmatches from this command's effective chain.
+        return pointcut.getPointcut().getClassFilter().matches(user)
+                && pointcut.getPointcut().getMethodMatcher().matches(method, user);
     }
 
     private static boolean supportedTransaction(TransactionAttribute attribute) {

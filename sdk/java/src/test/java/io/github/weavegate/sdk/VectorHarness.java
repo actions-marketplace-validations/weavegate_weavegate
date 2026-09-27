@@ -35,7 +35,8 @@ final class VectorHarness {
             "no_rollback", "no_fatal", "no_command_start", "cancel_startup", "close_control_stream",
             "initialization_barrier_armed", "arm_startup_watchdog", "initialization_blocked",
             "initialization_still_blocked", "application_shutdown_barrier_armed", "arm_stop_watchdog",
-            "application_cleanup_blocked", "ignore_duplicate", "no_redispatch");
+            "application_cleanup_blocked", "ignore_duplicate", "no_redispatch",
+            "outbound_sequence_at_limit", "arrival_sequence_at_limit", "fatal_without_wire");
 
     final String row;
     final Fakes.Activity activity = new Fakes.Activity();
@@ -207,6 +208,24 @@ final class VectorHarness {
                 runTask(invocation.id);
                 host.script(invocation.id).mailbox.put(new Fakes.Arrive(context.point));
                 activity.awaitIdle();
+            }
+            case "exhaust_outbound_sequence" -> {
+                fields(args, "limit");
+                require(args.get("limit").intValue() == Wire.MAX_SEQ, "outbound sequence limit differs");
+                synchronized (peer) {
+                    require(peer.phase == Peer.Phase.READY && peer.sent == 1, "sequence setup requires ready peer");
+                    peer.sent = Wire.MAX_SEQ;
+                }
+            }
+            case "exhaust_arrivals" -> {
+                fields(args, "invocation", "limit");
+                context.invocation = text(args, "invocation");
+                require(args.get("limit").intValue() == Wire.MAX_ARRIVAL, "arrival limit differs");
+                Peer.Invocation invocation = live(context.invocation, null);
+                synchronized (peer) {
+                    require(invocation.arrivals == 0 && invocation.gate == null, "arrival setup requires unused gate");
+                    invocation.arrivals = Wire.MAX_ARRIVAL;
+                }
             }
             case "completion" -> completion(args, context);
             case "command_exception" -> {
@@ -539,6 +558,11 @@ final class VectorHarness {
                 case "ignore_duplicate" -> need(label, peer.received == c.receivedBefore && peer.fatalKind == null);
                 case "no_redispatch" -> need(label, invocation != null && invocation.dispatches == 1
                         && threads.submissions(invocation.id) == 1);
+                case "outbound_sequence_at_limit" -> need(label, peer.sent == Wire.MAX_SEQ && peer.fatalKind == null);
+                case "arrival_sequence_at_limit" -> need(label, invocation != null && invocation.arrivals == Wire.MAX_ARRIVAL
+                        && invocation.gate == null);
+                case "fatal_without_wire" -> need(label, peer.fatalKind != null && !peer.fatalSent
+                        && invocation != null && invocation.dispatches == 0 && threads.submissions(invocation.id) == 0);
                 default -> throw new AssertionError("unhandled assertion " + label);
             }
         }

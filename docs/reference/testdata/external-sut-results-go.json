@@ -3,8 +3,8 @@
   "target": "go",
   "vector": {
     "path": "docs/reference/testdata/external-sut-v1.json",
-    "revision": "ee6b037255a499bedf7f88971a448bd343151dee",
-    "sha256": "06d29218799be40013e09920d3d6075fe234ac7021950a89138119231143edd4"
+    "revision": "f32cd292246287a22c1a057012dd468f25c41c7d",
+    "sha256": "a04520c31157d9eedd174a9ed3c12bc54a9676b2e9a7fda6b04fa1c591563450"
   },
   "run": null,
   "results": {

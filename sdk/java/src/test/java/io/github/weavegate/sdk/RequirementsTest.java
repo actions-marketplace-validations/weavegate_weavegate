@@ -170,11 +170,7 @@ class RequirementsTest {
         return terminal.get("body").get("error").get("message").stringValue();
     }
 
-    /**
-     * Wire matrix checks written independently of the shared vectors. They do not
-     * report the java-wire-matrix row: its acceptance requires shared cases that
-     * the pinned vectors do not yet contain.
-     */
+    /** Wire matrix checks plus the reviewed shared adversarial case inventory. */
     @TestFactory
     Stream<DynamicTest> wireMatrixRejectsInvalidInputWithoutApplicationEffects() {
         return repeated(() -> {
@@ -199,6 +195,30 @@ class RequirementsTest {
             assertThat(types(coalesced)).containsExactly("stopped");
             assertThat(coalesced.exit.status()).isZero();
 
+            // A transport that returns exactly one byte for every read still
+            // assembles one frame and publishes ready only after the payload.
+            byte[] single = Scripted.start(1);
+            java.io.ByteArrayOutputStream framed = new java.io.ByteArrayOutputStream();
+            for (int shift : List.of(24, 16, 8, 0)) {
+                framed.write(single.length >>> shift);
+            }
+            framed.writeBytes(single);
+            java.io.ByteArrayInputStream bytes = new java.io.ByteArrayInputStream(framed.toByteArray()) {
+                @Override
+                public synchronized int read(byte[] target, int offset, int length) {
+                    return super.read(target, offset, Math.min(length, 1));
+                }
+            };
+            FrameReader everyByte = new FrameReader(bytes);
+            VectorHarness fragmented = new VectorHarness("matrix").quiet();
+            assertThat(fragmented.peer.receive(everyByte.next())).isTrue();
+            fragmented.activity.awaitIdle();
+            assertThat(types(fragmented)).isEmpty();
+            fragmented.host.completeProbe();
+            fragmented.activity.awaitIdle();
+            assertThat(types(fragmented)).containsExactly("ready");
+            assertThat(everyByte.next()).isNull();
+
             assertFatal(h -> h.peer.receive(Scripted.frame("ready", 1, Map.of("commands", List.of("assign"),
                     "points", List.of(), "capacity", 1))), false, "protocol");
             assertFatal(h -> h.peer.receive(Scripted.invoke(2, Scripted.I1, "w1", "unknown_command")), true, "protocol");
@@ -220,6 +240,23 @@ class RequirementsTest {
             assertThat(exact.peer.fatalKind).isNull();
             assertFatal(h -> h.peer.receive(Scripted.start(2, 1)), true, "protocol");
             assertFatal(h -> h.peer.receive(Scripted.invoke(3, Scripted.I1, "w1", "assign")), true, "protocol");
+
+            VectorHarness exhaustedSequence = Scripted.ready(1);
+            exhaustedSequence.peer.sent = Wire.MAX_SEQ;
+            exhaustedSequence.peer.receive(Scripted.invoke(2, Scripted.I1, "w1", "assign"));
+            assertThat(exhaustedSequence.peer.fatalKind).isEqualTo("protocol");
+            assertThat(exhaustedSequence.peer.invocations.get(Scripted.I1).dispatches).isZero();
+
+            VectorHarness exhaustedArrival = Scripted.ready(1);
+            exhaustedArrival.peer.receive(Scripted.invoke(2, Scripted.I1, "w1", "assign"));
+            Peer.Invocation arrivalInvocation = exhaustedArrival.peer.invocations.get(Scripted.I1);
+            arrivalInvocation.arrivals = Wire.MAX_ARRIVAL;
+            exhaustedArrival.threads.run(Scripted.I1);
+            exhaustedArrival.activity.awaitIdle();
+            exhaustedArrival.host.script(Scripted.I1).mailbox.put(new Fakes.Arrive("after_read"));
+            exhaustedArrival.activity.awaitIdle();
+            assertThat(exhaustedArrival.peer.fatalKind).isEqualTo("protocol");
+            assertThat(types(exhaustedArrival)).doesNotContain("arrive");
             assertFatal(h -> {
                 h.peer.receive(Scripted.invoke(2, Scripted.I1, "w1", "assign"));
                 h.threads.run(Scripted.I1);
@@ -249,6 +286,16 @@ class RequirementsTest {
             h.peer.receive(Scripted.frame("stop", Scripted.RUN, "5".repeat(32), 6, Map.of("budget_ms", 1)));
             assertThat(h.peer.staleFrames).isEqualTo(1);
             assertThat(h.peer.received).isEqualTo(5);
+
+            JsonNode matrix = VECTORS.data.get("coverage").get("java_wire_matrix");
+            assertThat(matrix.size()).isEqualTo(12);
+            for (JsonNode name : matrix) {
+                JsonNode vector = VECTORS.javaCases().stream()
+                        .filter(c -> c.get("id").stringValue().equals(name.stringValue()))
+                        .findFirst().orElseThrow();
+                new VectorHarness("independent").quiet().run(VECTORS.steps(vector));
+            }
+            report("java-wire-matrix");
         });
     }
 
@@ -384,7 +431,7 @@ class RequirementsTest {
         EvidenceListener.marker("EXTERNAL_SUT_JAVA_DISPATCH_RESULT events=closed arguments=closed assertions=closed injection=none");
         EvidenceListener.marker("EXTERNAL_SUT_JAVA_EXCEPTION_SHAPE_RESULT phases=3 unknown_phase=rejected injection=none");
         EvidenceListener.marker("EXTERNAL_SUT_JAVA_CANCEL_ORIGIN_RESULT context_then_stop=context stop_only=stop first_latched=retained");
-        EvidenceListener.marker("EXTERNAL_SUT_JAVA_WIRE_MATRIX_RESULT coalesced=ordered invalid=fatal duplicates=consumed acceptance=incomplete");
+        EvidenceListener.marker("EXTERNAL_SUT_JAVA_WIRE_MATRIX_RESULT coalesced=ordered invalid=fatal duplicates=consumed acceptance=complete");
         EvidenceListener.marker("EXTERNAL_SUT_JAVA_DISABLED_RESULT sync_point=immediate stdin=unread protocol_threads=none transaction=unchanged");
     }
 

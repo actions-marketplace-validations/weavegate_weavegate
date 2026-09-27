@@ -24,7 +24,7 @@ TO_JAVA = {'start', 'invoke', 'release', 'cancel', 'stop'}
 EVENTS = set('''advance_cancel_cleanup_clock advance_fatal_cleanup_clock advance_startup_clock
 advance_stop_clock application_cleanup_complete begin_evaluation cancel_context
 check_operation_result check_stop_results child_exit command_exception complete_evaluation
-completion hold_cleanup hold_release_enqueue invoke_call jdbc_blocked launch_child
+completion exhaust_arrivals exhaust_outbound_sequence hold_cleanup hold_release_enqueue invoke_call jdbc_blocked launch_child
 provisional_evaluation readiness_complete resume_release_enqueue runtime_arrive_returns
 startup_before_write startup_deadline stderr_bytes stop_call stop_deadline stop_half_deadline
 wait_arrive_timeout worker_arrives'''.split())
@@ -34,6 +34,15 @@ cancel_wins_enqueue enqueue_wins_cancel readiness_rejection canceled_reuse
 normal_active_stop exception_input parent_startup_cleanup callback_terminal
 unknown_outcome_fatal version_rejection incremented_arrival'''.split())
 REQUIRED.update({'retired_terminal_identical', 'retired_terminal_conflict', 'process_death_cleanup'})
+JAVA_WIRE_CASES = {
+    'java_unknown_command': 'ready', 'java_unknown_point': 'active',
+    'java_wrong_direction': 'ready', 'java_immutable_worker': 'active',
+    'java_semantic_duplicate_start': 'ready', 'java_semantic_duplicate_invoke': 'active',
+    'java_released_arrival_duplicate': 'released', 'java_retired_cancel': 'completed',
+    'java_sequence_gap': 'ready', 'java_capacity_exceeded': 'ready',
+    'java_outbound_sequence_exhausted': 'ready', 'java_arrival_sequence_exhausted': 'active',
+}
+REQUIRED.add('java_wire_matrix')
 # Reviewed harness assertion names, independent of the vector file being checked.
 EXPECTATIONS = set('''abort_run all_calls_return_same_failure all_calls_return_success
 application_cleanup_blocked application_shutdown_barrier_armed arm_cleanup_watchdog
@@ -68,7 +77,7 @@ set_single_deadline start_returns_handle start_returns_no_handle startup_error
 startup_error_preserved stop_error stop_ok stop_still_pending supplied_invocation_context_cancelled
 unstarted_outcome validate_registration wake_exact_gate wake_gate_exceptionally
 worker_outcome_preserved worker_result_cancelled worker_result_error worker_result_nil
-no_bridge_tasks no_new_worker_effect'''.split())
+no_bridge_tasks no_new_worker_effect outbound_sequence_at_limit arrival_sequence_at_limit fatal_without_wire'''.split())
 FATAL_KINDS = {'version', 'protocol', 'startup', 'transport', 'transaction', 'cleanup', 'shutdown'}
 FRAMING = {
     'fragmented_valid_frame': ({'id', 'input_hex', 'read_chunk_sizes', 'expect', 'decoded', 'targets'}, ('one_ready_frame_after_complete_payload',)),
@@ -199,10 +208,20 @@ def indices(steps, predicate):
     return [i for i, s in enumerate(steps) if predicate(s)]
 
 
-def injected_premise(case_id, frame, effects, invocations, outstanding, completed, canceled, start, stop_seen):
+def injected_premise(case_id, frame, effects, invocations, outstanding, returned, completed, canceled, start, stop_seen):
     body, kind = frame['body'], frame['type']
     invocation = body.get('invocation')
     current = outstanding.get(invocation)
+    if case_id == 'java_immutable_worker':
+        return kind == 'cancel' and invocation in invocations and body['worker'] != invocations[invocation][0]
+    if case_id == 'java_semantic_duplicate_start':
+        return kind == 'start' and start == body and 'fatal_protocol' in effects
+    if case_id == 'java_semantic_duplicate_invoke':
+        return kind == 'invoke' and invocations.get(invocation) == (body['worker'], body['command'])
+    if case_id == 'java_released_arrival_duplicate':
+        return kind == 'release' and current is None and returned.get(invocation) == (body, 'nil')
+    if case_id == 'java_retired_cancel':
+        return kind == 'cancel' and invocation in completed and body['worker'] == invocations[invocation][0]
     if case_id == 'cancel_racing_release':
         return kind == 'release' and invocation in canceled and current == body
     if case_id == 'late_arrival_after_cancel':
@@ -294,6 +313,13 @@ def history(case, steps):
                 need(iid not in outstanding and iid not in pending_arrivals, 'arrival event while gate is live')
                 need(int(identity['arrival']) == last_arrival.get(iid, 0) + 1, 'arrival event does not increment')
                 pending_arrivals[iid] = identity
+            if event(step, 'exhaust_outbound_sequence', 'java'):
+                need(a == {'limit': 100000} and 'outbound_sequence_at_limit' in effects,
+                     'outbound exhaustion setup')
+            if event(step, 'exhaust_arrivals', 'java'):
+                need(a.get('limit') == 100000 and a.get('invocation') in invocations
+                     and 'arrival_sequence_at_limit' in effects, 'arrival exhaustion setup')
+                last_arrival[a['invocation']] = 100000
             if event(step, 'command_exception', 'java'):
                 sources[a['invocation']] = a['exception']
             if event(step, 'cancel_context', 'go'):
@@ -322,6 +348,9 @@ def history(case, steps):
         frame_shape(f)
         peer, t, b = step['peer'], f['type'], f['body']
         need(step['delivery'] != 'input' or peer in targets, 'injected input has no target receiver')
+        if case['id'] == 'java_wrong_direction' and step['delivery'] == 'input' and peer == 'java' and t == 'ready':
+            need('fatal_protocol' in effects, 'wrong direction must be rejected')
+            continue
         need(t == 'fatal' or (peer == 'java') == (t in TO_JAVA), 'message direction')
         if f['v'] != 1:
             need(step['delivery'] == 'input' and 'fatal_version' in effects, 'unmarked incompatible version')
@@ -360,7 +389,7 @@ def history(case, steps):
                 required = {'consume_retired_invocation', 'no_worker_result', 'no_new_worker_effect', 'no_fatal', 'no_reply'} if same else {'fatal_protocol', 'no_worker_result', 'abort_run'}
                 need(required <= set(effects), 'retired terminal effects')
                 continue
-            need(injected_premise(case['id'], f, effects, invocations, outstanding, completed, canceled, start, stop_seen), 'injected input lacks declared lifecycle premise')
+            need(injected_premise(case['id'], f, effects, invocations, outstanding, returned, completed, canceled, start, stop_seen), 'injected input lacks declared lifecycle premise')
             continue
         if t == 'invoke':
             need(invocations.get(b['invocation']) == (b['worker'], b['command']), 'invoke lacks Go Handle call')
@@ -417,6 +446,16 @@ def history(case, steps):
 def coverage(rule, case, steps):
     targets = case['targets']
     own = case['steps']
+    if rule == 'java_wire_matrix':
+        if targets != ['java'] or case['prefix'] != JAVA_WIRE_CASES.get(case['id']):
+            return False
+        java_effects = [effect for step in own if step['peer'] == 'java' for effect in step['expect']]
+        if case['id'] in ('java_released_arrival_duplicate', 'java_retired_cancel'):
+            return {'no_fatal', 'no_reply'} <= set(java_effects)
+        if case['id'] == 'java_outbound_sequence_exhausted':
+            return {'outbound_sequence_at_limit', 'fatal_without_wire'} <= set(java_effects)
+        return 'fatal_protocol' in java_effects and any(
+            message(step, 'fatal', 'go') and step.get('delivery') == 'exchange' for step in own)
     if rule.startswith('retired_terminal_'):
         old = [s for s in steps if message(s, 'terminal') and s.get('delivery') == 'exchange']
         late = [s for s in own if message(s, 'terminal') and s.get('delivery') == 'input']
@@ -614,6 +653,7 @@ def validate(data):
         except (ValueError, KeyError, TypeError) as err:
             raise ValueError(case['id'] + ': ' + str(err)) from err
     need(set(data['coverage']) == REQUIRED, 'coverage matrix families')
+    need(set(data['coverage']['java_wire_matrix']) == set(JAVA_WIRE_CASES), 'Java wire matrix inventory')
     for rule, names in data['coverage'].items():
         need(names and len(names) == len(set(names)), rule + ': empty/duplicate coverage')
         for name in names:

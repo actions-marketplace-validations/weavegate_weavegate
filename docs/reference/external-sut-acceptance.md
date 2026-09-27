@@ -4,16 +4,19 @@ The accounting tool records what the external SUT implementations still need to
 prove. It does not run an adapter, interpret lifecycle events, or certify a
 transaction, deadline or process exit. The checked-in Go, Java and paired
 manifests contain no execution evidence and cannot pass the implementation gate.
-This is the accounting portion of [#121](https://github.com/weavegate/weavegate/issues/121);
-that issue remains open until the consumers supply the missing evidence.
+This accounting contract was added under [#121](https://github.com/weavegate/weavegate/issues/121).
+The isolated consumers and live paired run report evidence separately.
 
 ## Reviewed input and ownership
 
 [The acceptance plan](testdata/external-sut-acceptance.json) pins
 [the shared vectors](testdata/external-sut-v1.json) at reviewed commit
-`ee6b037255a499bedf7f88971a448bd343151dee`, including their exact SHA-256 digest.
+`f32cd292246287a22c1a057012dd468f25c41c7d`, including their exact SHA-256 digest.
 The checker rejects different bytes. Its unit test also compares those bytes to
-the pinned Git revision; CI fetches full history for this check.
+the pinned Git revision and verifies that it is an ancestor of the checkout;
+CI fetches full history for this check. When a pull request pins a commit on
+its own branch, merge it with a merge commit so the pinned object remains in
+the merged ancestry. Squash or rebase merging would break this verification.
 Both language consumers must use this same input, without private vector forks.
 
 | Target | Implementation owner | Checked-in result manifest |
@@ -22,11 +25,11 @@ Both language consumers must use this same input, without private vector forks.
 | Java isolated | [#109](https://github.com/weavegate/weavegate/issues/109) | [Java results](testdata/external-sut-results-java.json) |
 | Live paired/MySQL | [#111](https://github.com/weavegate/weavegate/issues/111) | [Paired results](testdata/external-sut-results-paired.json) |
 
-Each `requirement/` row names a remaining acceptance family, its owner and its
-required evidence in the plan. These include missing wire combinations, real
-blocked/broken pipes, Spring failures, disabled instrumentation and the six
-additional review findings in #121. They do not claim new shared cases or runtime
-handlers already exist. Launch/budget composition remains
+Each `requirement/` row names an acceptance family, its owner and its required
+evidence in the plan. The pinned vectors include 12 Java wire matrix histories;
+their isolated Java handlers and real Spring checks are exercised by the Java
+suite. Go and paired execution have separate applicability. Launch/budget
+composition remains
 [#110](https://github.com/weavegate/weavegate/issues/110); reset quarantine remains
 [#120](https://github.com/weavegate/weavegate/issues/120).
 
@@ -49,8 +52,8 @@ python3 scripts/test-external-sut-acceptance.py
 
 `--inventory` prints every required check ID for each applicable case and
 requirement. `--template` prints an incomplete result manifest to stdout; it also
-accepts `java` and `paired`. The checked-in manifests are these templates, with
-compact formatting. Consumers publish separate filled manifests as CI artifacts
+accepts `java` and `paired`. The checked-in manifests are these templates.
+Consumers publish separate filled manifests as CI artifacts
 alongside their referenced logs. Do not edit the templates to present a local
 run as permanent implementation evidence.
 
@@ -126,7 +129,7 @@ Captured output:
 
 ```text
 EXTERNAL_SUT_ACCEPTANCE_RESULT target=go manifest=valid acceptance=incomplete pass=0 fail=0 incomplete=62
-EXTERNAL_SUT_ACCEPTANCE_RESULT target=java manifest=valid acceptance=incomplete pass=0 fail=0 incomplete=47
+EXTERNAL_SUT_ACCEPTANCE_RESULT target=java manifest=valid acceptance=incomplete pass=0 fail=0 incomplete=60
 EXTERNAL_SUT_ACCEPTANCE_RESULT target=paired manifest=valid acceptance=incomplete pass=0 fail=0 incomplete=2
 ```
 
@@ -146,6 +149,6 @@ all required evidence was reported, subject to the review limits above.
 Smoke CI tests rejection paths, checks the fixed
 `EXTERNAL_SUT_ACCOUNTING_TEST_RESULT` marker with `grep -F`, validates the three
 incomplete templates and proves they fail the strict gate. These checks are not
-adapter acceptance. Consumers must add real runtime tests, fixed markers and
-matching CI checks in their implementation PRs. Paired evidence must link accepted
-Go and Java manifests at the same pin.
+adapter acceptance. The Java smoke job records a separate runtime manifest and
+applies `--require-complete`; Go and paired acceptance have their own remaining
+gates. Paired evidence must link accepted Go and Java manifests at the same pin.

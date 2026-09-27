@@ -451,7 +451,7 @@ jobs:
           grep -F 'EXTERNAL_SUT_TERMINAL_FAULT_RESULT validated=preserved unknown=absent late_terminal=ignored publication=after_bridge stop=error' external-evidence/go.log
           grep -F 'EXTERNAL_SUT_PROCESS_RESULT launch=owned pipes=real writer=bounded eof=supervised child=reaped stop=idempotent' external-evidence/go.log
           grep -F 'EXTERNAL_SUT_RUN_RESULT late_fatal=invalidates late_death=invalidates committed_result=preserved cancellation=run_error fingerprints=stable' external-evidence/go.log
-          grep -F 'EXTERNAL_SUT_FRAMING_RESULT pin=ee6b037255a499bedf7f88971a448bd343151dee malformed=rejected control=independent' external-evidence/go.log
+          grep -F 'EXTERNAL_SUT_FRAMING_RESULT pin=f32cd292246287a22c1a057012dd468f25c41c7d malformed=rejected control=independent' external-evidence/go.log
           grep -F 'EXTERNAL_SUT_VECTOR_SUBSET_RESULT cases=13 dispatch=closed assertions=observed acceptance=incomplete' external-evidence/go.log
 
       - name: Repeat external adapter race tests
@@ -477,7 +477,7 @@ jobs:
 
   external-java:
     if: github.event_name != 'schedule'
-    name: external Java peer (partial acceptance)
+    name: external Java peer (isolated acceptance)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -504,17 +504,17 @@ jobs:
           maven_command=(./mvnw -B verify -Dweavegate.repetitions=20 "-Dweavegate.evidence=$evidence/java.log")
           printf '%q ' "${maven_command[@]}" > "$evidence/command.txt"
           "${maven_command[@]}" | tee "$evidence/build.log"
-          grep -F 'EXTERNAL_SUT_JAVA_VECTOR_RESULT pin=ee6b037255a499bedf7f88971a448bd343151dee cases=28 framing=11 dispatch=closed assertions=observed' "$evidence/java.log"
+          grep -F 'EXTERNAL_SUT_JAVA_VECTOR_RESULT pin=f32cd292246287a22c1a057012dd468f25c41c7d cases=40 framing=11 dispatch=closed assertions=observed' "$evidence/java.log"
           grep -F 'EXTERNAL_SUT_JAVA_DISPATCH_RESULT events=closed arguments=closed assertions=closed injection=none' "$evidence/java.log"
           grep -F 'EXTERNAL_SUT_JAVA_EXCEPTION_SHAPE_RESULT phases=3 unknown_phase=rejected injection=none' "$evidence/java.log"
           grep -F 'EXTERNAL_SUT_JAVA_CANCEL_ORIGIN_RESULT context_then_stop=context stop_only=stop first_latched=retained' "$evidence/java.log"
-          grep -F 'EXTERNAL_SUT_JAVA_WIRE_MATRIX_RESULT coalesced=ordered invalid=fatal duplicates=consumed acceptance=incomplete' "$evidence/java.log"
+          grep -F 'EXTERNAL_SUT_JAVA_WIRE_MATRIX_RESULT coalesced=ordered invalid=fatal duplicates=consumed acceptance=complete' "$evidence/java.log"
           grep -F 'EXTERNAL_SUT_JAVA_DISABLED_RESULT sync_point=immediate stdin=unread protocol_threads=none transaction=unchanged' "$evidence/java.log"
           grep -F 'EXTERNAL_SUT_JAVA_SPRING_RESULT terminal=after_proxy_commit_close begin_failure=not_started rollback_only=rolled_back after_commit=committed_error unknown_commit=fatal unknown_rollback=fatal suppressed_close=fatal cancel=rolled_back jdbc_cancel=requested' "$evidence/java.log"
           grep -F 'EXTERNAL_SUT_JAVA_PROCESS_RESULT pipes=real success=stopped_eof_exit0 eof=startup,active,post_terminal,stop writer=broken,blocked watchdog=self_exit' "$evidence/java.log"
           grep -F 'EXTERNAL_SUT_JAVA_FAILURE_ORDER_RESULT body=before_cleanup after_commit=before_cleanup cancellation=later' "$evidence/java.log"
 
-      - name: Record observed checks without completing missing acceptance
+      - name: Require complete isolated Java acceptance
         run: |
           evidence=external-java-evidence
           python3 scripts/test-external-sut-java-results.py | tee "$evidence/accounting.log"
@@ -523,7 +523,7 @@ jobs:
             --log "$evidence/java.log" --build-log "$evidence/build.log" --output "$evidence/java.json" \
             --revision "$GITHUB_SHA" \
             --command "$(cat "$evidence/command.txt")"
-          python3 scripts/check-external-sut-acceptance.py --results "$evidence/java.json"
+          python3 scripts/check-external-sut-acceptance.py --results "$evidence/java.json" --require-complete
 
       - name: Upload Java peer evidence
         if: always()

@@ -58,8 +58,9 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_pin_matches_git_revision(self):
         pin = self.plan['vector']
-        # No network: this commit is an ancestor of the checkout. The docs
-        # job fetches full history to verify this pin.
+        # No network: full checkout history must retain the pinned commit.
+        subprocess.run(['git', 'merge-base', '--is-ancestor', pin['revision'], 'HEAD'],
+                       cwd=M['ROOT'], check=True)
         raw = subprocess.check_output(['git', 'show', pin['revision'] + ':' + pin['path']], cwd=M['ROOT'])
         self.assertEqual(hashlib.sha256(raw).hexdigest(), pin['sha256'])
 

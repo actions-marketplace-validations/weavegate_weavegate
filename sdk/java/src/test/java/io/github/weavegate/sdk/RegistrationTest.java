@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 import javax.sql.DataSource;
 
@@ -20,6 +21,7 @@ import org.springframework.transaction.TransactionManager;
 import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.DefaultTransactionAttribute;
 import org.springframework.transaction.interceptor.TransactionInterceptor;
 
 class RegistrationTest {
@@ -80,8 +82,160 @@ class RegistrationTest {
     }
 
     @TestFactory
+    Stream<DynamicTest> jdkProxyRejectsPointcutThatMatchesOnlyImplementationMethod() {
+        return RequirementsTest.repeated(() -> {
+            VectorHarness harness = new VectorHarness("independent").quiet();
+            TrackingDataSource dataSource = new TrackingDataSource(new DriverManagerDataSource(), harness.peer);
+            WeavegateTransactionManager manager = new WeavegateTransactionManager(dataSource, harness.peer);
+            ProxyFactory factory = new ProxyFactory(new InterfaceCommands());
+            factory.setProxyTargetClass(false);
+            var implementationAnnotation = new org.springframework.aop.support.StaticMethodMatcherPointcut() {
+                @Override public boolean matches(java.lang.reflect.Method method, Class<?> type) {
+                    return method.isAnnotationPresent(Transactional.class);
+                }
+            };
+            factory.addAdvisor(new org.springframework.aop.support.DefaultPointcutAdvisor(implementationAnnotation,
+                    new TransactionInterceptor((TransactionManager) manager,
+                            new AnnotationTransactionAttributeSource())));
+            Object proxy = factory.getProxy();
+            // Spring sees the unannotated interface method at this invocation,
+            // so the transaction interceptor is absent and this call returns.
+            ((CommandApi) proxy).selected();
+            SpringHost host = new SpringHost(Transactions.class, new String[0]);
+            host.bind(harness.peer);
+            try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+                context.registerBean("dataSource", DataSource.class, () -> dataSource);
+                context.registerBean("transactionManager", WeavegateTransactionManager.class, () -> manager);
+                context.registerBean("commands", Object.class, () -> proxy);
+                context.refresh();
+                ReflectionTestUtils.setField(host, "context", context);
+                ReflectionTestUtils.setField(host, "dataSource", dataSource);
+                assertThatThrownBy(() -> host.validateRegistration(List.of("selected"), List.of()))
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessage("command lacks transaction advice");
+            }
+        });
+    }
+
+    @TestFactory
+    Stream<DynamicTest> jdkProxyRejectsAttributesMissingFromInvokedMethod() {
+        return RequirementsTest.repeated(() -> {
+            VectorHarness harness = new VectorHarness("independent").quiet();
+            TrackingDataSource dataSource = new TrackingDataSource(new DriverManagerDataSource(), harness.peer);
+            WeavegateTransactionManager manager = new WeavegateTransactionManager(dataSource, harness.peer);
+            AtomicReference<java.lang.reflect.Method> runtimeMethod = new AtomicReference<>();
+            var attributes = (org.springframework.transaction.interceptor.TransactionAttributeSource) (method, type) -> {
+                runtimeMethod.set(method);
+                return method.getDeclaringClass() == InterfaceCommands.class
+                        ? new DefaultTransactionAttribute() : null;
+            };
+            ProxyFactory factory = new ProxyFactory(new InterfaceCommands());
+            factory.setProxyTargetClass(false);
+            factory.addAdvice(new TransactionInterceptor((TransactionManager) manager, attributes));
+            Object proxy = factory.getProxy();
+            ((CommandApi) proxy).selected();
+            assertThat(runtimeMethod.get().getDeclaringClass()).isEqualTo(CommandApi.class);
+
+            SpringHost host = new SpringHost(Transactions.class, new String[0]);
+            host.bind(harness.peer);
+            try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+                context.registerBean("dataSource", DataSource.class, () -> dataSource);
+                context.registerBean("transactionManager", WeavegateTransactionManager.class, () -> manager);
+                context.registerBean("commands", Object.class, () -> proxy);
+                context.refresh();
+                ReflectionTestUtils.setField(host, "context", context);
+                ReflectionTestUtils.setField(host, "dataSource", dataSource);
+                assertThatThrownBy(() -> host.validateRegistration(List.of("selected"), List.of()))
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessage("command requires one matching weavegate transaction advice");
+            }
+        });
+    }
+
+    @TestFactory
     Stream<DynamicTest> unrelatedTransactionAdviceDoesNotRejectCommand() {
         return RequirementsTest.repeated(() -> validateCustomProxy(false));
+    }
+
+    @TestFactory
+    Stream<DynamicTest> separateStaticTransactionAdvisorsObserveEachCommand() {
+        return RequirementsTest.repeated(() -> {
+            VectorHarness harness = new VectorHarness("independent").quiet();
+            TrackingDataSource dataSource = new TrackingDataSource(new DriverManagerDataSource(), harness.peer);
+            WeavegateTransactionManager manager = new WeavegateTransactionManager(dataSource, harness.peer);
+            ProxyFactory factory = new ProxyFactory(new Commands());
+            factory.setProxyTargetClass(true);
+            for (String name : List.of("selected", "other")) {
+                var pointcut = new org.springframework.aop.support.StaticMethodMatcherPointcut() {
+                    @Override public boolean matches(java.lang.reflect.Method method, Class<?> type) {
+                        return method.getName().equals(name);
+                    }
+                };
+                factory.addAdvisor(new org.springframework.aop.support.DefaultPointcutAdvisor(pointcut,
+                        new TransactionInterceptor((TransactionManager) manager,
+                                new AnnotationTransactionAttributeSource())));
+            }
+            Commands proxy = (Commands) factory.getProxy();
+            SpringHost host = new SpringHost(Transactions.class, new String[0]);
+            host.bind(harness.peer);
+            try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+                context.registerBean("dataSource", DataSource.class, () -> dataSource);
+                context.registerBean("transactionManager", WeavegateTransactionManager.class, () -> manager);
+                context.registerBean("commands", Commands.class, () -> proxy);
+                context.refresh();
+                ReflectionTestUtils.setField(host, "context", context);
+                ReflectionTestUtils.setField(host, "dataSource", dataSource);
+                assertThat(host.validateRegistration(List.of("selected", "other"), List.of()))
+                        .containsKeys("selected", "other");
+                for (String name : List.of("selected", "other")) {
+                    var method = Commands.class.getMethod(name);
+                    var chain = java.util.Arrays.stream(((org.springframework.aop.framework.Advised) proxy).getAdvisors())
+                            .filter(advisor -> !(advisor instanceof org.springframework.aop.PointcutAdvisor pointcut)
+                                    || pointcut.getPointcut().getMethodMatcher().matches(method, Commands.class))
+                            .toList();
+                    int transaction = -1;
+                    int observers = 0;
+                    for (int i = 0; i < chain.size(); i++) {
+                        if (chain.get(i).getAdvice() instanceof TransactionInterceptor) {
+                            transaction = i;
+                        }
+                        if (chain.get(i).getAdvice() instanceof FailureObserver) {
+                            observers++;
+                        }
+                    }
+                    assertThat(observers).isEqualTo(1);
+                    assertThat(transaction).isGreaterThanOrEqualTo(0);
+                    assertThat(chain.get(transaction + 1).getAdvice()).isInstanceOf(FailureObserver.class);
+                }
+            }
+        });
+    }
+
+    @TestFactory
+    Stream<DynamicTest> failureObserverMustBeImmediatelyInsideTransaction() {
+        return RequirementsTest.repeated(() -> {
+            VectorHarness harness = new VectorHarness("independent").quiet();
+            TrackingDataSource dataSource = new TrackingDataSource(new DriverManagerDataSource(), harness.peer);
+            WeavegateTransactionManager manager = new WeavegateTransactionManager(dataSource, harness.peer);
+            ProxyFactory factory = new ProxyFactory(new InterfaceCommands());
+            factory.addAdvice(new FailureObserver());
+            factory.addAdvice(new TransactionInterceptor((TransactionManager) manager,
+                    new AnnotationTransactionAttributeSource()));
+            Object proxy = factory.getProxy();
+            SpringHost host = new SpringHost(Transactions.class, new String[0]);
+            host.bind(harness.peer);
+            try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+                context.registerBean("dataSource", DataSource.class, () -> dataSource);
+                context.registerBean("transactionManager", WeavegateTransactionManager.class, () -> manager);
+                context.registerBean("commands", Object.class, () -> proxy);
+                context.refresh();
+                ReflectionTestUtils.setField(host, "context", context);
+                ReflectionTestUtils.setField(host, "dataSource", dataSource);
+                assertThatThrownBy(() -> host.validateRegistration(List.of("selected"), List.of()))
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessage("command failure observer must be inside transaction advice");
+            }
+        });
     }
 
     private static void validateCustomProxy(boolean jdk) {
@@ -101,6 +255,14 @@ class RegistrationTest {
         }
         factory.addAdvice(new TransactionInterceptor((TransactionManager) manager,
                 new AnnotationTransactionAttributeSource()));
+        var selected = new org.springframework.aop.support.StaticMethodMatcherPointcut() {
+            @Override public boolean matches(java.lang.reflect.Method method, Class<?> type) {
+                return method.getName().equals("selected");
+            }
+        };
+        var commandAdvice = new org.springframework.aop.support.DefaultPointcutAdvisor(selected,
+                (org.aopalliance.intercept.MethodInterceptor) invocation -> invocation.proceed());
+        factory.addAdvisor(commandAdvice);
         Object proxy = factory.getProxy();
         SpringHost host = new SpringHost(Transactions.class, new String[0]);
         host.bind(harness.peer);
@@ -112,6 +274,17 @@ class RegistrationTest {
             ReflectionTestUtils.setField(host, "context", context);
             ReflectionTestUtils.setField(host, "dataSource", dataSource);
             assertThat(host.validateRegistration(List.of("selected"), List.of())).containsKey("selected");
+            var advisors = ((org.springframework.aop.framework.Advised) proxy).getAdvisors();
+            int transaction = -1;
+            for (int i = 0; i < advisors.length; i++) {
+                if (advisors[i].getAdvice() instanceof TransactionInterceptor
+                        && advisors[i] != commandAdvice) {
+                    transaction = i;
+                }
+            }
+            assertThat(transaction).isGreaterThanOrEqualTo(0);
+            assertThat(advisors[transaction + 1].getAdvice()).isInstanceOf(FailureObserver.class);
+            assertThat(advisors[transaction + 2]).isSameAs(commandAdvice);
         }
     }
 

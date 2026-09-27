@@ -126,6 +126,9 @@ a result manifest from the repeated run.
   `docs<issue>/<slug>`.
 - Keep history readable. Avoid squashing a branch's work into a single commit
   once it has already been reviewed in pieces.
+- A pull request that pins a commit from its own branch in the external-SUT
+  acceptance plan must use a merge commit. Squash and rebase merges discard the
+  pinned commit's ancestry, so a later full-history checkout cannot verify it.
 
 ## Pull requests
 

@@ -59,6 +59,7 @@ Use these records when you need the rationale behind a durable design boundary.
 - [ADR 0012: Preserve evidence when diagnostic derivation fails](adr/0012-diagnostic-derivation-failure-evidence.md) — Learn why a completed run retains evidence and exits 5 when diagnostic production fails.
 - [ADR 0013: Scope a clean-run differential Oracle](adr/0013-clean-run-differential-oracle-scope.md) — See which second invariant justifies a richer Oracle and how v0.2.0 bounds it.
 - [ADR 0014: Adapter outcome boundaries](adr/0014-adapter-outcome-boundaries.md) — Session faults, unstarted invocations, cancellation, and error aggregation.
+- [ADR 0015: Java application execution boundary](adr/0015-java-execution-boundary.md) — Define trusted fixture SQL, JDBC ownership, and Spring proxy requirements.
 
 ## Measured results
 

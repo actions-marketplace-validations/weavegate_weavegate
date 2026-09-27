@@ -5057,6 +5057,785 @@
         "go"
       ],
       "execution": "isolated"
+    },
+    {
+      "id": "java_unknown_command",
+      "prefix": "ready",
+      "steps": [
+        {
+          "peer": "go",
+          "action": "local",
+          "event": "invoke_call",
+          "args": {
+            "invocation": "33333333333333333333333333333333",
+            "worker": "w1",
+            "command": "unregistered",
+            "context": "fresh"
+          },
+          "expect": [
+            "reserve_invocation",
+            "send_invoke",
+            "result_channel_created"
+          ]
+        },
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "invoke",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 2,
+            "body": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w1",
+              "command": "unregistered"
+            }
+          },
+          "expect": [
+            "fatal_protocol",
+            "no_terminal"
+          ],
+          "delivery": "exchange"
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "fatal",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 2,
+            "body": {
+              "kind": "protocol",
+              "message": "unknown command"
+            }
+          },
+          "expect": [
+            "script_records_fatal"
+          ],
+          "delivery": "exchange"
+        }
+      ],
+      "covers": [
+        "java_wire_unknown_command"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_unknown_point",
+      "prefix": "active",
+      "steps": [
+        {
+          "peer": "java",
+          "action": "local",
+          "event": "worker_arrives",
+          "args": {
+            "identity": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w1",
+              "arrival": "1",
+              "point": "unregistered_point"
+            }
+          },
+          "expect": [
+            "fatal_protocol",
+            "no_terminal"
+          ]
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "fatal",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 3,
+            "body": {
+              "kind": "protocol",
+              "message": "unknown sync point"
+            }
+          },
+          "expect": [
+            "script_records_fatal"
+          ],
+          "delivery": "exchange"
+        }
+      ],
+      "covers": [
+        "java_wire_unknown_point"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_wrong_direction",
+      "prefix": "ready",
+      "steps": [
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "ready",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 2,
+            "body": {
+              "commands": [
+                "assign"
+              ],
+              "points": [
+                "after_read",
+                "before_write"
+              ],
+              "capacity": 2
+            }
+          },
+          "expect": [
+            "fatal_protocol",
+            "no_terminal"
+          ],
+          "delivery": "input"
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "fatal",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 2,
+            "body": {
+              "kind": "protocol",
+              "message": "wrong message direction"
+            }
+          },
+          "expect": [
+            "script_records_fatal"
+          ],
+          "delivery": "exchange"
+        }
+      ],
+      "covers": [
+        "java_wire_matrix"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_immutable_worker",
+      "prefix": "active",
+      "steps": [
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "type": "cancel",
+            "seq": 3,
+            "body": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w2",
+              "reason": "stop"
+            }
+          },
+          "expect": [
+            "fatal_protocol",
+            "no_terminal"
+          ],
+          "delivery": "input"
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "fatal",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 3,
+            "body": {
+              "kind": "protocol",
+              "message": "invocation binding changed"
+            }
+          },
+          "expect": [
+            "script_records_fatal"
+          ],
+          "delivery": "exchange"
+        }
+      ],
+      "covers": [
+        "java_wire_matrix"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_semantic_duplicate_start",
+      "prefix": "ready",
+      "steps": [
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "start",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 2,
+            "body": {
+              "variant": "fixed",
+              "params": {
+                "request_id": "1"
+              },
+              "commands": [
+                "assign"
+              ],
+              "points": [
+                "after_read",
+                "before_write"
+              ],
+              "capacity": 2,
+              "database": {
+                "driver": "mysql",
+                "host": "127.0.0.1",
+                "port": 33060,
+                "name": "weavegate",
+                "username": "synthetic",
+                "password": "synthetic-only"
+              },
+              "startup_ms": 10000,
+              "cancel_ms": 1000
+            }
+          },
+          "expect": [
+            "fatal_protocol",
+            "no_terminal"
+          ],
+          "delivery": "input"
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "fatal",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 2,
+            "body": {
+              "kind": "protocol",
+              "message": "duplicate start"
+            }
+          },
+          "expect": [
+            "script_records_fatal"
+          ],
+          "delivery": "exchange"
+        }
+      ],
+      "covers": [
+        "java_wire_matrix"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_semantic_duplicate_invoke",
+      "prefix": "active",
+      "steps": [
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "invoke",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 3,
+            "body": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w1",
+              "command": "assign"
+            }
+          },
+          "expect": [
+            "fatal_protocol",
+            "no_redispatch"
+          ],
+          "delivery": "input"
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "fatal",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 3,
+            "body": {
+              "kind": "protocol",
+              "message": "duplicate invocation"
+            }
+          },
+          "expect": [
+            "script_records_fatal"
+          ],
+          "delivery": "exchange"
+        }
+      ],
+      "covers": [
+        "java_wire_matrix"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_released_arrival_duplicate",
+      "prefix": "released",
+      "steps": [
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "release",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 4,
+            "body": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w1",
+              "arrival": "1",
+              "point": "after_read"
+            }
+          },
+          "expect": [
+            "no_fatal",
+            "no_reply"
+          ],
+          "delivery": "input"
+        }
+      ],
+      "covers": [
+        "java_wire_matrix"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_retired_cancel",
+      "prefix": "completed",
+      "steps": [
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "type": "cancel",
+            "seq": 4,
+            "body": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w1",
+              "reason": "context"
+            }
+          },
+          "expect": [
+            "no_fatal",
+            "no_reply"
+          ],
+          "delivery": "input"
+        }
+      ],
+      "covers": [
+        "java_wire_matrix"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_sequence_gap",
+      "prefix": "ready",
+      "steps": [
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "invoke",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 3,
+            "body": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w1",
+              "command": "assign"
+            }
+          },
+          "expect": [
+            "fatal_protocol",
+            "no_terminal"
+          ],
+          "delivery": "input"
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "fatal",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 2,
+            "body": {
+              "kind": "protocol",
+              "message": "sequence gap"
+            }
+          },
+          "expect": [
+            "script_records_fatal"
+          ],
+          "delivery": "exchange"
+        }
+      ],
+      "covers": [
+        "java_wire_matrix"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_capacity_exceeded",
+      "prefix": "ready",
+      "steps": [
+        {
+          "peer": "go",
+          "action": "local",
+          "event": "invoke_call",
+          "args": {
+            "invocation": "33333333333333333333333333333333",
+            "worker": "w1",
+            "command": "assign",
+            "context": "fresh"
+          },
+          "expect": [
+            "reserve_invocation",
+            "send_invoke",
+            "result_channel_created"
+          ]
+        },
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "invoke",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 2,
+            "body": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w1",
+              "command": "assign"
+            }
+          },
+          "expect": [
+            "reserve_invocation",
+            "dispatch_once"
+          ],
+          "delivery": "exchange"
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "accepted",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 2,
+            "body": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w1"
+            }
+          },
+          "expect": [
+            "mark_accepted"
+          ],
+          "delivery": "exchange"
+        },
+        {
+          "peer": "go",
+          "action": "local",
+          "event": "invoke_call",
+          "args": {
+            "invocation": "44444444444444444444444444444444",
+            "worker": "w2",
+            "command": "assign",
+            "context": "fresh"
+          },
+          "expect": [
+            "reserve_invocation",
+            "send_invoke",
+            "result_channel_created"
+          ]
+        },
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "invoke",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 3,
+            "body": {
+              "invocation": "44444444444444444444444444444444",
+              "worker": "w2",
+              "command": "assign"
+            }
+          },
+          "expect": [
+            "reserve_invocation",
+            "dispatch_once"
+          ],
+          "delivery": "exchange"
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "accepted",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 3,
+            "body": {
+              "invocation": "44444444444444444444444444444444",
+              "worker": "w2"
+            }
+          },
+          "expect": [
+            "mark_accepted"
+          ],
+          "delivery": "exchange"
+        },
+        {
+          "peer": "go",
+          "action": "local",
+          "event": "invoke_call",
+          "args": {
+            "invocation": "55555555555555555555555555555555",
+            "worker": "w3",
+            "command": "assign",
+            "context": "fresh"
+          },
+          "expect": [
+            "reserve_invocation",
+            "send_invoke",
+            "result_channel_created"
+          ]
+        },
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "invoke",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 4,
+            "body": {
+              "invocation": "55555555555555555555555555555555",
+              "worker": "w3",
+              "command": "assign"
+            }
+          },
+          "expect": [
+            "fatal_protocol",
+            "no_terminal"
+          ],
+          "delivery": "exchange"
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "fatal",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 4,
+            "body": {
+              "kind": "protocol",
+              "message": "capacity exceeded"
+            }
+          },
+          "expect": [
+            "script_records_fatal"
+          ],
+          "delivery": "exchange"
+        }
+      ],
+      "covers": [
+        "java_wire_matrix"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_outbound_sequence_exhausted",
+      "prefix": "ready",
+      "steps": [
+        {
+          "peer": "java",
+          "action": "local",
+          "event": "exhaust_outbound_sequence",
+          "args": {
+            "limit": 100000
+          },
+          "expect": [
+            "outbound_sequence_at_limit"
+          ]
+        },
+        {
+          "peer": "go",
+          "action": "local",
+          "event": "invoke_call",
+          "args": {
+            "invocation": "33333333333333333333333333333333",
+            "worker": "w1",
+            "command": "assign",
+            "context": "fresh"
+          },
+          "expect": [
+            "reserve_invocation",
+            "send_invoke",
+            "result_channel_created"
+          ]
+        },
+        {
+          "peer": "java",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "invoke",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 2,
+            "body": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w1",
+              "command": "assign"
+            }
+          },
+          "expect": [
+            "fatal_without_wire",
+            "no_terminal"
+          ],
+          "delivery": "exchange"
+        }
+      ],
+      "covers": [
+        "java_wire_matrix"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
+    },
+    {
+      "id": "java_arrival_sequence_exhausted",
+      "prefix": "active",
+      "steps": [
+        {
+          "peer": "java",
+          "action": "local",
+          "event": "exhaust_arrivals",
+          "args": {
+            "invocation": "33333333333333333333333333333333",
+            "limit": 100000
+          },
+          "expect": [
+            "arrival_sequence_at_limit"
+          ]
+        },
+        {
+          "peer": "java",
+          "action": "local",
+          "event": "worker_arrives",
+          "args": {
+            "identity": {
+              "invocation": "33333333333333333333333333333333",
+              "worker": "w1",
+              "arrival": "100001",
+              "point": "after_read"
+            }
+          },
+          "expect": [
+            "fatal_protocol",
+            "no_terminal"
+          ]
+        },
+        {
+          "peer": "go",
+          "action": "receive",
+          "frame": {
+            "v": 1,
+            "type": "fatal",
+            "run": "11111111111111111111111111111111",
+            "session": "22222222222222222222222222222222",
+            "seq": 3,
+            "body": {
+              "kind": "protocol",
+              "message": "arrival sequence exhausted"
+            }
+          },
+          "expect": [
+            "script_records_fatal"
+          ],
+          "delivery": "exchange"
+        }
+      ],
+      "covers": [
+        "java_wire_matrix"
+      ],
+      "targets": [
+        "java"
+      ],
+      "execution": "isolated"
     }
   ],
   "framing": [
@@ -5287,6 +6066,20 @@
     ],
     "process_death_cleanup": [
       "process_death"
+    ],
+    "java_wire_matrix": [
+      "java_unknown_command",
+      "java_unknown_point",
+      "java_wrong_direction",
+      "java_immutable_worker",
+      "java_semantic_duplicate_start",
+      "java_semantic_duplicate_invoke",
+      "java_released_arrival_duplicate",
+      "java_retired_cancel",
+      "java_sequence_gap",
+      "java_capacity_exceeded",
+      "java_outbound_sequence_exhausted",
+      "java_arrival_sequence_exhausted"
     ]
   }
 }

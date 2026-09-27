@@ -14,7 +14,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 /** Commands over a synthetic seat table. Each uses one REQUIRED transaction through the bean proxy. */
 @Service
-public class SeatCommands {
+public class SeatCommands implements SeatCommandApi {
     private final JdbcTemplate jdbc;
 
     public SeatCommands(JdbcTemplate jdbc) {
@@ -139,6 +139,22 @@ public class SeatCommands {
     public void implicitCommit() {
         jdbc.execute("TRUNCATE TABLE seat");
         throw new AssertionError("implicit-commit SQL was not rejected");
+    }
+
+    @Transactional
+    @WeavegateCommand("multi_statement")
+    public void multiStatement(CommandContext context) {
+        jdbc.update("UPDATE seat SET taken_by = ? WHERE id = 1", context.worker());
+        jdbc.execute("SELECT 1; COMMIT");
+        throw new AssertionError("multi-statement SQL was not rejected");
+    }
+
+    @Transactional
+    @WeavegateCommand("session_select")
+    public void sessionSelect(CommandContext context) {
+        jdbc.update("UPDATE seat SET taken_by = ? WHERE id = 1", context.worker());
+        jdbc.execute("SELECT 1 INTO @weavegate_fixture");
+        throw new AssertionError("session-variable SQL was not rejected");
     }
 }
 
