@@ -3,48 +3,17 @@
 You need a running Docker daemon. The first run starts a real MySQL 8.4
 container, so allow extra time if Docker must pull the image.
 
-This tutorial uses the repository's reference fixture to reproduce a database
+This tutorial uses the bundled reference fixture to reproduce a database
 race, then replays the same schedule against its fixed implementation. It does
 not modify the fixture or your database.
 
-## 1. Clone the repository
+## 1. Install weavegate
 
-Time: about one minute, depending on the network.
+Choose [a release archive, source checkout, or go install](install.md). Follow
+that guide through `weavegate --version`, then run the commands below from the
+directory containing `fixtures/matching-slice/.weavegate/config.yaml`.
 
-```bash
-git clone https://github.com/weavegate/weavegate.git
-cd weavegate
-```
-
-Expected result: the checkout contains
-`fixtures/matching-slice/.weavegate/config.yaml`.
-
-## 2. Build from source
-
-Time: about one minute after Go has downloaded the module dependencies.
-
-Use the same source installation path documented in the
-[README](../README.md#from-source):
-
-```bash
-go build -o weavegate ./cmd/weavegate
-export PATH="$PWD:$PATH"
-```
-
-Confirm that this checkout's binary is available. The following is a captured
-output excerpt:
-
-```console
-$ weavegate --help
-Reach a verdict on a concurrent workflow and save the evidence.
-```
-
-Expected exit code: `0`.
-
-Release archives provide another installation path, but require a published
-release. See [From a release archive](../README.md#from-a-release-archive).
-
-## 3. Reproduce the violation
+## 2. Reproduce the violation
 
 Time: about 20 seconds after the MySQL image is available.
 
@@ -78,7 +47,7 @@ $ echo $?
 Expected exit code: `2`. Keep the `sch_7dcb74b1e506` schedule ID printed after
 `violating:`; the next step reuses it.
 
-## 4. Replay the fixed variant
+## 3. Replay the fixed variant
 
 Time: about 15 seconds after the MySQL image is available.
 

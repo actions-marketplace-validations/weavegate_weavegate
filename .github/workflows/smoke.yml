@@ -422,6 +422,7 @@ jobs:
           args: >-
             --offline
             --no-progress
+            --include-fragments
             './**/*.md'
           fail: true
 
