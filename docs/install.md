@@ -8,11 +8,13 @@ from the directory containing `fixtures/matching-slice/.weavegate/config.yaml`.
 
 Download the archive for your operating system and architecture from
 [GitHub Releases](https://github.com/weavegate/weavegate/releases). Extract one
-archive and run these commands from the directory where you downloaded it:
+archive and run these commands from the directory where you downloaded it.
+Enter the filename of the archive you chose when prompted:
 
 ```bash
-tar -xzf weavegate_*.tar.gz
-cd weavegate_*/
+read -r -p 'Downloaded archive filename: ' archive
+tar -xzf "$archive"
+cd "${archive%.tar.gz}"
 export PATH="$PWD:$PATH"
 weavegate --version
 ```
