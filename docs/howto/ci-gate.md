@@ -11,7 +11,10 @@ example does not use `pull_request_target`.
 The following workflow is runnable in this repository. It uses the committed
 [matching-slice configuration](../../fixtures/matching-slice/.weavegate/config.yaml)
 and its `concurrent-assign` scenario. The action is pinned to a commit that
-contains `action.yml`; the CLI release is selected separately.
+contains `action.yml`; the CLI release is selected separately. The pinned
+commit belongs to the change that introduced this action, so that change must
+be merged with a merge commit to keep the referenced SHA in `main`'s history.
+If the action is later changed, pin a reviewed commit containing that change.
 
 ```yaml
 name: weavegate gate
