@@ -26,6 +26,8 @@ func (a preparedAdapter) Start(ctx context.Context, _ sut.SUTConfig, _ *fixture.
 type idleFixture struct{}
 
 func (idleFixture) Reset(context.Context) error    { return nil }
+func (idleFixture) Ready(*fixture.DB) error        { return nil }
+func (idleFixture) Quarantine(error)               {}
 func (idleFixture) Teardown(context.Context) error { return nil }
 
 func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {

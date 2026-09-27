@@ -10,7 +10,8 @@ ADR 0010 identified three independent result boundaries needed before external
 execution can be enabled. A worker result requires a completed transaction and
 returned connection. Session failure and operation cancellation cannot truthfully
 be encoded as that worker result. This decision changes the Go adapter boundary;
-it does not implement the external transport or fixture quarantine.
+it does not implement the external transport. Fixture quarantine is the separate
+G3 boundary implemented under [#120](https://github.com/weavegate/weavegate/issues/120).
 
 ## G2: Latched session faults
 
@@ -21,7 +22,8 @@ must latch a fault before closing an invocation stream whose outcome is unknown.
 Unknown transaction outcome or unproven connection cleanup never produces a
 WorkerResult. Successful Stop must finish publishing session faults before returning; a
 failed Stop provides only an observed fault snapshot and does not prove cleanup.
-Quarantine after failed Stop remains the separate G3 decision.
+The fixture-owned quarantine contract for failed Stop and latched faults is
+recorded in [the fixture connection reference](../reference/fixture-connection.md).
 The Go-native adapter serializes fault publication with invocation admission
 under its adapter-state lock, so an invocation reserved before the fault may
 finish but no later invocation can enter the faulted session.

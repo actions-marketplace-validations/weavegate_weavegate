@@ -4,12 +4,23 @@ package fixture
 import (
 	"context"
 	"database/sql"
+	"errors"
 )
+
+// ErrQuarantined means cleanup was not proven. Reset is forbidden until
+// teardown and a successful new provision establish a fresh database.
+var ErrQuarantined = errors.New("fixture is quarantined")
 
 // Fixture manages the runtime lifecycle used by the orchestrator after an
 // isolated database fixture has been provisioned.
 type Fixture interface {
+	// Ready rejects a quarantined fixture or a stale database handle without
+	// changing state. Reset repeats its own checks before touching the database.
+	Ready(*DB) error
 	Reset(context.Context) error
+	// Quarantine latches an uncertain adapter shutdown or session fault and
+	// invalidates any connection descriptor before another Reset can begin.
+	Quarantine(error)
 	// Teardown must honor cancellation and deadlines on the supplied context.
 	// Callers provide a cleanup-specific context independent of the operation.
 	Teardown(context.Context) error

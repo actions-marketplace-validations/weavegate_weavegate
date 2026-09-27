@@ -31,14 +31,16 @@ const (
 type mysqlFixture struct {
 	mu sync.Mutex
 
-	container           *mysqlcontainer.MySQLContainer
-	admin               *sql.DB
-	db                  *DB
-	prepared            Prepared
-	provisioned         bool
-	adminPassword       string
-	applicationPassword string
-	terminateContainer  func(context.Context, *mysqlcontainer.MySQLContainer) error
+	container                   *mysqlcontainer.MySQLContainer
+	admin                       *sql.DB
+	db                          *DB
+	prepared                    Prepared
+	provisioned                 bool
+	quarantined                 error
+	quarantineTeardownSucceeded bool
+	adminPassword               string
+	applicationPassword         string
+	terminateContainer          func(context.Context, *mysqlcontainer.MySQLContainer) error
 }
 
 // NewMySQLFixture returns a fixture backed by a Testcontainers MySQL instance.
@@ -58,6 +60,9 @@ func (f *mysqlFixture) Provision(
 	}
 	if f.container != nil {
 		return nil, fmt.Errorf("provision MySQL fixture: cleanup pending; call Teardown before provisioning again")
+	}
+	if f.quarantined != nil && !f.quarantineTeardownSucceeded {
+		return nil, fmt.Errorf("provision MySQL fixture: quarantined cleanup pending; call Teardown before provisioning again: %w", ErrQuarantined)
 	}
 	if !prepared.valid || strings.TrimSpace(prepared.image) == "" {
 		return nil, fmt.Errorf("provision MySQL fixture: prepared fixture is required")
@@ -140,6 +145,8 @@ func (f *mysqlFixture) Provision(
 	f.db = handle
 	f.prepared = prepared.clone()
 	f.provisioned = true
+	f.quarantined = nil
+	f.quarantineTeardownSucceeded = false
 	f.adminPassword = adminPassword
 	f.applicationPassword = applicationPassword
 
@@ -164,6 +171,24 @@ func (f *mysqlFixture) cleanupFailedProvision(
 	})
 }
 
+func (f *mysqlFixture) Ready(db *DB) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var err error
+	switch {
+	case f.quarantined != nil:
+		err = errors.Join(ErrQuarantined, f.quarantined)
+	case !f.provisioned:
+		err = errors.New("not provisioned")
+	case db == nil || db != f.db || !db.Connection.Valid():
+		err = ErrConnectionDescriptorInvalid
+	}
+	if err != nil {
+		return redactConnectionError(fmt.Errorf("fixture unavailable: %w", err), f.adminPassword, f.applicationPassword)
+	}
+	return nil
+}
+
 func withProvisionCleanupContext(
 	operationCtx context.Context,
 	cleanup func(context.Context) error,
@@ -183,6 +208,9 @@ func (f *mysqlFixture) Reset(ctx context.Context) (returnErr error) {
 	defer func() {
 		returnErr = redactConnectionError(returnErr, f.adminPassword, f.applicationPassword)
 	}()
+	if f.quarantined != nil {
+		return fmt.Errorf("reset MySQL fixture: %w", errors.Join(ErrQuarantined, f.quarantined))
+	}
 
 	if !f.provisioned {
 		return fmt.Errorf("reset MySQL fixture: not provisioned")
@@ -228,6 +256,21 @@ func (f *mysqlFixture) Reset(ctx context.Context) (returnErr error) {
 	return nil
 }
 
+func (f *mysqlFixture) Quarantine(cause error) {
+	if cause == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.quarantined == nil {
+		f.quarantined = cause
+	}
+	f.quarantineTeardownSucceeded = false
+	if f.db != nil {
+		f.db.Connection.invalidate()
+	}
+}
+
 func (f *mysqlFixture) Teardown(ctx context.Context) (returnErr error) {
 	if ctx == nil {
 		return errors.New("teardown MySQL fixture: context is required")
@@ -248,6 +291,7 @@ func (f *mysqlFixture) Teardown(ctx context.Context) (returnErr error) {
 	}
 
 	if !f.provisioned && f.container == nil && f.admin == nil && f.db == nil {
+		f.quarantineTeardownSucceeded = true
 		return nil
 	}
 
@@ -277,6 +321,9 @@ func (f *mysqlFixture) Teardown(ctx context.Context) (returnErr error) {
 	f.provisioned = false
 	f.adminPassword = ""
 	f.applicationPassword = ""
+	if err == nil {
+		f.quarantineTeardownSucceeded = true
+	}
 
 	return err
 }

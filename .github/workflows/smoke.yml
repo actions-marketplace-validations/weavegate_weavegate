@@ -83,6 +83,7 @@ jobs:
           grep -F 'MATCHING_FIXTURE_RESULT request_id=42 project_requests=1 matching_sessions=0 assignments=0 reset=true' fixture.log
           grep -F 'FIXTURE_LOADER_RESULT migrations=2 seed=1 order=lexicographic' fixture.log
           grep -F 'FIXTURE_LIFECYCLE_RESULT image=mysql:8.4 provision_rows=1 reset_rows=1 prepared_snapshot=stable digests=stable descriptor_same_database=true descriptor_reset=valid credentials=separate teardown=invalidated stale_reprovision_auth=denied' fixture.log
+          grep -F 'FIXTURE_QUARANTINE_RECOVERY_RESULT reset_blocked=true descriptor_invalid=true failed_reprovision=blocked fresh_reprovision=ready stale_handle=blocked' fixture.log
 
       - name: Assert the SUT adapter invariants
         run: |
@@ -120,6 +121,7 @@ jobs:
           grep -F 'EXPLORE_UNKNOWN_TOTAL_RESULT total_known=false candidates=0 evaluated=3 violating_index=3 unknown_is_not_zero=true' fixture.log
           grep -F 'SCHEDULE_REPLAY_RESULT id=sch_ba00582f9632 steps=4 workers=2 per_worker_order=valid roundtrip=stable tamper=error' fixture.log
           grep -F 'ORCHESTRATOR_RUN_RESULT schedule=sch_ba00582f9632 workers=2 steps=4 timeouts=1 pending_resolved=1 terminal_done=2 cleanup=ok' fixture.log
+          grep -F 'FIXTURE_QUARANTINE_RESULT stop=failed direct_run=blocked replay=blocked old_bridge=closed resets=1 adapter_starts=1' fixture.log
           grep -F 'ORCHESTRATOR_REPLAY_CORE_RESULT schedule=sch_ba00582f9632 repeat=20 fingerprints=1 resets=20 flaky=false' fixture.log
           grep -F 'ORCHESTRATOR_ORACLE_RESULT schedule=sch_ba00582f9632 evaluations=20 oracles_per_evaluation=1 terminal_before_evaluation=true fingerprints=1 cleanup=ok flaky=false' fixture.log
           grep -F 'ORCHESTRATOR_CLASSIFY_RESULT timeout=timeout_inferred deadlock=mysql_deadlock_1213 distinct=true wrapped=true' fixture.log
