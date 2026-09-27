@@ -11,6 +11,7 @@ Use these guides when you are new to weavegate or ready to create and instrument
 - [Quickstart](quickstart.md) — Install weavegate and reproduce the bundled matching-slice failure.
 - [Instrument a workflow](howto/instrument.md) — Place sync-points around a contested decision without changing its semantics.
 - [Write a fixture](howto/write-a-fixture.md) — Package a schema, seed data, adapter, schedules, and oracle as a reusable fixture.
+- [Gate GitHub Actions with weavegate](howto/ci-gate.md) — Run a checksum-verified release, retain failed-run evidence, and replay a downloaded schedule.
 
 ## Reference (the contract)
 
