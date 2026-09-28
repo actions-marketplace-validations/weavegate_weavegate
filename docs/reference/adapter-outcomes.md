@@ -127,9 +127,10 @@ reports its actual cause instead of introducing an unrelated operation-canceled
 error. Only oracles judge invariants; the coordinator does not create violations.
 
 No new diagnostic, CLI configuration key, or report artifact version is introduced.
-Fixture quarantine after uncertain cleanup remains
-[#120](https://github.com/weavegate/weavegate/issues/120); this boundary does not
-claim that a failed Stop makes the fixture safe to reset.
+The [fixture connection contract](fixture-connection.md) defines the G3 quarantine
+boundary: failed Stop or a latched session fault invalidates fixture reuse until
+teardown and successful reprovisioning. A failed Stop does not make the fixture
+safe to reset, even if the child process has exited.
 
 ## Reproducing the evidence
 

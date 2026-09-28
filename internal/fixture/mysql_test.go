@@ -192,6 +192,20 @@ func TestMySQLFixtureLifecycle(t *testing.T) {
 	if got := itemCount(t, ctx, handle); got != 1 {
 		t.Fatalf("row count after canceled reset = %d, want 1", got)
 	}
+	quarantineCause := errors.New("adapter shutdown did not prove database cleanup")
+	fixture.Quarantine(quarantineCause)
+	if descriptor.Valid() || handle.Connection.Valid() {
+		t.Fatal("quarantine left a fixture connection descriptor valid")
+	}
+	if password, err := descriptor.Password(); !errors.Is(err, ErrConnectionDescriptorInvalid) || password != "" {
+		t.Fatalf("quarantined descriptor password = %q, error = %v", password, err)
+	}
+	if err := fixture.Ready(handle); !errors.Is(err, ErrQuarantined) || !errors.Is(err, quarantineCause) {
+		t.Fatalf("quarantined fixture Ready = %v", err)
+	}
+	if err := fixture.Reset(ctx); !errors.Is(err, ErrQuarantined) || !errors.Is(err, quarantineCause) {
+		t.Fatalf("quarantined fixture Reset = %v", err)
+	}
 
 	if err := fixture.Teardown(ctx); err != nil {
 		t.Fatalf("teardown MySQL fixture: %v", err)
@@ -202,10 +216,29 @@ func TestMySQLFixtureLifecycle(t *testing.T) {
 	if password, err := descriptor.Password(); !errors.Is(err, ErrConnectionDescriptorInvalid) || password != "" {
 		t.Fatalf("torn-down descriptor password = %q, error = %v", password, err)
 	}
+	badPrepared, err := Prepare(spec)
+	if err != nil {
+		t.Fatalf("prepare edited SQL for failed reprovision: %v", err)
+	}
+	if _, err := fixture.Provision(ctx, badPrepared); err == nil || !strings.Contains(err.Error(), "apply SQL") {
+		t.Fatalf("bad SQL reprovision error = %v, want SQL application failure", err)
+	}
+	if err := fixture.Ready(handle); !errors.Is(err, ErrQuarantined) {
+		t.Fatalf("failed reprovision cleared quarantine: %v", err)
+	}
 
 	reprovisioned, err := fixture.Provision(ctx, prepared)
 	if err != nil {
 		t.Fatalf("reprovision MySQL fixture: %v", err)
+	}
+	if err := fixture.Ready(reprovisioned); err != nil {
+		t.Fatalf("fresh reprovision still quarantined: %v", err)
+	}
+	if err := fixture.Ready(handle); !errors.Is(err, ErrConnectionDescriptorInvalid) {
+		t.Fatalf("stale handle after reprovision = %v, want invalid descriptor", err)
+	}
+	if err := fixture.Reset(ctx); err != nil {
+		t.Fatalf("reset after reprovision: %v", err)
 	}
 	freshPassword, err := reprovisioned.Connection.Password()
 	if err != nil {
@@ -232,6 +265,7 @@ func TestMySQLFixtureLifecycle(t *testing.T) {
 	if err := fixture.Teardown(ctx); err != nil {
 		t.Fatalf("teardown reprovisioned MySQL fixture: %v", err)
 	}
+	t.Log("FIXTURE_QUARANTINE_RECOVERY_RESULT reset_blocked=true descriptor_invalid=true failed_reprovision=blocked fresh_reprovision=ready stale_handle=blocked")
 	if err := fixture.Teardown(ctx); err != nil {
 		t.Fatalf("teardown MySQL fixture twice: %v", err)
 	}
@@ -408,6 +442,7 @@ func TestMySQLFixturePreservesFailedProvisionContainerForTeardown(t *testing.T) 
 
 func TestMySQLFixtureTeardownRetriesFailedTermination(t *testing.T) {
 	wantErr := errors.New("terminate failed")
+	quarantineCause := errors.New("adapter Stop failed")
 	const adminPassword = "admin-retry-secret"
 	const applicationPassword = "application-retry-secret"
 	terminateCalls := 0
@@ -429,6 +464,7 @@ func TestMySQLFixtureTeardownRetriesFailedTermination(t *testing.T) {
 			return nil
 		},
 	}
+	fixture.Quarantine(quarantineCause)
 
 	if err := fixture.Teardown(context.Background()); !errors.Is(err, wantErr) {
 		t.Fatalf("first teardown error = %v, want %v", err, wantErr)
@@ -441,6 +477,9 @@ func TestMySQLFixtureTeardownRetriesFailedTermination(t *testing.T) {
 	if fixture.db.Connection.Valid() {
 		t.Fatal("failed teardown left the connection descriptor valid")
 	}
+	if err := fixture.Ready(fixture.db); !errors.Is(err, ErrQuarantined) || !errors.Is(err, quarantineCause) {
+		t.Fatalf("failed teardown lost quarantine: %v", err)
+	}
 	if _, err := fixture.Provision(context.Background(), Prepared{}); err == nil || !strings.Contains(err.Error(), "already provisioned") {
 		t.Fatalf("provision during pending cleanup error = %v, want already provisioned", err)
 	}
@@ -450,6 +489,9 @@ func TestMySQLFixtureTeardownRetriesFailedTermination(t *testing.T) {
 	}
 	if fixture.container != nil || fixture.provisioned {
 		t.Fatal("successful teardown retained fixture state")
+	}
+	if err := fixture.Ready(nil); !errors.Is(err, ErrQuarantined) || !errors.Is(err, quarantineCause) {
+		t.Fatalf("teardown cleared quarantine before reprovision: %v", err)
 	}
 	if fixture.adminPassword != "" || fixture.applicationPassword != "" {
 		t.Fatal("successful teardown retained fixture credentials")
@@ -537,6 +579,7 @@ func assertMySQLFixtureBoundsPoolClose(t *testing.T) {
 			return nil
 		},
 	}
+	fixture.Quarantine(errors.New("adapter Stop failed"))
 
 	started := time.Now()
 	err = fixture.Teardown(context.Background())
@@ -557,6 +600,12 @@ func assertMySQLFixtureBoundsPoolClose(t *testing.T) {
 	}
 	if fixture.container != nil || fixture.provisioned {
 		t.Fatal("successful termination retained fixture state after pool-close timeout")
+	}
+	if _, err := fixture.Provision(context.Background(), Prepared{}); !errors.Is(err, ErrQuarantined) {
+		t.Fatalf("provision after failed teardown = %v, want quarantine", err)
+	}
+	if err := fixture.Teardown(context.Background()); err != nil {
+		t.Fatalf("retry teardown after container termination: %v", err)
 	}
 }
 

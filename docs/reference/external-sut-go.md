@@ -111,12 +111,10 @@ remain unchanged. The manifest and referenced log are review evidence, not an
 automatic proof that an observer establishes every claimed effect.
 
 The strict `--require-complete` gate still fails. Remaining work includes the
-rest of the shared Go histories and their run-level observers, the complete
-wire-matrix acceptance family, and fixture quarantine after uncertain cleanup
-([#120](https://github.com/weavegate/weavegate/issues/120)). This adapter never
-authorizes Reset after a failed Stop, and this change does not add the persistent
-fixture boundary needed to reject that Reset. Process reaping is not evidence
-of completed server rollback. Keep
+rest of the shared Go histories and their run-level observers, and the complete
+wire-matrix acceptance family. The [fixture quarantine boundary](fixture-connection.md)
+now rejects Reset after a failed Stop or latched session fault. Process reaping
+is not evidence of completed server rollback. Keep
 [#108](https://github.com/weavegate/weavegate/issues/108) open until all applicable
 Go acceptance rows pass; CLI launch/budget composition remains
 [#110](https://github.com/weavegate/weavegate/issues/110), and live paired MySQL
