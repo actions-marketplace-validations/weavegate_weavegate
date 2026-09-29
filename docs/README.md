@@ -78,3 +78,4 @@ Use these experiments for reproduced observations; their measured values are tie
 Use these notes when maintaining repository-facing documentation and visuals.
 
 - [README editorial and visual maintenance](maintainers/readme-maintenance.md) — Follow the content, evidence, and visual contracts for focused README updates.
+- [Action release and Marketplace publication](maintainers/action-publication.md) — Prepare exact-tag CLI defaults, prerelease adoption evidence, and manual final-release publication.

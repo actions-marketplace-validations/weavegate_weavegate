@@ -73,11 +73,24 @@ def verified_archive(version, arch, base_url=RELEASES):
     return name, archive, digest
 
 
+def release_version():
+    version = os.environ.get("WEAVEGATE_VERSION", "")
+    if version:
+        if not VERSION.fullmatch(version):
+            raise ValueError("version must be a published vX.Y.Z release tag")
+        return version
+    action_ref = os.environ.get("WEAVEGATE_ACTION_REF", "")
+    if not VERSION.fullmatch(action_ref):
+        raise ValueError(
+            "set version to a published vX.Y.Z release tag when using a SHA, "
+            "branch, local action, or moving major/minor tag"
+        )
+    return action_ref
+
+
 def install():
     root = evidence_dir()
-    version = os.environ["WEAVEGATE_VERSION"]
-    if not VERSION.fullmatch(version):
-        raise ValueError("version must be a published vX.Y.Z release tag")
+    version = release_version()
     if platform.system() != "Linux":
         raise ValueError("the action requires a Linux runner with Docker")
     arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())

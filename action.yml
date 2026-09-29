@@ -1,9 +1,13 @@
 name: weavegate gate
 description: Run a published weavegate release and retain evidence before applying its exit-code gate
+branding:
+  icon: shield
+  color: green
 inputs:
   version:
-    description: Published weavegate release tag (for example v0.1.0-alpha)
-    required: true
+    description: Published CLI release tag; defaults to the action's exact vX.Y.Z[-prerelease] ref. Required for SHA, branch, or local action use.
+    required: false
+    default: ''
   config:
     description: Configuration file path, relative to the caller workspace or absolute
     required: true
@@ -58,6 +62,7 @@ runs:
       shell: bash
       env:
         WEAVEGATE_VERSION: ${{ inputs.version }}
+        WEAVEGATE_ACTION_REF: ${{ github.action_ref }}
         WEAVEGATE_EVIDENCE_DIR: ${{ steps.prepare.outputs.evidence_dir }}
       run: python3 "$GITHUB_ACTION_PATH/scripts/actions-gate.py" install
     - id: run
