@@ -116,6 +116,46 @@ python3 scripts/test-external-sut-java-results.py
 See the [Java peer reference](docs/reference/external-sut-java.md) for recording
 a result manifest from the repeated run.
 
+## Dependency updates
+
+`NOTICE` is a generated inventory of the third-party modules linked into the
+`weavegate` binary for the four release targets, with each module's version and
+license text. The smoke workflow's `notice` job regenerates it and fails on any
+difference, and the `main` ruleset requires that job. A pull request that
+changes a linked module version therefore cannot merge until `NOTICE` agrees
+with `go.mod`.
+
+Any pull request that changes `go.mod` or `go.sum` regenerates the inventory in
+the same pull request:
+
+```bash
+./scripts/gen-notice.sh
+git diff --exit-code -- NOTICE
+```
+
+The generator needs the Go toolchain and network access; it installs its
+pinned license tool into a temporary directory. The second command exits 0
+when the committed inventory is already current.
+
+An automated Go module update changes only `go.mod` and `go.sum`, so its
+`notice` check fails until a maintainer adds the regenerated inventory to the
+update branch:
+
+```bash
+gh pr checkout <number>
+./scripts/gen-notice.sh
+git add NOTICE
+git commit -m "chore(deps): refresh NOTICE for <module> <version> #<number>"
+git push
+```
+
+Merge only after the `notice` check passes. If `NOTICE` is unchanged after
+regeneration, the update did not touch a linked module — a GitHub Actions
+update or a test-only module, for example — and the check needs no extra
+commit. Once a maintainer commit is on the update branch, bring it up to date
+by merging `main` into it; asking Dependabot to recreate the pull request
+discards the regenerated inventory.
+
 ## Determinism and evidence rules
 
 - A test that claims something about engine behavior must produce the same
