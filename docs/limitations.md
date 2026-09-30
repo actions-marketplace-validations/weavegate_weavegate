@@ -32,13 +32,16 @@ The complete lookup order and strict file contract are documented under
 the emitted portable file is documented in the
 [report schema reference](reference/report-schema.md#schedulejson).
 
-## The CLI runs built-in entrypoints only
+## External execution requires an instrumented child
 
-The current CLI does not load an arbitrary application workflow or external
-fixture. It selects a Go adapter and entrypoint compiled into the binary;
-`matching-slice` is the only registered entrypoint. The supported adapter,
-entrypoint, and variant boundary is listed in the
-[configuration reference](reference/config.md#built-in-entrypoints).
+The CLI selects a compiled Go-native entrypoint or launches one explicitly
+instrumented external JVM from configuration. It does not discover commands
+inside arbitrary JARs before launch or build application code. The child must
+confirm its command, point, and capacity registration at startup. The CLI's
+minimal external JVM integration test proves launch and replay composition;
+the live Spring/JDBC reproduction is tracked by
+[#111](https://github.com/weavegate/weavegate/issues/111). See the
+[configuration reference](reference/config.md#external-jvm).
 
 ## Worker arguments are scenario-wide
 

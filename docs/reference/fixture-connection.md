@@ -2,8 +2,8 @@
 
 `fixture.DB.Connection` is the fixture-owned description of the application
 account for the same prepared database exposed through `fixture.DB.SQL`. It is
-an engine extension boundary for adapters that cannot consume a Go SQL pool;
-it does not enable the planned external SUT adapter by itself.
+an engine extension boundary for adapters that cannot consume a Go SQL pool.
+The [external adapter](config.md#external-jvm) consumes it at startup.
 
 ## Shape and access
 

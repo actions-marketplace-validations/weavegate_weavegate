@@ -11,9 +11,10 @@ document is rejected rather than silently ignored.
 | `target.db` | string | yes | — | Must start with `mysql:`; only MySQL is supported today. |
 | `target.schema.migrations` | string (path) | yes | — | Directory of `*.sql` migration files, applied in filename order. Relative to the config file's own directory, not the current working directory. |
 | `target.schema.seed` | string (path) | yes | — | Seed SQL file, applied after migrations. Same path-resolution rule as `migrations`. |
-| `target.sut.adapter` | string | yes | — | Must be `gonative`. It selects how the run's adapter is composed; the external SUT adapter of [ADR 0010](../adr/0010-external-sut-protocol.md) is planned and not accepted yet. |
-| `target.sut.entrypoint` | string | yes | — | A built-in entrypoint ID, **not a path** (see [Built-in entrypoints](#built-in-entrypoints)). A value containing `/` or `.` is rejected. |
-| `target.sut.variant` | string | yes | — | Must be one of the entrypoint's declared variants (for `matching-slice`: `vulnerable` or `fixed`). Overridable with `--variant`. |
+| `target.sut.adapter` | string | yes | — | `gonative` or `external`. Selects the adapter composition. |
+| `target.sut.entrypoint` | string | `gonative` only | — | A built-in entrypoint ID, **not a path** (see [Built-in entrypoints](#built-in-entrypoints)). Forbidden for `external`. |
+| `target.sut.variant` | string | yes | — | For `gonative`, one of the entrypoint's variants; for `external`, a valid wire name sent to the child. Overridable with `--variant`. |
+| `target.sut.external` | object | `external` only | — | The owned JVM launch; forbidden for `gonative`. See [External JVM](#external-jvm). |
 | `scenarios.<name>.workers` | list | yes, ≥1 | — | Each worker has `id`, `command`, and `args` (see [Worker args](#worker-args)). |
 | `scenarios.<name>.sync_points` | list of strings | yes, ≥1 | — | The sync-point order every worker is coordinated against. |
 | `oracle.assertions` | list | yes, ≥1 | — | Each assertion has `id`, `sql`, and `expect_rows`. |
@@ -46,9 +47,50 @@ only entrypoint registered today:
 | --- | --- | --- | --- |
 | `matching-slice` | `gonative` | `vulnerable`, `fixed` | `fixtures/matching-slice/schedules` |
 
-An unregistered entrypoint or unsupported variant is rejected with the list
-of known values. Running an external fixture from the CLI is not supported
-yet.
+An unregistered entrypoint or unsupported Go-native variant is rejected with
+the list of known values.
+
+## External JVM
+
+`adapter: external` launches exactly one prebuilt executable JAR per schedule
+run with `java -jar <jar>`. Its child uses [wire v1](external-sut-v1.md) over
+owned stdin/stdout. The JAR must contain a `Main-Class` manifest entry. The
+following is a **constructed configuration example**, not captured output:
+
+```yaml
+target:
+  db: mysql:8.4
+  schema:
+    migrations: ../db/migration
+    seed: ../db/seed.sql
+  sut:
+    adapter: external
+    variant: vulnerable
+    external:
+      java: java
+      jar: ../app/seat.jar
+      capacity: 2
+      startup_timeout_ms: 30000
+      cancel_timeout_ms: 5000
+      stop_timeout_ms: 10000
+```
+
+| Key | Rule |
+| --- | --- |
+| `java` | Required executable path, or a bare command found on `PATH`. Paths containing a directory component are relative to the config directory. |
+| `jar` | Required readable, regular `.jar` file with a `Main-Class` manifest entry. Relative to the config directory. |
+| `capacity` | Required integer from 1 to 1024, at least the selected scenario's worker count. |
+| `startup_timeout_ms`, `cancel_timeout_ms`, `stop_timeout_ms` | Required positive integers at most 2147483647. Cancellation cannot exceed stop. |
+
+There are no configurable shell arguments, environment overrides, credentials,
+or wire-version switches. The fixture's application database account travels
+only in the private start frame. The selected scenario supplies sorted unique
+commands, ordered sync points, and scenario-wide worker parameters. The child
+must confirm exactly those commands, points, and capacity at `ready`, before
+any worker starts. Unknown commands in the application are detected at that
+startup check; they cannot be inspected from a JAR during static preflight.
+For an external adapter, replay IDs resolve from saved runs or portable
+schedule files; there is no embedded external schedule registry.
 
 ## Worker args
 
@@ -72,12 +114,21 @@ workers:
 
 ## Timing
 
-Four orchestrator timeouts are derived from `run.arrive_timeout_ms` as fixed
-multiples: block-inference = 1×, step = 20×, run = 60×, stop = 20×. The
+For `gonative`, four orchestrator timeouts are derived from
+`run.arrive_timeout_ms` as fixed multiples: block-inference = 1×, step = 20×,
+run = 60×, stop = 20×. The
 default `arrive_timeout_ms` (3000) is safe but slow for a scenario with a
 lock-blocked path — the `matching-slice` example config sets it to `250`,
 because the "fixed" variant's blocked worker waits out this exact timeout on
 every run.
+
+For `external`, block inference and step retain 1× and 20×. The run deadline
+is `startup_timeout_ms + 60 × arrive_timeout_ms`; it includes reset, launch,
+startup, execution, and Oracle evaluation. Startup also has its own budget,
+capped by the remaining run deadline. Stop uses `stop_timeout_ms` in a
+detached cleanup context. The adapter reserves half for termination/reaping
+and sends only its remaining graceful portion in the wire stop frame. All
+arithmetic is checked before provisioning. See [ADR 0016](../adr/0016-external-cli-composition.md).
 
 Measure the effect on the same replay rather than inferring it from one run.
 The following commands time 20 repeats with the committed 250ms value, then
@@ -127,8 +178,9 @@ outside the key table because they do not belong to one configuration key.
 | `scenarios` | At least one scenario is required, and a scenario name cannot be blank. | `scenarios: at least one scenario is required`; `scenarios: scenario name is blank` |
 | `target.db` | The value is required and must start with `mysql:`. | `target.db is required`; `target.db "<value>" must have prefix "mysql:"` |
 | `target.schema.migrations`, `target.schema.seed` | Both values are required. | `target.schema.<key> is required` |
-| `target.sut.adapter` | The value is required and must be a supported adapter. The supported value is `gonative`. | `target.sut.adapter is required`; `target.sut.adapter "<value>" is not supported; supported adapters: gonative` |
-| `target.sut.entrypoint` | The value is required. It is a built-in ID, so `/` and `.` are rejected. | `target.sut.entrypoint is required`; `target.sut.entrypoint "<value>" is a built-in ID, not a path` |
+| `target.sut.adapter` | The value is required and must be `gonative` or `external`. | `target.sut.adapter is required`; `target.sut.adapter "<value>" is not supported` |
+| `target.sut.entrypoint` | Required for `gonative`; forbidden for `external`. Built-in IDs reject `/` and `.`. | `target.sut.entrypoint is required`; `target.sut.entrypoint is only supported with adapter gonative` |
+| `target.sut.external` | Required for `external`; forbidden for `gonative`. Its keys and supported combinations are checked before provisioning. | `target.sut.external is required for adapter external`; `target.sut.external is only supported with adapter external` |
 | `target.sut.variant` | The value is required. | `target.sut.variant is required` |
 | `scenarios.<name>.workers` | At least one worker is required. | `scenarios["<name>"]: at least one worker is required` |
 | `scenarios.<name>.workers[].id` | Every ID is required and must be unique within the scenario. | `workers[<index>]: id is required`; `workers[<index>]: duplicate worker id "<id>"` |

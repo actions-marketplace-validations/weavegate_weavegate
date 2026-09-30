@@ -3,9 +3,9 @@
 [`internal/sut/external`](../../internal/sut/external/) implements the Go peer
 of [wire v1](external-sut-v1.md). It launches one owned process with
 `exec(java, "-jar", jar)` and communicates over framed stdin/stdout. The
-[Java peer](external-sut-java.md) is a separate implementation; CLI selection is
-not implemented. The package is not enabled by
-the CLI, and its complete Go acceptance gate has not passed.
+[Java peer](external-sut-java.md) is a separate implementation. The CLI can
+select this adapter through [configuration](config.md#external-jvm); its
+complete Go acceptance gate has not passed.
 
 ## Construction and ownership
 
@@ -112,12 +112,10 @@ automatic proof that an observer establishes every claimed effect.
 
 The strict `--require-complete` gate still fails. Remaining work includes the
 rest of the shared Go histories and their run-level observers, the complete
-wire-matrix acceptance family, and fixture quarantine after uncertain cleanup
-([#120](https://github.com/weavegate/weavegate/issues/120)). This adapter never
-authorizes Reset after a failed Stop, and this change does not add the persistent
-fixture boundary needed to reject that Reset. Process reaping is not evidence
-of completed server rollback. Keep
+wire-matrix acceptance family. The engine now quarantines a fixture after
+uncertain cleanup under [#120](https://github.com/weavegate/weavegate/issues/120).
+Process reaping alone is not evidence of completed server rollback. Keep
 [#108](https://github.com/weavegate/weavegate/issues/108) open until all applicable
-Go acceptance rows pass; CLI launch/budget composition remains
-[#110](https://github.com/weavegate/weavegate/issues/110), and live paired MySQL
+Go acceptance rows pass; CLI launch/budget composition is recorded in
+[ADR 0016](../adr/0016-external-cli-composition.md), and live paired MySQL
 evidence remains [#111](https://github.com/weavegate/weavegate/issues/111).

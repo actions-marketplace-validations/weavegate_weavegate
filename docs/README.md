@@ -26,8 +26,8 @@ Use these pages when you need the exact CLI, configuration, artifact, or diagnos
 - [Fixture application connection descriptor](reference/fixture-connection.md) — Consume the prepared database's application endpoint without leaking its ephemeral credential.
 - [Report schema](reference/report-schema.md) — Consume run artifacts without guessing their fields or stability guarantees.
 - [Adapter outcomes](reference/adapter-outcomes.md) — Invocation streams, session faults, cancellation boundaries, and reproducible Go evidence.
-- [External SUT wire v1 (proposed)](reference/external-sut-v1.md) — Review the child-process protocol; external CLI execution is not enabled.
-- [Go external SUT adapter (in development)](reference/external-sut-go.md) — Inspect the Go peer, executable evidence, and remaining acceptance before enablement.
+- [External SUT wire v1 (proposed)](reference/external-sut-v1.md) — Review the child-process protocol and its enabled CLI boundary.
+- [Go external SUT adapter (in development)](reference/external-sut-go.md) — Inspect the Go peer, executable evidence, and remaining acceptance.
 - [Java Spring external SUT peer (in development)](reference/external-sut-java.md) — Opt into Spring instrumentation and inspect the Java peer's evidence and remaining acceptance.
 - [External SUT conformance (proposed)](reference/external-sut-conformance.md) — Share protocol vectors, lifecycle sequences, and implementation acceptance checks.
 - [External SUT acceptance accounting](reference/external-sut-acceptance.md) — Pin shared vectors and account for per-target handlers, results, and missing runtime evidence.
@@ -58,12 +58,13 @@ Use these records when you need the rationale behind a durable design boundary.
 - [ADR 0007: Artifact version policy](adr/0007-artifact-version-policy.md) — Check compatibility rules for persisted run artifacts.
 - [ADR 0008: Diagnostic evidence model](adr/0008-diagnostic-evidence-model.md) — Understand how structured evidence supports a diagnostic verdict.
 - [ADR 0009: Portable schedule artifact and lookup](adr/0009-schedule-portability.md) — Learn how schedules remain portable and are resolved for replay.
-- [ADR 0010: External SUT protocol (proposed)](adr/0010-external-sut-protocol.md) — Review the planned Spring transaction boundary and required engine extension decisions.
+- [ADR 0010: External SUT protocol](adr/0010-external-sut-protocol.md) — Review the Spring transaction boundary and engine extension decisions.
 - [ADR 0011: Report Markdown rendering boundary](adr/0011-report-markdown-rendering-boundary.md) — See how runtime values remain one-line and inert in Markdown reports.
 - [ADR 0012: Preserve evidence when diagnostic derivation fails](adr/0012-diagnostic-derivation-failure-evidence.md) — Learn why a completed run retains evidence and exits 5 when diagnostic production fails.
 - [ADR 0013: Scope a clean-run differential Oracle](adr/0013-clean-run-differential-oracle-scope.md) — See which second invariant justifies a richer Oracle and how v0.2.0 bounds it.
 - [ADR 0014: Adapter outcome boundaries](adr/0014-adapter-outcome-boundaries.md) — Session faults, unstarted invocations, cancellation, and error aggregation.
 - [ADR 0015: Java application execution boundary](adr/0015-java-execution-boundary.md) — Define trusted fixture SQL, JDBC ownership, and Spring proxy requirements.
+- [ADR 0016: External CLI composition and budgets](adr/0016-external-cli-composition.md) — Explain launch preflight, registration, provenance, and deadlines.
 
 ## Measured results
 

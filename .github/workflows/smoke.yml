@@ -36,6 +36,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set up Java for external CLI integration
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
       - name: Record runner environment
         continue-on-error: true
         run: |
@@ -163,6 +169,7 @@ jobs:
 
       - name: Assert the command-line contract
         run: |
+          grep -F 'EXTERNAL_CLI_RESULT separate_jvm=true config_only=true repeat=2 manifest_sha256=true' fixture.log
           grep -F 'FIXTURE_DIGEST_RESULT migration=sha256_full seed=sha256_full framing=byte_length collision=distinct' fixture.log
           grep -F 'CONFIG_LOAD_RESULT scenarios=1 workers=2 sync_points=2 assertions=1 repeat=20 arrive_timeout_ms=250 explore_passes=3 defaults=applied relative_paths=resolved unknown_key=error report_section=error trailing_document=error missing_required=error non_mysql_db=error path_entrypoint=error bad_expect_rows=error missing_expect_rows=error bad_assertion_id=error duplicate_worker=error duplicate_sync_point=error nonpositive_run_value=error explicit_zero_run_value=error worker_args_mismatch=error worker_args_key_presence_mismatch=error unsupported_adapter=error' fixture.log
           grep -F 'EXIT_CODE_RESULT pass=0 violation=2 flaky=3 fixture=4 input=5 output=5 interrupted=130 unclassified=5 error_beats_verdict=true flaky_beats_violation=true cleanup_on_pass=4 cleanup_keeps_violation=2 cleanup_never_masks=true' fixture.log

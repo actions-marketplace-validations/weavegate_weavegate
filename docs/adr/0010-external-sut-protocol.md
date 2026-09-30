@@ -1,18 +1,19 @@
 # ADR 0010: External SUT protocol and Spring transaction lifecycle
 
-- Status: Proposed — Go and Java peers in development; external CLI execution is not enabled
+- Status: Accepted — external CLI selection implemented; paired Spring evidence pending
 - Date: 2026-09-08
 - Issue: [#107](https://github.com/weavegate/weavegate/issues/107)
 - Inspected baseline: `078474f94cad6d1c1ffde0d44fada6853f769a97`
 
 ## Context
 
-Today [`sut.Adapter`](../../internal/sut/sut.go) is a Go interface,
+At the proposal date, [`sut.Adapter`](../../internal/sut/sut.go) was a Go interface,
 [`syncpoint.Client`](../../internal/syncpoint/runtime.go) is in-process, and
-configuration accepts only `gonative`. Spring support requires a transport
+configuration accepted only `gonative`. Spring support required a transport
 boundary without transferring schedule control or verdict logic to the SUT.
-This record selects the planned boundary; it does not add a configuration key,
-Java dependency, diagnostic, or claim of shipped Spring support.
+This record selected the boundary; its later implementation adds CLI
+configuration under [ADR 0016](0016-external-cli-composition.md). It does not
+claim completed paired Spring acceptance.
 
 ## Decision
 
@@ -119,7 +120,8 @@ capacity, and a correlation run ID; session IDs are generated per adapter.
 
 G1 is resolved by the fixture-owned descriptor contract. G2, G5, and G6 are
 resolved at the Go boundary by [ADR 0014](0014-adapter-outcome-boundaries.md).
-G3 and G4 remain **implementation blockers requiring separate engine decisions**.
+At the proposal date, G3 and G4 were implementation blockers. The table below
+records the original gaps and decisions requested at that time.
 
 | Gap | Current code and missing capability | Required follow-up decision |
 | --- | --- | --- |
@@ -133,8 +135,9 @@ G3 and G4 remain **implementation blockers requiring separate engine decisions**
 G1 was resolved by [#118](https://github.com/weavegate/weavegate/issues/118).
 [#119](https://github.com/weavegate/weavegate/issues/119) records the separately
 reviewable G2/G5/G6 decisions in ADR 0014 and implements the Go boundary.
-[#120](https://github.com/weavegate/weavegate/issues/120) owns G3; G4 remains in
-[CLI integration #110](https://github.com/weavegate/weavegate/issues/110).
+[#120](https://github.com/weavegate/weavegate/issues/120) resolved G3 with
+fixture quarantine. [ADR 0016](0016-external-cli-composition.md) resolves G4
+through [CLI integration #110](https://github.com/weavegate/weavegate/issues/110).
 [#121](https://github.com/weavegate/weavegate/issues/121) tracks executable
 conformance acceptance across the Go and Java implementations. A wire terminal
 is a protocol completion fact; it does not by itself authorize a WorkerResult or
@@ -155,8 +158,7 @@ whether an invariant holds. Cancellation and process death can leave outcome
 unknown; preserving that uncertainty is more important than manufacturing a
 terminal to finish a schedule.
 
-The protocol can be implemented against peer doubles while G3 and G4 remain unresolved,
-but external execution must not be enabled end to end until those decisions and
-the [shared checklist](../reference/external-sut-conformance.md#implementation-checklist)
-are completed. This ADR is ready for design review, not evidence that either
-language implementation has passed conformance.
+External CLI selection is implemented. The
+[shared checklist](../reference/external-sut-conformance.md#implementation-checklist)
+still governs complete language and paired acceptance; this ADR alone is not
+evidence that either peer has passed every conformance case.

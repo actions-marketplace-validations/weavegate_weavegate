@@ -45,6 +45,8 @@ type composition struct {
 	NewAdapter orchestrator.AdapterFactory
 	Variants   []string
 	Schedules  fs.FS
+	Timeouts   *Timeouts
+	SUTSHA256  string
 }
 
 // adapterKind declares one accepted target.sut.adapter value. Bind validates
@@ -52,7 +54,7 @@ type composition struct {
 // composition. It provisions nothing: an error from Bind is always a
 // configuration problem, never a fixture failure.
 type adapterKind struct {
-	Bind func(config.Config) (composition, error)
+	Bind func(config.Config, config.Scenario, string) (composition, error)
 }
 
 // builtinAdapters is the CLI's adapter registry: target.sut.adapter selects
@@ -61,13 +63,14 @@ type adapterKind struct {
 // configuration keys — the engine packages keep seeing only sut.Adapter.
 var builtinAdapters = map[string]adapterKind{
 	config.SupportedAdapter: {Bind: bindGoNative},
+	config.ExternalAdapter:  {Bind: bindExternal},
 }
 
 // bindGoNative composes the Go-native adapter around a built-in entrypoint.
 // The workflow is compiled into this binary, so the entrypoint registry is
 // this kind's application lookup and its declared variants are the ones the
 // compiled workflow implements.
-func bindGoNative(cfg config.Config) (composition, error) {
+func bindGoNative(cfg config.Config, _ config.Scenario, _ string) (composition, error) {
 	entry, ok := builtinEntrypoints[cfg.Target.SUT.Entrypoint]
 	if !ok {
 		return composition{}, ci.InputError(fmt.Errorf(

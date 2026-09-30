@@ -37,6 +37,9 @@ type Manifest struct {
 	Adapter          string    `json:"adapter"`
 	Variant          string    `json:"variant"`
 	Image            string    `json:"image"`
+	// SUTSHA256 identifies the configured external JAR checked at preflight
+	// and again before each adapter is constructed. It is absent for gonative.
+	SUTSHA256 string `json:"sut_sha256,omitempty"`
 
 	// CleanupFailed is true when fixture teardown failed after this run
 	// completed (A-18): a leaked container or database. It belongs here,

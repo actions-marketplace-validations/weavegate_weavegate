@@ -14,6 +14,12 @@ workflow fails before publication if the placeholder remains.
 
 ## [Unreleased]
 
+### Added
+
+- Configuration-only CLI selection of an owned external JVM adapter, with
+  launch and registration preflight, bounded startup/stop composition, and
+  external JAR provenance in the run manifest.
+
 ### Changed
 
 - A completed run whose diagnostic derivation fails now retains its evidence as
