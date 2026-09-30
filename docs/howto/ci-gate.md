@@ -126,15 +126,18 @@ the reader opens:
    and run the report's `replay:` line from the repository root.
 4. One closing line saying that `comment: 'false'` turns the comment off.
 
-This is the comment the `reusable-gate` job posted on the pull request that
-introduced the step, with the workflow run ID, artifact ID, and weavegate run
-ID replaced by placeholders:
+This is a comment the `reusable-gate` job posted on the pull request that
+introduced the step, with the workflow run ID and artifact ID replaced by
+placeholders:
 
 `````markdown
 <!-- weavegate-gate-comment v1 -->
 ### weavegate gate: process exit code 2
 
-Stored `report.md` of run `<run_id>`, unchanged and shown as literal text:
+Report verdict **FAIL** · schedule `sch_ba00582f9632` · [evidence artifact](https://github.com/weavegate/weavegate/actions/runs/<run-id>/artifacts/<artifact-id>) · [workflow run <run-id>](https://github.com/weavegate/weavegate/actions/runs/<run-id>)
+
+<details>
+<summary>Stored <code>report.md</code>, unchanged and shown as literal text</summary>
 
 <!-- weavegate-report-begin -->
 ````text
@@ -156,9 +159,10 @@ error[WG001]: invariant violated under a controlled schedule
 ````
 <!-- weavegate-report-end -->
 
-**Evidence:** [download the artifact](https://github.com/weavegate/weavegate/actions/runs/<run-id>/artifacts/<artifact-id>) of [workflow run <run-id>](https://github.com/weavegate/weavegate/actions/runs/<run-id>). It holds the run directory `runs/<run_id>/` with every run file and, at its root, the saved `schedule.json`.
+</details>
 
-**Replay schedule `sch_ba00582f9632`:**
+<details>
+<summary>Replay schedule <code>sch_ba00582f9632</code></summary>
 
 1. Check out the revision this workflow run tested and install weavegate `v0.1.0-alpha`.
 2. Download the artifact and import its schedule from the repository root:
@@ -172,6 +176,10 @@ error[WG001]: invariant violated under a controlled schedule
 3. From the repository root, run the command on the report's `replay:` line. If that line contains a backslash escape it is a display form; rebuild the command from its original argument values.
 
 The [CI gate how-to](https://github.com/weavegate/weavegate/blob/main/docs/howto/ci-gate.md#pull-request-comment) describes this comment and the replay in full.
+
+</details>
+
+Set `comment: 'false'` on the weavegate action to turn this comment off.
 `````
 
 The commands in step 3 contain only the workflow run ID, the repository name,
