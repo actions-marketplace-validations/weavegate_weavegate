@@ -1,7 +1,10 @@
 {
   "config": {
     // Prose is not subject to a repository-wide line-length policy.
-    "MD013": false
+    "MD013": false,
+    // Keep a Changelog repeats "Added", "Changed", and "Fixed" under each
+    // release heading. Duplicate headings under one parent are still rejected.
+    "MD024": { "siblings_only": true }
   },
   "gitignore": ".gitignore",
   "ignores": [
