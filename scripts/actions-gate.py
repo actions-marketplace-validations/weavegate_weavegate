@@ -264,21 +264,24 @@ def comment_body(status, report, size, context):
     artifact_name = context["artifact_name"] if SAFE_NAME.fullmatch(context["artifact_name"]) else ""
     version = context["version"] if VERSION.fullmatch(context["version"]) else ""
     uploaded = context["upload_outcome"] == "success" and context["artifact_url"].startswith("https://")
-    stored = f"`report.md` of run `{run_name}`" if run_name else "`report.md` of this run"
-    head = f"{COMMENT_MARKER}\n### weavegate gate: process exit code {exit_code if isinstance(exit_code, int) else 'unavailable'}\n\n"
+    verdict = status.get("verdict") if status.get("verdict") in ("PASS", "FAIL", "FLAKY") else ""
 
-    tail = "\n"
-    if uploaded:
-        tail += f"**Evidence:** [download the artifact]({context['artifact_url']})"
-        if repository and run_id:
-            tail += f" of [workflow run {run_id}]({context['server_url']}/{repository}/actions/runs/{run_id})"
-        tail += ". It holds the run directory"
-        tail += f" `runs/{run_name}/`" if run_name else ""
-        tail += " with every run file" + (" and, at its root, the saved `schedule.json`.\n" if schedule_id else ".\n")
-    else:
-        tail += "**Evidence:** the artifact upload did not succeed, so this run has no downloadable evidence.\n"
+    # Only the key facts stay outside the collapsed sections.
+    facts = []
+    if verdict:
+        facts.append(f"Report verdict **{verdict}**")
+    if schedule_id:
+        facts.append(f"schedule `{schedule_id}`")
+    facts.append(f"[evidence artifact]({context['artifact_url']})" if uploaded else "evidence upload did not succeed, so this run has no downloadable evidence")
+    if repository and run_id:
+        facts.append(f"[workflow run {run_id}]({context['server_url']}/{repository}/actions/runs/{run_id})")
+    head = f"{COMMENT_MARKER}\n### weavegate gate: process exit code {exit_code if isinstance(exit_code, int) else 'unavailable'}\n\n"
+    line = " · ".join(facts)
+    head += line[0].upper() + line[1:] + "\n\n"
+
+    tail = ""
     if uploaded and schedule_id:
-        tail += f"\n**Replay schedule `{schedule_id}`:**\n\n"
+        tail += f"<details>\n<summary>Replay schedule <code>{schedule_id}</code></summary>\n\n"
         tail += "1. Check out the revision this workflow run tested and install weavegate" + (f" `{version}`.\n" if version else ".\n")
         if repository and run_id and artifact_name:
             tail += "2. Download the artifact and import its schedule from the repository root:\n\n"
@@ -290,17 +293,19 @@ def comment_body(status, report, size, context):
         else:
             tail += f"2. Download the artifact and copy its `schedule.json` to `.weavegate/schedules/{schedule_id}.json` under the repository root.\n"
         tail += "3. From the repository root, run the command on the report's `replay:` line. If that line contains a backslash escape it is a display form; rebuild the command from its original argument values.\n"
-        tail += f"\nThe [CI gate how-to]({REPLAY_GUIDE}) describes this comment and the replay in full.\n"
+        tail += f"\nThe [CI gate how-to]({REPLAY_GUIDE}) describes this comment and the replay in full.\n\n</details>\n\n"
+    tail += "Set `comment: 'false'` on the weavegate action to turn this comment off.\n"
 
     oversized = f"the comment would exceed GitHub's {COMMENT_LIMIT}-character limit"
     obstacle = oversized if report is None else report_embed_obstacle(report)
     if not obstacle:
-        body = head + f"Stored {stored}, unchanged and shown as literal text:\n\n" + fenced_report(report.decode("utf-8")) + tail
+        summary = "Stored <code>report.md</code>, unchanged and shown as literal text"
+        body = head + f"<details>\n<summary>{summary}</summary>\n\n" + fenced_report(report.decode("utf-8")) + "\n</details>\n\n" + tail
         if len(body.encode("utf-8")) <= COMMENT_LIMIT:
             return body, True
         obstacle = oversized
     where = f" Read `runs/{run_name}/report.md` in the evidence artifact." if uploaded and run_name else ""
-    return head + f"The stored {stored} ({size} bytes) is not embedded here: {obstacle}. It was not truncated.{where}\n" + tail, False
+    return head + f"The stored `report.md` ({size} bytes) is not embedded here: {obstacle}. It was not truncated.{where}\n\n" + tail, False
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

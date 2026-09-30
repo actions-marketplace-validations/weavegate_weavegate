@@ -243,6 +243,16 @@ class GateTests(unittest.TestCase):
         self.assertIn("gh run download 4242 --repo octo/demo --name weavegate-evidence --dir weavegate-evidence\n", text)
         self.assertIn("cp weavegate-evidence/schedule.json .weavegate/schedules/sch_ba00582f9632.json\n", text)
         self.assertIn("install weavegate `v0.1.0-alpha`", text)
+        # Key facts stay visible; the report and the replay steps are collapsed.
+        visible = text[:text.index("<details>")]
+        self.assertIn("Report verdict **FAIL** · schedule `sch_ba00582f9632` · [evidence artifact](", visible)
+        self.assertIn("[workflow run 4242](https://github.com/octo/demo/actions/runs/4242)", visible)
+        self.assertEqual(text.count("<details>\n<summary>"), 2)
+        self.assertEqual(text.count("\n</details>\n"), 2)
+        self.assertLess(text.index("<details>"), text.index(gate.REPORT_BEGIN))
+        self.assertLess(text.index("Replay schedule <code>sch_ba00582f9632</code>"), text.index("gh run download"))
+        self.assertTrue(text.endswith("</details>\n\nSet `comment: 'false'` on the weavegate action to turn this comment off.\n"))
+        self.assertEqual(text.count("turn this comment off"), 1)
         # Report text appears once, inside the literal block only.
         self.assertEqual(text.count("$(touch injected)"), 1)
         self.assertFalse((self.workspace / "injected").exists())
@@ -306,6 +316,7 @@ class GateTests(unittest.TestCase):
         outcome, _, ((_, _, body),), _ = self.comment(server, WEAVEGATE_UPLOAD_OUTCOME="failure", WEAVEGATE_ARTIFACT_URL="")
         self.assertIn("no downloadable evidence", json.loads(body)["body"])
         self.assertNotIn("Replay schedule", json.loads(body)["body"])
+        self.assertEqual(json.loads(body)["body"].count("turn this comment off"), 1)
 
         report_path.unlink()
         self.assertEqual(self.comment(server)[::2], ("skipped", []))

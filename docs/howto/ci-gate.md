@@ -107,18 +107,24 @@ permissions:
   pull-requests: write
 ```
 
-The comment is a fixed wrapper around the stored report:
+The comment is a fixed wrapper around the stored report. Only the key facts
+are visible at first; the report and the replay steps are collapsed sections
+the reader opens:
 
-1. A heading with the process exit code.
-2. The bytes of `report.md`, unchanged, between the lines
-   `<!-- weavegate-report-begin -->` and `<!-- weavegate-report-end -->`, in a
-   fenced `text` block whose fence is longer than any backtick run in the
-   report. The report is shown as literal text: nothing in it is rendered as
-   Markdown, and no report value is copied anywhere else in the comment.
-3. A link to the uploaded evidence artifact and its workflow run.
-4. When the run saved a schedule, the steps to download the artifact, import
-   `schedule.json` into `.weavegate/schedules/`, and run the report's `replay:`
-   line from the repository root.
+1. A heading with the process exit code, then one line with the report
+   verdict, the schedule ID, and links to the evidence artifact and its
+   workflow run.
+2. A collapsed section holding the bytes of `report.md`, unchanged, between
+   the lines `<!-- weavegate-report-begin -->` and
+   `<!-- weavegate-report-end -->`, in a fenced `text` block whose fence is
+   longer than any backtick run in the report. The report is shown as literal
+   text: nothing in it is rendered as Markdown, and no report value is copied
+   anywhere else in the comment. The verdict on the visible line is printed
+   only when it is exactly `PASS`, `FAIL`, or `FLAKY`.
+3. When the run saved a schedule, a collapsed section with the steps to
+   download the artifact, import `schedule.json` into `.weavegate/schedules/`,
+   and run the report's `replay:` line from the repository root.
+4. One closing line saying that `comment: 'false'` turns the comment off.
 
 This is the comment the `reusable-gate` job posted on the pull request that
 introduced the step, with the workflow run ID, artifact ID, and weavegate run
@@ -168,7 +174,7 @@ error[WG001]: invariant violated under a controlled schedule
 The [CI gate how-to](https://github.com/weavegate/weavegate/blob/main/docs/howto/ci-gate.md#pull-request-comment) describes this comment and the replay in full.
 `````
 
-The commands in step 4 contain only the workflow run ID, the repository name,
+The commands in step 3 contain only the workflow run ID, the repository name,
 the `artifact-name` input, and the schedule ID, and each must match a closed
 grammar before it is printed; otherwise the step is described in words. The
 `replay:` line keeps the meaning defined by the
