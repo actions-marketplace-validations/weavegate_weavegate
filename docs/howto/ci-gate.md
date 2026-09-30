@@ -120,6 +120,54 @@ The comment is a fixed wrapper around the stored report:
    `schedule.json` into `.weavegate/schedules/`, and run the report's `replay:`
    line from the repository root.
 
+This is the comment the `reusable-gate` job posted on the pull request that
+introduced the step, with the workflow run ID, artifact ID, and weavegate run
+ID replaced by placeholders:
+
+`````markdown
+<!-- weavegate-gate-comment v1 -->
+### weavegate gate: process exit code 2
+
+Stored `report.md` of run `<run_id>`, unchanged and shown as literal text:
+
+<!-- weavegate-report-begin -->
+````text
+## weavegate: FAIL (WG001)
+scenario: concurrent-assign | schedules explored: 0 | violating: sch_ba00582f9632
+assertion: active-assignment-is-unique
+flaky: false (repeat=20)
+replay: weavegate run --config fixtures/matching-slice/.weavegate/config.yaml --scenario concurrent-assign --variant vulnerable --replay sch_ba00582f9632 --repeat 20
+
+error[WG001]: invariant violated under a controlled schedule
+  observed:  active-assignment-is-unique returned 1 row: active_assignment_count=2 project_request_id=42
+  assertion: active-assignment-is-unique
+  invariant: a declared state invariant must hold under every release schedule the database permits
+  reason:    commonly a read-then-write path without a lock or a unique constraint
+  help:      add a unique constraint on the contested key
+             take a pessimistic lock (SELECT ... FOR UPDATE) before insert
+             use an idempotency key on the write
+  evidence:  schedule sch_ba00582f9632 · trace.json · observation.json · 1 violating row
+````
+<!-- weavegate-report-end -->
+
+**Evidence:** [download the artifact](https://github.com/weavegate/weavegate/actions/runs/<run-id>/artifacts/<artifact-id>) of [workflow run <run-id>](https://github.com/weavegate/weavegate/actions/runs/<run-id>). It holds the run directory `runs/<run_id>/` with every run file and, at its root, the saved `schedule.json`.
+
+**Replay schedule `sch_ba00582f9632`:**
+
+1. Check out the revision this workflow run tested and install weavegate `v0.1.0-alpha`.
+2. Download the artifact and import its schedule from the repository root:
+
+   ```sh
+   gh run download <run-id> --repo weavegate/weavegate --name weavegate-gate-vulnerable --dir weavegate-evidence
+   mkdir -p .weavegate/schedules
+   cp weavegate-evidence/schedule.json .weavegate/schedules/sch_ba00582f9632.json
+   ```
+
+3. From the repository root, run the command on the report's `replay:` line. If that line contains a backslash escape it is a display form; rebuild the command from its original argument values.
+
+The [CI gate how-to](https://github.com/weavegate/weavegate/blob/main/docs/howto/ci-gate.md#pull-request-comment) describes this comment and the replay in full.
+`````
+
 The commands in step 4 contain only the workflow run ID, the repository name,
 the `artifact-name` input, and the schedule ID, and each must match a closed
 grammar before it is printed; otherwise the step is described in words. The
