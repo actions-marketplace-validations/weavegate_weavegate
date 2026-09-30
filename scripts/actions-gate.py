@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -24,8 +25,7 @@ VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?")
 SCHEDULE = re.compile(r"sch_[0-9a-f]{12}")
 HEADLINE = re.compile(r"## weavegate: (PASS|FAIL|FLAKY)(?: \([^\n]*\))?\n")
 BASE_FILES = ("manifest.json", "scenario.json", "observation.json", "trace.json", "report.json", "report.md")
-# GitHub rejects an issue comment longer than 65536 characters. Counting UTF-8
-# bytes instead can only be stricter, so a body within this limit always fits.
+# Keep the complete UTF-8 comment body within this action's 64 KiB budget.
 COMMENT_LIMIT = 65536
 COMMENT_MARKER = "<!-- weavegate-gate-comment v1 -->"
 REPORT_BEGIN = "<!-- weavegate-report-begin -->"
@@ -33,6 +33,7 @@ REPORT_END = "<!-- weavegate-report-end -->"
 REPLAY_GUIDE = "https://github.com/weavegate/weavegate/blob/main/docs/howto/ci-gate.md#pull-request-comment"
 REPOSITORY = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 SAFE_NAME = re.compile(r"[A-Za-z0-9._-]+")
+SERVER_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]{1,5})?")
 
 
 def output(**values):
@@ -246,6 +247,18 @@ def fenced_report(text):
     return f"{REPORT_BEGIN}\n{fence}text\n{text}{fence}\n{REPORT_END}\n"
 
 
+def server_origin_and_host(value):
+    """Accept only a root HTTPS server URL before using it in links or commands."""
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return "", ""
+    if (parts.scheme != "https" or not SERVER_HOST.fullmatch(parts.netloc)
+            or parts.path not in ("", "/") or parts.query or parts.fragment):
+        return "", ""
+    return f"https://{parts.netloc}", parts.netloc
+
+
 def comment_body(status, report, size, context):
     """Wrap the stored report for a pull request comment.
 
@@ -260,6 +273,7 @@ def comment_body(status, report, size, context):
     schedule_id = status.get("schedule_id") or ""
     schedule_id = schedule_id if SCHEDULE.fullmatch(schedule_id) else ""
     repository = context["repository"] if REPOSITORY.fullmatch(context["repository"]) else ""
+    server_url, server_host = server_origin_and_host(context["server_url"])
     run_id = context["run_id"] if context["run_id"].isascii() and context["run_id"].isdigit() else ""
     artifact_name = context["artifact_name"] if SAFE_NAME.fullmatch(context["artifact_name"]) else ""
     version = context["version"] if VERSION.fullmatch(context["version"]) else ""
@@ -273,8 +287,8 @@ def comment_body(status, report, size, context):
     if schedule_id:
         facts.append(f"schedule `{schedule_id}`")
     facts.append(f"[evidence artifact]({context['artifact_url']})" if uploaded else "evidence upload did not succeed, so this run has no downloadable evidence")
-    if repository and run_id:
-        facts.append(f"[workflow run {run_id}]({context['server_url']}/{repository}/actions/runs/{run_id})")
+    if server_url and repository and run_id:
+        facts.append(f"[workflow run {run_id}]({server_url}/{repository}/actions/runs/{run_id})")
     head = f"{COMMENT_MARKER}\n### weavegate gate: process exit code {exit_code if isinstance(exit_code, int) else 'unavailable'}\n\n"
     line = " · ".join(facts)
     head += line[0].upper() + line[1:] + "\n\n"
@@ -283,10 +297,11 @@ def comment_body(status, report, size, context):
     if uploaded and schedule_id:
         tail += f"<details>\n<summary>Replay schedule <code>{schedule_id}</code></summary>\n\n"
         tail += "1. Check out the revision this workflow run tested and install weavegate" + (f" `{version}`.\n" if version else ".\n")
-        if repository and run_id and artifact_name:
+        if server_url and repository and run_id and artifact_name:
+            repository_selector = repository if server_host == "github.com" else f"{server_host}/{repository}"
             tail += "2. Download the artifact and import its schedule from the repository root:\n\n"
             tail += "   ```sh\n"
-            tail += f"   gh run download {run_id} --repo {repository} --name {artifact_name} --dir weavegate-evidence\n"
+            tail += f"   gh run download {run_id} --repo {repository_selector} --name {artifact_name} --dir weavegate-evidence\n"
             tail += "   mkdir -p .weavegate/schedules\n"
             tail += f"   cp weavegate-evidence/schedule.json .weavegate/schedules/{schedule_id}.json\n"
             tail += "   ```\n\n"

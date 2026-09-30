@@ -257,6 +257,16 @@ class GateTests(unittest.TestCase):
         self.assertEqual(text.count("$(touch injected)"), 1)
         self.assertFalse((self.workspace / "injected").exists())
 
+        # Enterprise replay must select the server that owns the artifact.
+        _, _, ((_, _, body),), _ = self.comment(server, GITHUB_SERVER_URL="https://ghe.example.com")
+        enterprise = json.loads(body)["body"]
+        self.assertIn("[workflow run 4242](https://ghe.example.com/octo/demo/actions/runs/4242)", enterprise)
+        self.assertIn("gh run download 4242 --repo ghe.example.com/octo/demo --name weavegate-evidence", enterprise)
+        _, _, ((_, _, body),), _ = self.comment(server, GITHUB_SERVER_URL="https://ghe.example.com/$(touch injected)")
+        invalid_server = json.loads(body)["body"]
+        self.assertNotIn("gh run download", invalid_server)
+        self.assertNotIn("[workflow run 4242]", invalid_server)
+
         # An artifact name outside the closed grammar never reaches a command.
         _, _, ((_, _, body),), _ = self.comment(server, WEAVEGATE_ARTIFACT_NAME="evidence; $(touch injected)")
         self.assertNotIn("touch injected)\n   mkdir", json.loads(body)["body"])

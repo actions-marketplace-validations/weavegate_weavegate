@@ -679,6 +679,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REQUESTED: ${{ steps.live.outputs.comment }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           ACTUAL_OUTCOME: ${{ steps.gate.outcome }}
           EXPECTED_OUTCOME: ${{ matrix.action_outcome }}
           COMMENT_OUTCOME: ${{ steps.gate.outputs.comment-outcome }}
@@ -688,7 +689,7 @@ jobs:
           expected=disabled
           if [ "$REQUESTED" = true ]; then
             expected=skipped
-            if [ "$HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ]; then expected=posted; fi
+            if [ "$HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ] && [ "$PR_AUTHOR" != 'dependabot[bot]' ]; then expected=posted; fi
           fi
           test "$COMMENT_OUTCOME" = "$expected"
           test "$ACTUAL_OUTCOME" = "$EXPECTED_OUTCOME"

@@ -182,17 +182,18 @@ The [CI gate how-to](https://github.com/weavegate/weavegate/blob/main/docs/howto
 Set `comment: 'false'` on the weavegate action to turn this comment off.
 `````
 
-The commands in step 3 contain only the workflow run ID, the repository name,
-the `artifact-name` input, and the schedule ID, and each must match a closed
-grammar before it is printed; otherwise the step is described in words. The
-`replay:` line keeps the meaning defined by the
+The download commands contain only the workflow run ID, the repository name,
+the validated GitHub server host, the `artifact-name` input, and the schedule
+ID. On GitHub Enterprise Server, `gh run download --repo` includes that host.
+Each value must match a closed grammar before it is printed; otherwise the step
+is described in words. The `replay:` line keeps the meaning defined by the
 [report schema](../reference/report-schema.md#reportmd): a line without a
 backslash escape is pasted unchanged, and a line with one is rebuilt from its
 original argument values.
 
-**Size limit.** GitHub rejects a comment longer than 65,536 characters. The
-action embeds the report only when the complete comment is at most 65,536
-UTF-8 bytes, which is never more than that limit allows. A larger report is
+**Size limit.** The action embeds the report only when the complete comment is
+at most 65,536 UTF-8 bytes. Run `python3 -B scripts/test-actions-gate.py` to
+verify the boundary for the complete comment body. A larger report is
 not cut: the comment then states the report's size, says it was not truncated,
 and points to `runs/<run_id>/report.md` in the evidence artifact. The same
 fallback applies to a report a comment cannot carry byte for byte — one that
