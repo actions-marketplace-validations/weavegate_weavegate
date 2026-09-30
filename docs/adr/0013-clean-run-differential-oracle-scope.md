@@ -5,10 +5,18 @@
 - Issue: [#115](https://github.com/weavegate/weavegate/issues/115)
 - Implementation: [#126](https://github.com/weavegate/weavegate/issues/126)
 
+> Amended 2026-09-30 ([#133](https://github.com/weavegate/weavegate/issues/133)):
+> this ADR originally required the differential Oracle before `v0.2.0` was
+> complete. That release coupling is withdrawn. `v0.2.0` ends at the first
+> complete Spring Boot CI gate, and the differential Oracle follows it as
+> feature work tracked in #126 without a committed release. The design
+> decision, the configuration shape, and the diagnostic mapping recorded below
+> are unchanged.
+
 ## Context
 
-The v0.2.0 milestone promises richer Oracles, but the first Spring race needs
-only the zero-row SQL assertions already implemented. Adding another Oracle
+Richer Oracles are planned, but the first Spring race needs only the zero-row
+SQL assertions already implemented. Adding another Oracle
 without a distinct invariant would widen configuration, execution, diagnostic,
 and artifact contracts without adding a verdict that users cannot express
 today.
@@ -49,10 +57,10 @@ predicate or a reason to weaken the existing assertion.
 
 ## Decision
 
-Implement one clean-run differential Oracle as the v0.2.0 richer-Oracle
-deliverable. The implementation is required before v0.2.0 is complete, but it
-is not a prerequisite for the first Spring/CI vertical slice: that slice keeps
-using existing SQL assertions. A bounded follow-up issue owns implementation;
+Implement one clean-run differential Oracle as the richer-Oracle deliverable.
+The implementation follows the first complete Spring Boot CI gate release and
+is not a prerequisite for it: that gate keeps using existing SQL assertions. A
+bounded follow-up issue owns implementation;
 [issue #115](https://github.com/weavegate/weavegate/issues/115) closes only the
 scope decision and executable limitation evidence.
 
@@ -76,8 +84,8 @@ oracle:
       key_columns: [account_id]
 ```
 
-`oracle.reference` is required exactly when `differentials` is nonempty. v0.2.0
-accepts only `mode: serial`; the effective worker order is the selected
+`oracle.reference` is required exactly when `differentials` is nonempty. The
+first implementation accepts only `mode: serial`; the effective worker order is the selected
 scenario's existing declaration order. Keeping scenario-specific worker IDs out
 of the global Oracle configuration allows one differential declaration to apply
 to every compatible scenario. One reference execution supplies every
@@ -166,7 +174,7 @@ six-or-seven-file artifact count.
 
 ## Consequences
 
-- v0.2.0 has one concrete richer-Oracle outcome: detect extra, missing, and
+- The richer-Oracle work has one concrete outcome: detect extra, missing, and
   stale result rows relative to a declared clean serial execution.
 - Fixtures with predicates that depend only on final state continue to compose
   zero-row assertions; they do not pay for a reference execution.
@@ -178,7 +186,7 @@ six-or-seven-file artifact count.
   expected result for the selected invariant; reviewers must inspect it like
   any other Oracle input.
 - Schema-constraint and fault-injection Oracles remain deferred. They answer
-  different questions and are not implied by the v0.2.0 richer-Oracle promise.
+  different questions and are not implied by this decision.
 
 ## What didn't work
 
