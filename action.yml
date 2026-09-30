@@ -30,6 +30,14 @@ inputs:
     description: Unique name for this invocation's retained evidence artifact
     required: false
     default: weavegate-evidence
+  comment:
+    description: Post the stored report as a new pull request comment ('true' or 'false'); a comment that cannot be posted never changes the gate result
+    required: false
+    default: 'true'
+  github-token:
+    description: Token used only to post the pull request comment; needs pull-requests write permission
+    required: false
+    default: ${{ github.token }}
 outputs:
   verdict:
     description: Report headline verdict (PASS, FAIL, or FLAKY) when a complete report exists
@@ -52,6 +60,12 @@ outputs:
   artifact-url:
     description: Uploaded evidence artifact URL, when upload succeeded
     value: ${{ steps.upload.outputs.artifact-url }}
+  comment-outcome:
+    description: Pull request comment result (posted, disabled, skipped, or failed); independent of the gate result
+    value: ${{ steps.comment.outputs.comment_outcome }}
+  comment-url:
+    description: Posted pull request comment URL, when comment-outcome is posted
+    value: ${{ steps.comment.outputs.comment_url }}
 runs:
   using: composite
   steps:
@@ -93,6 +107,18 @@ runs:
         WEAVEGATE_UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
         WEAVEGATE_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
       run: python3 "$GITHUB_ACTION_PATH/scripts/actions-gate.py" summary
+    - id: comment
+      if: always() && steps.prepare.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        WEAVEGATE_COMMENT: ${{ inputs.comment }}
+        WEAVEGATE_COMMENT_TOKEN: ${{ inputs.github-token }}
+        WEAVEGATE_EVIDENCE_DIR: ${{ steps.prepare.outputs.evidence_dir }}
+        WEAVEGATE_UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        WEAVEGATE_ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        WEAVEGATE_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: python3 "$GITHUB_ACTION_PATH/scripts/actions-gate.py" comment
     - id: gate
       if: always()
       shell: bash

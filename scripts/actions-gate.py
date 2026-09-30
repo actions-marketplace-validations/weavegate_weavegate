@@ -14,6 +14,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import unicodedata
+import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -22,6 +25,15 @@ VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?")
 SCHEDULE = re.compile(r"sch_[0-9a-f]{12}")
 HEADLINE = re.compile(r"## weavegate: (PASS|FAIL|FLAKY)(?: \([^\n]*\))?\n")
 BASE_FILES = ("manifest.json", "scenario.json", "observation.json", "trace.json", "report.json", "report.md")
+# Keep the complete UTF-8 comment body within this action's 64 KiB budget.
+COMMENT_LIMIT = 65536
+COMMENT_MARKER = "<!-- weavegate-gate-comment v1 -->"
+REPORT_BEGIN = "<!-- weavegate-report-begin -->"
+REPORT_END = "<!-- weavegate-report-end -->"
+REPLAY_GUIDE = "https://github.com/weavegate/weavegate/blob/main/docs/howto/ci-gate.md#pull-request-comment"
+REPOSITORY = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
+SAFE_NAME = re.compile(r"[A-Za-z0-9._-]+")
+SERVER_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]{1,5})?")
 
 
 def output(**values):
@@ -240,6 +252,214 @@ def summary():
         print(content)
 
 
+def report_embed_obstacle(report):
+    """Return why report bytes cannot appear unchanged in a comment, or ""."""
+    try:
+        text = report.decode("utf-8")
+    except UnicodeDecodeError:
+        return "it contains bytes that a comment cannot carry unchanged"
+    if not text.endswith("\n") or any(char != "\n" and unicodedata.category(char) == "Cc" for char in text):
+        return "it contains bytes that a comment cannot carry unchanged"
+    return ""
+
+
+def fenced_report(text):
+    # A fence longer than every backtick run in the report cannot be closed by
+    # the report, so its content stays literal text whatever it contains.
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(4, longest + 1)
+    return f"{REPORT_BEGIN}\n{fence}text\n{text}{fence}\n{REPORT_END}\n"
+
+
+def server_origin_and_host(value):
+    """Accept only a root HTTPS server URL before using it in links or commands."""
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return "", ""
+    if (parts.scheme != "https" or not SERVER_HOST.fullmatch(parts.netloc)
+            or parts.path not in ("", "/") or parts.query or parts.fragment):
+        return "", ""
+    return f"https://{parts.netloc}", parts.netloc
+
+
+def comment_body(status, report, size, context):
+    """Wrap the stored report for a pull request comment.
+
+    report is None when the file alone already exceeds the comment limit.
+    Report content is only ever placed inside the literal block. Every value
+    written into the wrapper or its commands comes from the runner or the
+    action and has matched a closed grammar first.
+    """
+    exit_code = status.get("exit_code")
+    run_name = Path(status.get("run_directory") or "").name
+    run_name = run_name if SAFE_NAME.fullmatch(run_name) else ""
+    schedule_id = status.get("schedule_id") or ""
+    schedule_id = schedule_id if SCHEDULE.fullmatch(schedule_id) else ""
+    repository = context["repository"] if REPOSITORY.fullmatch(context["repository"]) else ""
+    server_url, server_host = server_origin_and_host(context["server_url"])
+    run_id = context["run_id"] if context["run_id"].isascii() and context["run_id"].isdigit() else ""
+    artifact_name = context["artifact_name"] if SAFE_NAME.fullmatch(context["artifact_name"]) else ""
+    version = context["version"] if VERSION.fullmatch(context["version"]) else ""
+    uploaded = context["upload_outcome"] == "success" and context["artifact_url"].startswith("https://")
+    verdict = status.get("verdict") if status.get("verdict") in ("PASS", "FAIL", "FLAKY") else ""
+
+    # Only the key facts stay outside the collapsed sections.
+    facts = []
+    if verdict:
+        facts.append(f"Report verdict **{verdict}**")
+    if schedule_id:
+        facts.append(f"schedule `{schedule_id}`")
+    facts.append(f"[evidence artifact]({context['artifact_url']})" if uploaded else "evidence upload did not succeed, so this run has no downloadable evidence")
+    if server_url and repository and run_id:
+        facts.append(f"[workflow run {run_id}]({server_url}/{repository}/actions/runs/{run_id})")
+    head = f"{COMMENT_MARKER}\n### weavegate gate: process exit code {exit_code if isinstance(exit_code, int) else 'unavailable'}\n\n"
+    line = " · ".join(facts)
+    head += line[0].upper() + line[1:] + "\n\n"
+
+    tail = ""
+    if uploaded and schedule_id:
+        tail += f"<details>\n<summary>Replay schedule <code>{schedule_id}</code></summary>\n\n"
+        tail += "1. Check out the revision this workflow run tested and install weavegate" + (f" `{version}`.\n" if version else ".\n")
+        if server_url and repository and run_id and artifact_name:
+            repository_selector = repository if server_host == "github.com" else f"{server_host}/{repository}"
+            tail += "2. Download the artifact and import its schedule from the repository root:\n\n"
+            tail += "   ```sh\n"
+            tail += f"   gh run download {run_id} --repo {repository_selector} --name {artifact_name} --dir weavegate-evidence\n"
+            tail += "   mkdir -p .weavegate/schedules\n"
+            tail += f"   cp weavegate-evidence/schedule.json .weavegate/schedules/{schedule_id}.json\n"
+            tail += "   ```\n\n"
+        else:
+            tail += f"2. Download the artifact and copy its `schedule.json` to `.weavegate/schedules/{schedule_id}.json` under the repository root.\n"
+        tail += "3. From the repository root, run the command on the report's `replay:` line. If that line contains a backslash escape it is a display form; rebuild the command from its original argument values.\n"
+        tail += f"\nThe [CI gate how-to]({REPLAY_GUIDE}) describes this comment and the replay in full.\n\n</details>\n\n"
+    tail += "Set `comment: 'false'` on the weavegate action to turn this comment off.\n"
+
+    oversized = f"the comment would exceed GitHub's {COMMENT_LIMIT}-character limit"
+    obstacle = oversized if report is None else report_embed_obstacle(report)
+    if not obstacle:
+        summary = "Stored <code>report.md</code>, unchanged and shown as literal text"
+        body = head + f"<details>\n<summary>{summary}</summary>\n\n" + fenced_report(report.decode("utf-8")) + "\n</details>\n\n" + tail
+        if len(body.encode("utf-8")) <= COMMENT_LIMIT:
+            return body, True
+        obstacle = oversized
+    where = f" Read `runs/{run_name}/report.md` in the evidence artifact." if uploaded and run_name else ""
+    return head + f"The stored `report.md` ({size} bytes) is not embedded here: {obstacle}. It was not truncated.{where}\n\n" + tail, False
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    # A followed redirect would resend the Authorization header elsewhere.
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def post_comment(api_url, repository, number, token, body):
+    request = urllib.request.Request(
+        f"{api_url.rstrip('/')}/repos/{repository}/issues/{number}/comments",
+        data=json.dumps({"body": body}).encode("utf-8"),
+        method="POST",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "weavegate-actions-gate",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=30) as response:
+        if response.status != 201:
+            raise ValueError(f"unexpected HTTP status {response.status}")
+        url = json.loads(response.read(1024 * 1024).decode("utf-8"))["html_url"]
+    if not isinstance(url, str) or not url.startswith("https://") or "\n" in url or "\r" in url:
+        raise ValueError("response has no comment URL")
+    return url
+
+
+def installed_version(root):
+    try:
+        for line in (root / "install.txt").read_text(encoding="utf-8").splitlines():
+            if line.startswith("version="):
+                return line[len("version="):]
+    except (OSError, ValueError):
+        pass
+    return ""
+
+
+def decide_comment():
+    """Post the stored report on the pull request; return (outcome, detail, url).
+
+    The outcome is one of disabled, skipped, posted, or failed. Nothing here
+    reads or writes the gate's inputs, so no outcome can change the verdict.
+    """
+    requested = os.environ.get("WEAVEGATE_COMMENT", "")
+    if requested == "false":
+        return "disabled", "the comment input is false", ""
+    if requested != "true":
+        return "skipped", "the comment input must be true or false", ""
+    try:
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        pull_request = event["pull_request"]
+        number = pull_request["number"]
+        if type(number) is not int or number <= 0:
+            raise ValueError("invalid pull request number")
+    except (OSError, KeyError, TypeError, ValueError):
+        return "skipped", "the workflow event is not a pull request", ""
+    repository = os.environ.get("GITHUB_REPOSITORY", "")
+    if not REPOSITORY.fullmatch(repository):
+        return "skipped", "the repository name is unavailable", ""
+    root = Path(os.environ.get("WEAVEGATE_EVIDENCE_DIR") or "/nonexistent")
+    status = read_status(root)
+    try:
+        report_path = Path(status.get("report_path") or "/nonexistent")
+        if report_path.parent.parent != root.resolve() / "runs" or not report_path.is_file():
+            raise OSError("no stored report")
+        size = report_path.stat().st_size
+        report = report_path.read_bytes() if size <= COMMENT_LIMIT else None
+    except (OSError, TypeError, ValueError):
+        return "skipped", "this run has no stored report", ""
+    token = os.environ.get("WEAVEGATE_COMMENT_TOKEN", "")
+    if not token:
+        return "skipped", "no token is available", ""
+    body, _ = comment_body(status, report, size, {
+        "repository": repository,
+        "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+        "server_url": os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/"),
+        "artifact_name": os.environ.get("WEAVEGATE_ARTIFACT_NAME", ""),
+        "artifact_url": os.environ.get("WEAVEGATE_ARTIFACT_URL", ""),
+        "upload_outcome": os.environ.get("WEAVEGATE_UPLOAD_OUTCOME", ""),
+        "version": installed_version(root),
+    })
+    try:
+        url = post_comment(os.environ.get("GITHUB_API_URL", "https://api.github.com"), repository, number, token, body)
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403, 404):
+            head = pull_request.get("head") if isinstance(pull_request.get("head"), dict) else {}
+            fork = isinstance(head.get("repo"), dict) and head["repo"].get("full_name") != repository
+            reason = "a fork pull request gets a read-only token" if fork else "the token cannot write pull request comments"
+            return "skipped", f"{reason} (HTTP {error.code})", ""
+        return "failed", f"GitHub answered HTTP {error.code}", ""
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        return "failed", f"the comment request did not complete ({type(error).__name__})", ""
+    return "posted", "the stored report was posted", url
+
+
+def comment():
+    try:
+        outcome, detail, url = decide_comment()
+    except Exception as error:
+        outcome, detail, url = "failed", f"the comment step stopped ({type(error).__name__})", ""
+    level = {"failed": "::warning::", "skipped": "::notice::"}.get(outcome, "")
+    print(f"{level}weavegate comment: {outcome}: {detail}; the gate result is unaffected")
+    try:
+        output(comment_outcome=outcome, comment_url=url)
+        destination = os.environ.get("GITHUB_STEP_SUMMARY")
+        if destination:
+            with open(destination, "a", encoding="utf-8") as stream:
+                stream.write(f"\nPull request comment: {outcome} ({safe_cell(detail)})" + (f" — [open]({url})\n" if url else "\n"))
+    except (OSError, ValueError) as error:
+        print(f"::warning::weavegate comment: could not record the outcome ({type(error).__name__})")
+
+
 def gate():
     root = Path(os.environ.get("WEAVEGATE_EVIDENCE_DIR") or "/nonexistent")
     status = read_status(root)
@@ -264,6 +484,8 @@ def main():
             run()
         elif mode == "summary":
             summary()
+        elif mode == "comment":
+            comment()
         elif mode == "gate":
             return gate()
         else:

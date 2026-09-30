@@ -23,6 +23,14 @@ workflow fails before publication if the placeholder remains.
   step passes only for exit 0 with a complete version-2 PASS report and a
   successful evidence upload. `docs/howto/ci-gate.md` has the workflow and the
   input and output contract.
+- The composite GitHub Action posts the run's stored `report.md` as a new pull
+  request comment, unchanged and as literal text, with the evidence artifact
+  link and the steps to import and replay the saved schedule. The `comment`
+  input disables it, and `comment-outcome` and `comment-url` report the
+  result. A report too large for a comment is replaced by an artifact pointer
+  instead of being truncated. A comment that cannot be posted, as on a fork
+  pull request or a job without `pull-requests: write`, never changes the gate
+  result. `docs/howto/ci-gate.md` describes the wrapper and the permission.
 
 ### Changed
 
