@@ -18,7 +18,7 @@ Closes #
 
 ## Docs
 
-- [ ] Docs updated in this pull request.
+- [ ] Docs updated in this pull request, including the `CHANGELOG.md` `Unreleased` entry for a user-visible contract change.
 - [ ] Not applicable — this change does not alter a user-visible contract.
 
 ## Notes
