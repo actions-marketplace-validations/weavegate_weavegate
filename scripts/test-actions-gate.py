@@ -10,11 +10,13 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import tarfile
 import tempfile
 import threading
 import unittest
 from unittest import mock
+import urllib.error
 
 
 spec = importlib.util.spec_from_file_location("actions_gate", Path(__file__).with_name("actions-gate.py"))
@@ -102,6 +104,7 @@ class GateTests(unittest.TestCase):
         self.base_env = {
             "GITHUB_OUTPUT": str(self.outputs),
             "GITHUB_WORKSPACE": str(self.workspace),
+            "RUNNER_TEMP": str(self.root),
             "WEAVEGATE_EVIDENCE_DIR": str(self.evidence),
             "WEAVEGATE_BINARY": str(self.binary),
             "WEAVEGATE_CONFIG": "config ; $(touch injected).yaml",
@@ -347,6 +350,131 @@ class GateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 gate.verified_archive("v0.1.0-alpha", "amd64")
 
+    def test_install_uses_action_tag_or_explicit_override(self):
+        cases = (
+            ("", "v0.2.0", "v0.2.0"),
+            ("", "v0.2.0-rc.1", "v0.2.0-rc.1"),
+            ("v0.1.0-alpha", "v0.2.0", "v0.1.0-alpha"),
+            ("v0.1.0-alpha", "a" * 40, "v0.1.0-alpha"),
+            ("v0.1.0-alpha", "main", "v0.1.0-alpha"),
+            ("v0.1.0-alpha", "", "v0.1.0-alpha"),
+            ("v0.1.0-alpha", "v0", "v0.1.0-alpha"),
+        )
+        for explicit, ref, expected in cases:
+            with self.subTest(explicit=explicit, ref=ref):
+                archive = io.BytesIO()
+                payload = b"release binary"
+                name = f"weavegate_{expected[1:]}_linux_amd64.tar.gz"
+                with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+                    member = tarfile.TarInfo(f"{name[:-7]}/weavegate")
+                    member.size = len(payload)
+                    tar.addfile(member, io.BytesIO(payload))
+                checksum = hashlib.sha256(archive.getvalue()).hexdigest()
+                with mock.patch.dict(os.environ, {
+                    **self.base_env,
+                    "WEAVEGATE_VERSION": explicit,
+                    "WEAVEGATE_ACTION_REF": ref,
+                    "WEAVEGATE_ACTION_REPOSITORY": "weavegate/weavegate",
+                    "GITHUB_REF": "refs/tags/v99.0.0",
+                    "GITHUB_REF_NAME": "v99.0.0",
+                }, clear=True), mock.patch.object(gate.platform, "system", return_value="Linux"), mock.patch.object(
+                    gate.platform, "machine", return_value="x86_64"
+                ), mock.patch.object(gate, "download", side_effect=[
+                    f"{checksum}  {name}\n".encode(), archive.getvalue()
+                ] if explicit else [
+                    json.dumps({"ref": f"refs/tags/{ref}"}).encode(),
+                    f"{checksum}  {name}\n".encode(), archive.getvalue()
+                ]) as download:
+                    gate.install()
+                expected_calls = [
+                    mock.call(f"{gate.RELEASES}/{expected}/checksums.txt", 65536),
+                    mock.call(f"{gate.RELEASES}/{expected}/{name}", 100 * 1024 * 1024),
+                ]
+                if not explicit:
+                    expected_calls.insert(0, mock.call(
+                        f"https://api.github.com/repos/weavegate/weavegate/git/ref/tags/{ref}", 65536
+                    ))
+                self.assertEqual(download.call_args_list, expected_calls)
+                self.assertIn(f"version={expected}\n", (self.evidence / "install.txt").read_text())
+                binary = Path(self.outputs.read_text().splitlines()[-1].removeprefix("binary="))
+                self.assertEqual(binary.read_bytes(), payload)
+                self.assertEqual(binary.stat().st_mode & 0o777, 0o700)
+                binary.unlink()
+
+    def test_invalid_version_selection_retains_failure_and_never_downloads(self):
+        cases = [("", ref) for ref in (
+            "", "a" * 40, "main", "feat147/action-release-default", "v0", "v0.2",
+            "refs/tags/v0.2.0", "v0.2.0; touch injected", "v0.2.0\n",
+        )] + [(value, "v0.2.0") for value in (
+            "main", "latest", "v0.2", " ", "v0.2.0; touch injected", "v0.2.0\n",
+        )]
+        for explicit, ref in cases:
+            with self.subTest(explicit=explicit, ref=ref):
+                with mock.patch.dict(os.environ, {
+                    **self.base_env,
+                    "WEAVEGATE_VERSION": explicit,
+                    "WEAVEGATE_ACTION_REF": ref,
+                    "WEAVEGATE_ACTION_REPOSITORY": "weavegate/weavegate",
+                    "GITHUB_REF": "refs/tags/v99.0.0",
+                    "GITHUB_REF_NAME": "v99.0.0",
+                    "WEAVEGATE_UPLOAD_OUTCOME": "success",
+                }, clear=True), mock.patch.object(sys, "argv", ["actions-gate.py", "install"]), mock.patch.object(
+                    gate, "download"
+                ) as download:
+                    self.assertEqual(gate.main(), 1)
+                    self.assertEqual(gate.gate(), 1)
+                download.assert_not_called()
+                failure = (self.evidence / "install.txt").read_text()
+                self.assertIn("Installation failed:", failure)
+                self.assertIn("version", failure)
+                self.assertFalse(self.outputs.exists())
+                self.assertFalse((self.evidence / "status.json").exists())
+
+    def test_unpublished_action_tag_retains_install_failure_and_fails_gate(self):
+        version = "v0.2.0-rc.1"
+        url = f"{gate.RELEASES}/{version}/checksums.txt"
+        with mock.patch.dict(os.environ, {
+            **self.base_env,
+            "WEAVEGATE_VERSION": "",
+            "WEAVEGATE_ACTION_REF": version,
+            "WEAVEGATE_ACTION_REPOSITORY": "weavegate/weavegate",
+            "WEAVEGATE_UPLOAD_OUTCOME": "success",
+        }, clear=True), mock.patch.object(sys, "argv", ["actions-gate.py", "install"]), mock.patch.object(
+            gate.platform, "system", return_value="Linux"
+        ), mock.patch.object(gate.platform, "machine", return_value="x86_64"), mock.patch.object(
+            gate, "download", side_effect=[
+                json.dumps({"ref": f"refs/tags/{version}"}).encode(),
+                urllib.error.HTTPError(url, 404, "Not Found", None, None),
+            ]
+        ) as download:
+            self.assertEqual(gate.main(), 1)
+            self.assertEqual(gate.gate(), 1)
+        self.assertEqual(download.call_args_list[-1], mock.call(url, 65536))
+        self.assertIn("HTTP Error 404", (self.evidence / "install.txt").read_text())
+        self.assertFalse(self.outputs.exists())
+        self.assertFalse((self.evidence / "status.json").exists())
+
+    def test_version_shaped_branch_requires_explicit_version(self):
+        ref = "v0.2.0"
+        url = f"https://api.github.com/repos/weavegate/weavegate/git/ref/tags/{ref}"
+        for repository in ("weavegate/weavegate", "fork/weavegate"):
+            with self.subTest(repository=repository), mock.patch.dict(os.environ, {
+                **self.base_env,
+                "WEAVEGATE_VERSION": "",
+                "WEAVEGATE_ACTION_REF": ref,
+                "WEAVEGATE_ACTION_REPOSITORY": repository,
+                "WEAVEGATE_UPLOAD_OUTCOME": "success",
+            }, clear=True), mock.patch.object(sys, "argv", ["actions-gate.py", "install"]), mock.patch.object(
+                gate, "download", side_effect=urllib.error.HTTPError(url, 404, "Not Found", None, None)
+            ) as download:
+                self.assertEqual(gate.main(), 1)
+                self.assertEqual(gate.gate(), 1)
+                self.assertIn("Installation failed:", (self.evidence / "install.txt").read_text())
+                self.assertEqual(download.call_count, 1 if repository == "weavegate/weavegate" else 0)
+
 
 if __name__ == "__main__":
-    unittest.main()
+    result = unittest.main(exit=False)
+    if result.result.wasSuccessful():
+        print("ACTION_VERSION_RESULT tag=default prerelease=accepted explicit=preferred nonrelease=requires_version caller_ref=ignored install_failure=retained gate=failed")
+    sys.exit(not result.result.wasSuccessful())

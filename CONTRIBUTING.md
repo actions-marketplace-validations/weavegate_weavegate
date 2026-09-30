@@ -57,6 +57,17 @@ go test ./cmd/... -count=1          # Docker required
 go test ./cmd/... -short -count=1   # no Docker; skips the integration test
 ```
 
+Changes to the root composite action or its installer also run the
+standard-library Python boundary checks (no Docker required):
+
+```bash
+python3 -B scripts/test-actions-gate.py
+```
+
+The smoke docs job checks their fixed `ACTION_VERSION_RESULT` marker. The
+separate `reusable-gate` job verifies vulnerable/fixed behavior with a
+published CLI and Docker.
+
 Changes to the Go external peer also run its repeated, event-coordinated tests
 and evidence recorder checks (no Docker required):
 
@@ -104,6 +115,46 @@ python3 scripts/test-external-sut-java-results.py
 
 See the [Java peer reference](docs/reference/external-sut-java.md) for recording
 a result manifest from the repeated run.
+
+## Dependency updates
+
+`NOTICE` is a generated inventory of the third-party modules linked into the
+`weavegate` binary for the four release targets, with each module's version and
+license text. The smoke workflow's `notice` job regenerates it and fails on any
+difference, and the `main` ruleset requires that job. A pull request that
+changes a linked module version therefore cannot merge until `NOTICE` agrees
+with `go.mod`.
+
+Any pull request that changes `go.mod` or `go.sum` regenerates the inventory in
+the same pull request:
+
+```bash
+./scripts/gen-notice.sh
+git diff --exit-code -- NOTICE
+```
+
+The generator needs the Go toolchain and network access; it installs its
+pinned license tool into a temporary directory. The second command exits 0
+when the committed inventory is already current.
+
+An automated Go module update changes only `go.mod` and `go.sum`, so its
+`notice` check fails until a maintainer adds the regenerated inventory to the
+update branch:
+
+```bash
+gh pr checkout <number>
+./scripts/gen-notice.sh
+git add NOTICE
+git commit -m "chore(deps): refresh NOTICE for <module> <version> #<number>"
+git push
+```
+
+Merge only after the `notice` check passes. If `NOTICE` is unchanged after
+regeneration, the update did not touch a linked module — a GitHub Actions
+update or a test-only module, for example — and the check needs no extra
+commit. Once a maintainer commit is on the update branch, bring it up to date
+by merging `main` into it; asking Dependabot to recreate the pull request
+discards the regenerated inventory.
 
 ## Determinism and evidence rules
 
@@ -204,6 +255,18 @@ reference pages are one-to-one: a diagnostic code without a reference page
 does not merge. The pull request template's `Docs` section is the checkpoint
 for this rule.
 
+The same pull request also adds an entry for that change to the `Unreleased`
+section of [`CHANGELOG.md`](CHANGELOG.md), under the Keep a Changelog heading
+that fits it (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, or
+`Security`). Describe what a user of the CLI, the action, or the artifacts
+observes, not how the change was implemented. The release workflow publishes
+the matching CHANGELOG section verbatim as the release body, so an entry left
+out of the pull request is a release note left out of the release. Name a
+document by its path rather than a relative link, which does not resolve in a
+release body. A change
+that does not alter a user-visible contract — a refactor, a test, CI, or
+maintainer documentation — needs no entry.
+
 A pull request that adds a Markdown page under `docs/` must include one
 corresponding top-level line in `docs/README.md` with the form
 `- [title](path.md) — description`; the smoke workflow enforces this inventory
@@ -289,6 +352,12 @@ decision requires a human to inspect the complete behavior.
 10. After the tag and release artifacts exist, add the release badge and
    CHANGELOG link to the README. Never advertise a release that has not been
    published.
+
+For the planned `v0.2.0` action listing, also follow the
+[action publication procedure](docs/maintainers/action-publication.md).
+Prerelease tags support adoption checks without Marketplace publication;
+the final listing, agreement, and two-factor-authenticated UI steps remain
+manual maintainer work after release artifacts are available.
 
 ## License
 

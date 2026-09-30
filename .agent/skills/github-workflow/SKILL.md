@@ -70,7 +70,7 @@ Write the PR as implementation evidence, not as a file inventory or implementati
 - `Summary`: one or two lines stating what the PR does, so a reader knows the change at a glance without reading further. This is not a shortened `Description` — it is the headline.
 - `Description`: explain how the issue's intended capability was implemented at the behavior, data-flow, coordination, or design level; state what purpose or invariant the implementation now achieves. Use past or present-perfect implementation language, not the issue's future-tense TODO wording. Add a table, diagram, or chart here when it makes the implementation easier to follow.
 - `Review Points`: derive concrete review targets from the actual diff—important decisions, invariants, failure modes, concurrency behavior, compatibility, operational risk, or deliberately chosen tradeoffs. Do not paste a generic checklist.
-- `Docs`: check exactly one of the two boxes the template provides — documentation was updated in this PR, or the change does not alter a user-visible contract. Never leave both unchecked.
+- `Docs`: check exactly one of the two boxes the template provides — documentation was updated in this PR, or the change does not alter a user-visible contract. Never leave both unchecked. A change to a user-visible contract also adds its `CHANGELOG.md` `Unreleased` entry in the same PR.
 - `Notes`: record concise follow-up work, limitations, migration considerations, or tradeoffs. Use `- None.` when there is nothing material so the required heading order remains stable.
 - `Validation`: report only checks actually run, using `PASS`, `FAIL`, or `SKIP` with an honest reason and relevant observable evidence. Keep this section last.
 

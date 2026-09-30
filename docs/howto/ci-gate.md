@@ -57,9 +57,44 @@ other application adapters are not available through this release.
 
 ## Inputs, outputs, and gate policy
 
+The action in this source tree also supports an omitted `version` when
+referenced by an exact release tag. This behavior will first be available
+from a release containing this change; `v0.1.0-alpha` predates the action.
+The pinned examples above and below remain the runnable route until then.
+
+The following is a **planned workflow fragment** for the final `v0.2.0`
+release, which has not been published. Use it only after that release and
+its CLI archives exist:
+
+```yaml
+- id: weavegate
+  uses: weavegate/weavegate@v0.2.0
+  with:
+    config: fixtures/matching-slice/.weavegate/config.yaml
+    scenario: concurrent-assign
+    variant: fixed
+    replay: sch_ba00582f9632
+```
+
+Here the CLI version defaults to `v0.2.0`. An exact prerelease reference,
+such as `@v0.2.0-rc.1`, similarly selects that CLI prerelease once published.
+A nonempty `version` overrides the action ref, so callers may choose a
+different published CLI while keeping their action code fixed. SHA pins,
+branch refs, local `uses: ./`, and moving major/minor refs such as `@v0` or
+`@v0.2` require an explicit `version`. The action reads its own
+[`github.action_ref`](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#github-context)
+and checks that it is a tag in `weavegate/weavegate` before using the default.
+A version-shaped branch without that tag requires an explicit `version`.
+Forked copies of the action also require an explicit `version`.
+The tag check uses GitHub's public API and fails installation if unavailable.
+The action never selects a CLI from the
+caller's branch, tag, checkout, or latest release. Invalid versions and
+missing release assets retain `install.txt` and fail the gate after the
+available evidence is uploaded.
+
 | Input | Use |
 | --- | --- |
-| `version` | Required published release tag, such as `v0.1.0-alpha`. The action chooses the runner's Linux architecture and verifies the archive SHA-256 against `checksums.txt`. |
+| `version` | Optional published CLI release tag, such as `v0.1.0-alpha`; defaults to the action's exact `vX.Y.Z[-prerelease]` ref. Required for SHA, branch, local, or moving major/minor refs. The Linux archive is SHA-256 verified against `checksums.txt`. |
 | `config`, `scenario` | Required CLI configuration path and scenario name. Relative paths are resolved in the caller's checkout. |
 | `variant` | Optional `--variant` override. |
 | `replay` | Optional literal schedule ID or file path for `--replay`. Omit to explore. |
@@ -308,3 +343,6 @@ ID from `schedule.json` after this import, because it searches
 Keep the original config, fixture SQL, selected variant, and CLI release
 available in the reader's checkout; a schedule file alone does not carry
 those inputs.
+
+Maintainers preparing a release and Marketplace listing should follow the
+[action publication procedure](../maintainers/action-publication.md).

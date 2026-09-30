@@ -415,6 +415,7 @@ jobs:
           set -o pipefail
           python3 -B scripts/test-actions-gate.py | tee /tmp/actions-gate.out
           grep -F 'ACTION_COMMENT_RESULT enabled=posted disabled=no_request fork=skipped no_permission=skipped no_token=skipped non_pull_request=skipped api_error=failed redirect=not_followed oversized=artifact_link report=byte_identical token=not_printed gate=unchanged' /tmp/actions-gate.out
+          grep -F 'ACTION_VERSION_RESULT tag=default prerelease=accepted explicit=preferred nonrelease=requires_version caller_ref=ignored install_failure=retained gate=failed' /tmp/actions-gate.out
 
       - name: Lint Markdown
         uses: DavidAnson/markdownlint-cli2-action@v24

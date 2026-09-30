@@ -61,7 +61,7 @@ Use these records when you need the rationale behind a durable design boundary.
 - [ADR 0010: External SUT protocol (proposed)](adr/0010-external-sut-protocol.md) — Review the planned Spring transaction boundary and required engine extension decisions.
 - [ADR 0011: Report Markdown rendering boundary](adr/0011-report-markdown-rendering-boundary.md) — See how runtime values remain one-line and inert in Markdown reports.
 - [ADR 0012: Preserve evidence when diagnostic derivation fails](adr/0012-diagnostic-derivation-failure-evidence.md) — Learn why a completed run retains evidence and exits 5 when diagnostic production fails.
-- [ADR 0013: Scope a clean-run differential Oracle](adr/0013-clean-run-differential-oracle-scope.md) — See which second invariant justifies a richer Oracle and how v0.2.0 bounds it.
+- [ADR 0013: Scope a clean-run differential Oracle](adr/0013-clean-run-differential-oracle-scope.md) — See which second invariant justifies a richer Oracle and how its first implementation is bounded.
 - [ADR 0014: Adapter outcome boundaries](adr/0014-adapter-outcome-boundaries.md) — Session faults, unstarted invocations, cancellation, and error aggregation.
 - [ADR 0015: Java application execution boundary](adr/0015-java-execution-boundary.md) — Define trusted fixture SQL, JDBC ownership, and Spring proxy requirements.
 
@@ -78,3 +78,4 @@ Use these experiments for reproduced observations; their measured values are tie
 Use these notes when maintaining repository-facing documentation and visuals.
 
 - [README editorial and visual maintenance](maintainers/readme-maintenance.md) — Follow the content, evidence, and visual contracts for focused README updates.
+- [Action release and Marketplace publication](maintainers/action-publication.md) — Prepare exact-tag CLI defaults, prerelease adoption evidence, and manual final-release publication.
