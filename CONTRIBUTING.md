@@ -204,6 +204,18 @@ reference pages are one-to-one: a diagnostic code without a reference page
 does not merge. The pull request template's `Docs` section is the checkpoint
 for this rule.
 
+The same pull request also adds an entry for that change to the `Unreleased`
+section of [`CHANGELOG.md`](CHANGELOG.md), under the Keep a Changelog heading
+that fits it (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, or
+`Security`). Describe what a user of the CLI, the action, or the artifacts
+observes, not how the change was implemented. The release workflow publishes
+the matching CHANGELOG section verbatim as the release body, so an entry left
+out of the pull request is a release note left out of the release. Name a
+document by its path rather than a relative link, which does not resolve in a
+release body. A change
+that does not alter a user-visible contract — a refactor, a test, CI, or
+maintainer documentation — needs no entry.
+
 A pull request that adds a Markdown page under `docs/` must include one
 corresponding top-level line in `docs/README.md` with the form
 `- [title](path.md) — description`; the smoke workflow enforces this inventory
