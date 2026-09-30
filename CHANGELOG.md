@@ -35,8 +35,9 @@ workflow fails before publication if the placeholder remains.
   compatibility notes left open. Non-printable runes and malformed UTF-8 bytes
   appear as escapes, and Markdown delimiters and dollar signs that would
   create markup, tables, references, or math are escaped, so a value can no
-  longer split a field or introduce Markdown syntax. The JSON artifacts keep
-  the original values. A `replay:` line that needs no escape is still
+  longer split a field or introduce Markdown syntax. JSON artifacts retain
+  valid UTF-8 values, but JSON encoding replaces malformed UTF-8 bytes with
+  U+FFFD. A `replay:` line that needs no escape is still
   pasteable unchanged; one that contains an escape is a display form, and the
   command must be rebuilt from the original argument values.
   `docs/adr/0011-report-markdown-rendering-boundary.md` records the rule.

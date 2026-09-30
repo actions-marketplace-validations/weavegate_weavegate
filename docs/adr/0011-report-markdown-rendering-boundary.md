@@ -41,8 +41,9 @@ terminator itself.
   delimiter underscores and a leading list marker are escaped. Dollar signs use
   `\x24`, because GitHub interprets paired dollar signs as math even when they
   are backslash-escaped or written as HTML entities.
-- Structured report values remain unmodified. JSON encoding continues to
-  provide the JSON artifact's own control-character representation.
+- Structured report values are not escaped for Markdown. JSON encoding
+  provides the JSON artifact's own control-character representation and
+  replaces malformed UTF-8 bytes with U+FFFD.
 
 Ordinary replay commands contain no characters changed by this boundary and
 remain pasteable verbatim. If a command contains a control character or
@@ -64,7 +65,8 @@ execution-specific absolute path.
   introduce Markdown structure into a report or a comment that embeds it.
 - Normal report output and normal replay commands keep their existing bytes.
 - The Markdown artifact can differ textually from its structured JSON source
-  when safety requires an escape; consumers needing original values use JSON.
+  when safety requires an escape. JSON retains valid UTF-8 values; malformed
+  UTF-8 bytes survive only as `\xNN` escapes in the Markdown display.
 - A table-driven renderer test enumerates every variable field currently emitted
   into `report.md` and applies the same newline, terminal-control, and Markdown
   payload to each string field.
