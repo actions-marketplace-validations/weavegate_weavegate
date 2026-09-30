@@ -57,6 +57,17 @@ go test ./cmd/... -count=1          # Docker required
 go test ./cmd/... -short -count=1   # no Docker; skips the integration test
 ```
 
+Changes to the root composite action or its installer also run the
+standard-library Python boundary checks (no Docker required):
+
+```bash
+python3 -B scripts/test-actions-gate.py
+```
+
+The smoke docs job checks their fixed `ACTION_VERSION_RESULT` marker. The
+separate `reusable-gate` job verifies vulnerable/fixed behavior with a
+published CLI and Docker.
+
 Changes to the Go external peer also run its repeated, event-coordinated tests
 and evidence recorder checks (no Docker required):
 
@@ -289,6 +300,12 @@ decision requires a human to inspect the complete behavior.
 10. After the tag and release artifacts exist, add the release badge and
    CHANGELOG link to the README. Never advertise a release that has not been
    published.
+
+For the planned `v0.2.0` action listing, also follow the
+[action publication procedure](docs/maintainers/action-publication.md).
+Prerelease tags support adoption checks without Marketplace publication;
+the final listing, agreement, and two-factor-authenticated UI steps remain
+manual maintainer work after release artifacts are available.
 
 ## License
 

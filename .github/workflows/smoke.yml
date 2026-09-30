@@ -411,7 +411,9 @@ jobs:
           done
 
       - name: Test reusable gate boundaries
-        run: python3 -B scripts/test-actions-gate.py
+        run: |
+          python3 -B scripts/test-actions-gate.py | tee /tmp/actions-gate.out
+          grep -F 'ACTION_VERSION_RESULT tag=default prerelease=accepted explicit=preferred nonrelease=requires_version caller_ref=ignored install_failure=retained gate=failed' /tmp/actions-gate.out
 
       - name: Lint Markdown
         uses: DavidAnson/markdownlint-cli2-action@v24
