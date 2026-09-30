@@ -167,18 +167,27 @@ class GateTests(unittest.TestCase):
                     **self.base_env,
                     "WEAVEGATE_VERSION": explicit,
                     "WEAVEGATE_ACTION_REF": ref,
+                    "WEAVEGATE_ACTION_REPOSITORY": "weavegate/weavegate",
                     "GITHUB_REF": "refs/tags/v99.0.0",
                     "GITHUB_REF_NAME": "v99.0.0",
                 }, clear=True), mock.patch.object(gate.platform, "system", return_value="Linux"), mock.patch.object(
                     gate.platform, "machine", return_value="x86_64"
                 ), mock.patch.object(gate, "download", side_effect=[
                     f"{checksum}  {name}\n".encode(), archive.getvalue()
+                ] if explicit else [
+                    json.dumps({"ref": f"refs/tags/{ref}"}).encode(),
+                    f"{checksum}  {name}\n".encode(), archive.getvalue()
                 ]) as download:
                     gate.install()
-                self.assertEqual(download.call_args_list, [
+                expected_calls = [
                     mock.call(f"{gate.RELEASES}/{expected}/checksums.txt", 65536),
                     mock.call(f"{gate.RELEASES}/{expected}/{name}", 100 * 1024 * 1024),
-                ])
+                ]
+                if not explicit:
+                    expected_calls.insert(0, mock.call(
+                        f"https://api.github.com/repos/weavegate/weavegate/git/ref/tags/{ref}", 65536
+                    ))
+                self.assertEqual(download.call_args_list, expected_calls)
                 self.assertIn(f"version={expected}\n", (self.evidence / "install.txt").read_text())
                 binary = Path(self.outputs.read_text().splitlines()[-1].removeprefix("binary="))
                 self.assertEqual(binary.read_bytes(), payload)
@@ -198,6 +207,7 @@ class GateTests(unittest.TestCase):
                     **self.base_env,
                     "WEAVEGATE_VERSION": explicit,
                     "WEAVEGATE_ACTION_REF": ref,
+                    "WEAVEGATE_ACTION_REPOSITORY": "weavegate/weavegate",
                     "GITHUB_REF": "refs/tags/v99.0.0",
                     "GITHUB_REF_NAME": "v99.0.0",
                     "WEAVEGATE_UPLOAD_OUTCOME": "success",
@@ -220,18 +230,40 @@ class GateTests(unittest.TestCase):
             **self.base_env,
             "WEAVEGATE_VERSION": "",
             "WEAVEGATE_ACTION_REF": version,
+            "WEAVEGATE_ACTION_REPOSITORY": "weavegate/weavegate",
             "WEAVEGATE_UPLOAD_OUTCOME": "success",
         }, clear=True), mock.patch.object(sys, "argv", ["actions-gate.py", "install"]), mock.patch.object(
             gate.platform, "system", return_value="Linux"
         ), mock.patch.object(gate.platform, "machine", return_value="x86_64"), mock.patch.object(
-            gate, "download", side_effect=urllib.error.HTTPError(url, 404, "Not Found", None, None)
+            gate, "download", side_effect=[
+                json.dumps({"ref": f"refs/tags/{version}"}).encode(),
+                urllib.error.HTTPError(url, 404, "Not Found", None, None),
+            ]
         ) as download:
             self.assertEqual(gate.main(), 1)
             self.assertEqual(gate.gate(), 1)
-        download.assert_called_once_with(url, 65536)
+        self.assertEqual(download.call_args_list[-1], mock.call(url, 65536))
         self.assertIn("HTTP Error 404", (self.evidence / "install.txt").read_text())
         self.assertFalse(self.outputs.exists())
         self.assertFalse((self.evidence / "status.json").exists())
+
+    def test_version_shaped_branch_requires_explicit_version(self):
+        ref = "v0.2.0"
+        url = f"https://api.github.com/repos/weavegate/weavegate/git/ref/tags/{ref}"
+        for repository in ("weavegate/weavegate", "fork/weavegate"):
+            with self.subTest(repository=repository), mock.patch.dict(os.environ, {
+                **self.base_env,
+                "WEAVEGATE_VERSION": "",
+                "WEAVEGATE_ACTION_REF": ref,
+                "WEAVEGATE_ACTION_REPOSITORY": repository,
+                "WEAVEGATE_UPLOAD_OUTCOME": "success",
+            }, clear=True), mock.patch.object(sys, "argv", ["actions-gate.py", "install"]), mock.patch.object(
+                gate, "download", side_effect=urllib.error.HTTPError(url, 404, "Not Found", None, None)
+            ) as download:
+                self.assertEqual(gate.main(), 1)
+                self.assertEqual(gate.gate(), 1)
+                self.assertIn("Installation failed:", (self.evidence / "install.txt").read_text())
+                self.assertEqual(download.call_count, 1 if repository == "weavegate/weavegate" else 0)
 
 
 if __name__ == "__main__":

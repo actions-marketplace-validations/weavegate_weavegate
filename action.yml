@@ -63,6 +63,7 @@ runs:
       env:
         WEAVEGATE_VERSION: ${{ inputs.version }}
         WEAVEGATE_ACTION_REF: ${{ github.action_ref }}
+        WEAVEGATE_ACTION_REPOSITORY: ${{ github.action_repository }}
         WEAVEGATE_EVIDENCE_DIR: ${{ steps.prepare.outputs.evidence_dir }}
       run: python3 "$GITHUB_ACTION_PATH/scripts/actions-gate.py" install
     - id: run

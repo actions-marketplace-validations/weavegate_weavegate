@@ -81,7 +81,11 @@ different published CLI while keeping their action code fixed. SHA pins,
 branch refs, local `uses: ./`, and moving major/minor refs such as `@v0` or
 `@v0.2` require an explicit `version`. The action reads its own
 [`github.action_ref`](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#github-context)
-through the composite step's environment; it never selects a CLI from the
+and checks that it is a tag in `weavegate/weavegate` before using the default.
+A version-shaped branch without that tag requires an explicit `version`.
+Forked copies of the action also require an explicit `version`.
+The tag check uses GitHub's public API and fails installation if unavailable.
+The action never selects a CLI from the
 caller's branch, tag, checkout, or latest release. Invalid versions and
 missing release assets retain `install.txt` and fail the gate after the
 available evidence is uploaded.

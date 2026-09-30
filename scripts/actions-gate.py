@@ -85,6 +85,17 @@ def release_version():
             "set version to a published vX.Y.Z release tag when using a SHA, "
             "branch, local action, or moving major/minor tag"
         )
+    if os.environ.get("WEAVEGATE_ACTION_REPOSITORY") != "weavegate/weavegate":
+        raise ValueError("set version when using an action outside weavegate/weavegate")
+    url = f"https://api.github.com/repos/weavegate/weavegate/git/ref/tags/{action_ref}"
+    try:
+        reference = json.loads(download(url, 65536))
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise ValueError("set version when the action ref is not a repository tag") from error
+        raise
+    if reference.get("ref") != f"refs/tags/{action_ref}":
+        raise ValueError("action ref is not an exact repository tag")
     return action_ref
 
 
