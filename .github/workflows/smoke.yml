@@ -411,7 +411,10 @@ jobs:
           done
 
       - name: Test reusable gate boundaries
-        run: python3 -B scripts/test-actions-gate.py
+        run: |
+          set -o pipefail
+          python3 -B scripts/test-actions-gate.py | tee /tmp/actions-gate.out
+          grep -F 'ACTION_COMMENT_RESULT enabled=posted disabled=no_request fork=skipped no_permission=skipped no_token=skipped non_pull_request=skipped api_error=failed redirect=not_followed oversized=artifact_link report=byte_identical token=not_printed gate=unchanged' /tmp/actions-gate.out
 
       - name: Lint Markdown
         uses: DavidAnson/markdownlint-cli2-action@v24
@@ -598,6 +601,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -615,6 +619,25 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v7
 
+      # A live comment is posted only by the vulnerable run of a pull request
+      # that changes the action itself, so other pull requests stay quiet.
+      - name: Decide whether to post a live pull request comment
+        id: live
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          comment=false
+          if [ "$VARIANT" = vulnerable ] && [ -n "$PR_NUMBER" ]; then
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" \
+              --jq '.[].filename' > "$RUNNER_TEMP/changed-files.txt"
+            if grep -qxF -e action.yml -e scripts/actions-gate.py "$RUNNER_TEMP/changed-files.txt"; then
+              comment=true
+            fi
+          fi
+          printf 'comment=%s\n' "$comment" >> "$GITHUB_OUTPUT"
+
       - name: Run the published release through the local gate
         id: gate
         uses: ./
@@ -626,6 +649,7 @@ jobs:
           variant: ${{ matrix.variant }}
           replay: sch_ba00582f9632
           artifact-name: weavegate-gate-${{ matrix.variant }}
+          comment: ${{ steps.live.outputs.comment }}
 
       - name: Verify gate result and outputs after artifact upload
         if: always()
@@ -648,3 +672,102 @@ jobs:
           test -n "$ACTUAL_ARTIFACT"
           printf 'ACTION_GATE_RESULT variant=%s exit=%s verdict=%s artifact=uploaded outputs=usable\n' \
             '${{ matrix.variant }}' "$ACTUAL_EXIT" "$ACTUAL_VERDICT"
+
+      - name: Verify the comment outcome and the embedded report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ steps.live.outputs.comment }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          ACTUAL_OUTCOME: ${{ steps.gate.outcome }}
+          EXPECTED_OUTCOME: ${{ matrix.action_outcome }}
+          COMMENT_OUTCOME: ${{ steps.gate.outputs.comment-outcome }}
+          COMMENT_URL: ${{ steps.gate.outputs.comment-url }}
+          ACTUAL_REPORT: ${{ steps.gate.outputs.report-path }}
+        run: |
+          expected=disabled
+          if [ "$REQUESTED" = true ]; then
+            expected=skipped
+            if [ "$HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ]; then expected=posted; fi
+          fi
+          test "$COMMENT_OUTCOME" = "$expected"
+          test "$ACTUAL_OUTCOME" = "$EXPECTED_OUTCOME"
+          report=not_posted
+          if [ "$COMMENT_OUTCOME" = posted ]; then
+            [[ "$COMMENT_URL" =~ \#issuecomment-([0-9]+)$ ]]
+            gh api "repos/$GITHUB_REPOSITORY/issues/comments/${BASH_REMATCH[1]}" > "$RUNNER_TEMP/comment.json"
+            python3 - "$RUNNER_TEMP/comment.json" "$ACTUAL_REPORT" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          body = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["body"].replace("\r\n", "\n")
+          begin = "<!-- weavegate-report-begin -->\n"
+          fence, _, rest = body[body.index(begin) + len(begin):].partition("text\n")
+          assert set(fence) == {"`"} and len(fence) >= 4, fence
+          embedded = rest[:rest.index(fence + "\n<!-- weavegate-report-end -->")]
+          assert embedded.encode("utf-8") == Path(sys.argv[2]).read_bytes(), "embedded report differs from report.md"
+          PY
+            report=byte_identical
+          else
+            test -z "$COMMENT_URL"
+          fi
+          printf 'ACTION_COMMENT_LIVE_RESULT variant=%s requested=%s outcome=%s report=%s gate=%s\n' \
+            '${{ matrix.variant }}' "$REQUESTED" "$COMMENT_OUTCOME" "$report" "$ACTUAL_OUTCOME"
+
+  gate-replay:
+    if: github.event_name != 'schedule'
+    needs: reusable-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Download the evidence and import its schedule as the comment instructs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name weavegate-gate-vulnerable --dir weavegate-evidence
+          schedule_id=$(python3 -c 'import json; print(json.load(open("weavegate-evidence/schedule.json"))["id"])')
+          [[ "$schedule_id" =~ ^sch_[0-9a-f]{12}$ ]]
+          mkdir -p .weavegate/schedules
+          cp weavegate-evidence/schedule.json ".weavegate/schedules/$schedule_id.json"
+
+      - name: Install the release the gate ran
+        id: install
+        env:
+          WEAVEGATE_VERSION: v0.1.0-alpha
+          WEAVEGATE_EVIDENCE_DIR: ${{ runner.temp }}
+        run: python3 scripts/actions-gate.py install
+
+      # The replay line is split into arguments and executed without a shell;
+      # report content never becomes shell source.
+      - name: Run the uploaded report's replay line in this fresh workspace
+        env:
+          WEAVEGATE_BINARY: ${{ steps.install.outputs.binary }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import shlex
+          import subprocess
+          import sys
+
+          report, = Path("weavegate-evidence/runs").glob("*/report.md")
+          original = report.read_bytes()
+          line, = (line for line in original.decode("utf-8").splitlines() if line.startswith("replay: "))
+          argv = shlex.split(line[len("replay: "):])
+          assert argv[0] == "weavegate", argv
+          process = subprocess.run([os.environ["WEAVEGATE_BINARY"], *argv[1:]], capture_output=True, text=True, check=False)
+          sys.stdout.write(process.stdout)
+          sys.stderr.write(process.stderr)
+          assert process.returncode == 2, process.returncode
+          replayed = Path(process.stdout.splitlines()[-1]) / "report.md"
+          assert replayed.read_bytes() == original, "replayed report differs from the uploaded report"
+          print("ACTION_REPLAY_RESULT source=uploaded_artifact schedule=imported command=report_replay_line exit=2 report=byte_identical")
+          PY
