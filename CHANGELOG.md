@@ -35,8 +35,9 @@ workflow fails before publication if the placeholder remains.
 ### Changed
 
 - Configuration-only CLI selection of an owned external JVM adapter, with
-  launch and registration preflight, bounded startup/stop composition, and
-  external JAR provenance in the run manifest.
+  launch, registration, and start-frame-size preflight, bounded startup/stop
+  composition, and external JAR provenance in the run manifest. Each JVM
+  launches a verified JAR snapshot, and repeated sessions share one wire run ID.
 - A completed run whose diagnostic derivation fails now retains its evidence as
   `artifact_version` 3 and exits 5. Ordinary runs remain version 2, preserving
   the released meaning that version 2 `diagnostics: []` means derivation

@@ -2,8 +2,12 @@ package main
 
 import (
 	"archive/zip"
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -40,6 +44,9 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 	if e.Capacity < len(selected.Workers) {
 		return composition{}, ci.InputError(fmt.Errorf("resolve external SUT: capacity %d is smaller than %d scenario workers", e.Capacity, len(selected.Workers)))
 	}
+	if len(selected.Workers) == 0 {
+		return composition{}, ci.InputError(fmt.Errorf("resolve external SUT: selected scenario has no workers"))
+	}
 	commands := make([]string, 0, len(selected.Workers))
 	for _, worker := range selected.Workers {
 		if !wireName(worker.ID) || !wireName(worker.Command) {
@@ -60,6 +67,9 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 			return composition{}, ci.InputError(fmt.Errorf("resolve external SUT: invalid sync point %q", point))
 		}
 	}
+	if err := validateExternalStartSize(variant, selected.Workers[0].Args, commands, selected.SyncPoints, e.Capacity, e.CancelTimeoutMS); err != nil {
+		return composition{}, ci.InputError(err)
+	}
 	java, err := exec.LookPath(e.Java)
 	if err != nil {
 		return composition{}, ci.InputError(fmt.Errorf("resolve external SUT: java executable is unavailable: %w", err))
@@ -68,6 +78,10 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 	if err != nil {
 		return composition{}, ci.InputError(fmt.Errorf("resolve external SUT: jar: %w", err))
 	}
+	var wireRun [16]byte
+	if _, err := rand.Read(wireRun[:]); err != nil {
+		return composition{}, fmt.Errorf("resolve external SUT: generate wire run ID: %w", err)
+	}
 	const millisLimit = int64(math.MaxInt64 / int64(time.Millisecond))
 	arrive := int64(cfg.Run.ArriveTimeoutMS)
 	if arrive < 1 || arrive > (millisLimit-int64(e.StartupTimeoutMS))/60 {
@@ -75,7 +89,7 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 	}
 	runMS := int64(e.StartupTimeoutMS) + 60*arrive
 	opts := external.Options{
-		Java: java, JAR: e.JAR, Commands: commands,
+		Java: java, Commands: commands, RunID: hex.EncodeToString(wireRun[:]),
 		Points: append([]string(nil), selected.SyncPoints...), Capacity: e.Capacity,
 		StartupTimeout: time.Duration(e.StartupTimeoutMS) * time.Millisecond,
 		CancelTimeout:  time.Duration(e.CancelTimeoutMS) * time.Millisecond,
@@ -83,11 +97,18 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 	}
 	return composition{
 		NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
-			current, err := digestJAR(e.JAR)
-			if err != nil || current != jarDigest {
-				return nil, fmt.Errorf("external SUT jar changed after preflight")
+			snapshot, err := snapshotJAR(e.JAR, jarDigest)
+			if err != nil {
+				return nil, err
 			}
-			return external.New(opts, client)
+			launchOpts := opts
+			launchOpts.JAR = snapshot
+			adapter, err := external.New(launchOpts, client)
+			if err != nil {
+				_ = os.RemoveAll(filepath.Dir(snapshot))
+				return nil, err
+			}
+			return &snapshotAdapter{Adapter: adapter, path: snapshot}, nil
 		},
 		Variants: []string{variant},
 		Timeouts: &Timeouts{
@@ -98,6 +119,71 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 		},
 		SUTSHA256: "sha256:" + jarDigest,
 	}, nil
+}
+
+// The fixture supplies the database descriptor later. Reserve room for its
+// fields while bounding every byte contributed by the selected scenario.
+const externalDatabaseReserve = 4 << 10
+
+func validateExternalStartSize(variant string, params map[string]string, commands, points []string, capacity, cancelMS int) error {
+	frame := map[string]any{
+		"v": 1, "type": "start", "run": strings.Repeat("0", 32),
+		"session": strings.Repeat("0", 32), "seq": 1,
+		"body": map[string]any{
+			"variant": variant, "params": params, "commands": commands,
+			"points": points, "capacity": capacity, "startup_ms": 2147483647,
+			"cancel_ms": cancelMS, "database": map[string]any{},
+		},
+	}
+	raw, err := json.Marshal(frame)
+	if err != nil || len(raw) > external.MaxFrameSize-externalDatabaseReserve {
+		return fmt.Errorf("resolve external SUT: selected scenario exceeds the start frame size limit")
+	}
+	return nil
+}
+
+func snapshotJAR(path, expected string) (_ string, err error) {
+	source, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("external SUT jar changed after preflight: %w", err)
+	}
+	defer func() { _ = source.Close() }()
+	dir, err := os.MkdirTemp("", "weavegate-jar-")
+	if err != nil {
+		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+	pathSnapshot := filepath.Join(dir, "sut.jar")
+	target, err := os.OpenFile(pathSnapshot, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+	}
+	h := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(target, h), source)
+	closeErr := target.Close()
+	if copyErr != nil || closeErr != nil {
+		return "", fmt.Errorf("snapshot external SUT jar: %w", errors.Join(copyErr, closeErr))
+	}
+	if hex.EncodeToString(h.Sum(nil)) != expected {
+		return "", fmt.Errorf("external SUT jar changed after preflight")
+	}
+	if err := os.Chmod(pathSnapshot, 0o400); err != nil {
+		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+	}
+	return pathSnapshot, nil
+}
+
+type snapshotAdapter struct {
+	sut.Adapter
+	path string
+}
+
+func (a *snapshotAdapter) Stop(ctx context.Context) error {
+	return errors.Join(a.Adapter.Stop(ctx), os.RemoveAll(filepath.Dir(a.path)))
 }
 
 func wireName(value string) bool {

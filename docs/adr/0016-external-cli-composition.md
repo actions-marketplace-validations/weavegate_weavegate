@@ -20,9 +20,15 @@ the sorted unique command list and ordered point list from that scenario. The
 external adapter checks the peer's `ready` registration against those lists
 before admitting workers. A command that exists only in the remote app cannot
 be proved at static preflight; missing or mismatched remote registration fails
-startup. Each adapter factory rechecks the JAR digest before construction. A
-changed JAR fails the run rather than publishing the earlier preflight digest
-as its provenance. The manifest adds `sut_sha256` for external runs; the
+startup. Each adapter factory copies the JAR into a private per-session snapshot
+and checks its digest before construction. The JVM launches that snapshot, so a
+replacement of the configured path after construction cannot change the
+executed bytes. A changed JAR during copying fails the run rather than
+publishing the earlier preflight digest as its provenance. One wire run ID is
+shared by all schedule sessions in an operation; each session has a fresh ID.
+The selected scenario's start payload is checked against the wire frame limit
+before provisioning, with space reserved for the fixture's later database
+descriptor. The manifest adds `sut_sha256` for external runs; the
 field is absent for Go-native runs. This is an additive v2/v3 artifact field,
 so it does not change `artifact_version`.
 

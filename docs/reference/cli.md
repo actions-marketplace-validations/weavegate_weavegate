@@ -41,7 +41,8 @@ values and an exploration plan larger than 5,000 candidates are input errors
 For `adapter: external`, this boundary also resolves the Java executable and
 prebuilt JAR, validates the JAR manifest, registration names and capacity,
 and checks budget arithmetic. The child is launched only after fixture
-provisioning. See the [external config keys](config.md#external-jvm).
+provisioning. The selected scenario's start payload is checked against the wire
+frame limit before provisioning. See the [external config keys](config.md#external-jvm).
 
 ### `--replay` resolution order
 
@@ -190,9 +191,8 @@ written by `run`, not a second rendering. Longer explanations live under
 
 ## Current limits
 
-- Only the built-in `gonative` adapter is supported; `target.sut.adapter`
-  accepts no other value yet.
-- Only the entrypoints registered in the binary can run — currently
-  `matching-slice`. An external fixture cannot be selected from the CLI (see
-  [config.md](config.md)).
+- The `gonative` adapter can run only entrypoints registered in the binary —
+  currently `matching-slice`. The `external` adapter launches a configured,
+  prebuilt executable JAR; it does not compile or discover an application
+  (see [config.md](config.md)).
 - `report --timeline` does not exist yet; no flag reserves that name.

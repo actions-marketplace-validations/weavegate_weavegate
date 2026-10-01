@@ -39,6 +39,7 @@ func TestExternalCLISeparateJVM(t *testing.T) {
 		t.Fatalf("compile mini peer: %v\n%s", err, output)
 	}
 	jarPath := filepath.Join(dir, "mini.jar")
+	wireLog := filepath.Join(dir, "wire-ids.txt")
 	if output, err := exec.Command(jarTool, "--create", "--file", jarPath, "--main-class", "MiniPeer", "-C", classes, ".").CombinedOutput(); err != nil {
 		t.Fatalf("package mini peer: %v\n%s", err, output)
 	}
@@ -66,6 +67,7 @@ scenarios:
         command: ping
         args:
           value: ok
+          wire_log: %s
     sync_points: [at]
 oracle:
   assertions:
@@ -75,7 +77,7 @@ oracle:
 run:
   repeat: 2
   arrive_timeout_ms: 1000
-`, filepath.Join(root, "fixtures/matching-slice/db/migration"), filepath.Join(root, "fixtures/matching-slice/db/seed.sql"), java, jarPath)
+`, filepath.Join(root, "fixtures/matching-slice/db/migration"), filepath.Join(root, "fixtures/matching-slice/db/seed.sql"), java, jarPath, wireLog)
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +106,18 @@ run:
 	}
 	if !strings.Contains(stdout.String(), "PASS") {
 		t.Fatalf("stdout = %s", stdout.String())
+	}
+	wireIDs, err := os.ReadFile(wireLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(wireIDs)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("wire identities = %q, want two sessions", wireIDs)
+	}
+	first, second := strings.Fields(lines[0]), strings.Fields(lines[1])
+	if len(first) != 2 || len(second) != 2 || first[0] != second[0] || first[1] == second[1] {
+		t.Fatalf("wire identities = %q, want shared run and distinct sessions", wireIDs)
 	}
 	t.Log("EXTERNAL_CLI_RESULT separate_jvm=true config_only=true repeat=2 manifest_sha256=true")
 }

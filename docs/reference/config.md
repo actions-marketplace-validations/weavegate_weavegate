@@ -89,6 +89,10 @@ commands, ordered sync points, and scenario-wide worker parameters. The child
 must confirm exactly those commands, points, and capacity at `ready`, before
 any worker starts. Unknown commands in the application are detected at that
 startup check; they cannot be inspected from a JAR during static preflight.
+Preflight rejects a selected scenario whose encoded start data leaves less
+than 4 KiB for the fixture-supplied database descriptor within the 1 MiB wire
+frame limit. Each child launches from a private JAR snapshot whose bytes match
+the digest recorded in `manifest.sut_sha256`.
 For an external adapter, replay IDs resolve from saved runs or portable
 schedule files; there is no embedded external schedule registry.
 

@@ -1,6 +1,9 @@
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -39,6 +42,8 @@ public final class MiniPeer {
             if (type.equals("start")) {
                 run = field(frame, "run");
                 session = field(frame, "session");
+                Files.writeString(Path.of(field(frame, "wire_log")), run + " " + session + "\n",
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
                 field(frame, "password");
                 if (!frame.contains("\"commands\":[\"ping\"]") || !frame.contains("\"points\":[\"at\"]"))
                     throw new IllegalArgumentException("registration");

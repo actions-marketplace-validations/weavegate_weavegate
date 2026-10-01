@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,6 +73,30 @@ func TestExternalPreflightBeforeFixture(t *testing.T) {
 	}
 }
 
+func TestExternalOversizedStartBeforeFixture(t *testing.T) {
+	cfg := externalResolveConfig(t)
+	content, err := os.ReadFile(filepath.Join(repoRoot(t), "fixtures/matching-slice/.weavegate/config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := strings.Replace(string(content), "    adapter: gonative\n    entrypoint: matching-slice\n    variant: vulnerable\n",
+		fmt.Sprintf("    adapter: external\n    variant: vulnerable\n    external:\n      java: %s\n      jar: %s\n      capacity: 2\n      startup_timeout_ms: 30000\n      cancel_timeout_ms: 5000\n      stop_timeout_ms: 10000\n", cfg.Target.SUT.External.Java, cfg.Target.SUT.External.JAR), 1)
+	mutated = strings.ReplaceAll(mutated, `request_id: "42"`, `request_id: "`+strings.Repeat("x", 1<<20)+`"`)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(mutated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	factoryCalls := 0
+	err = runScenario(context.Background(), &stdout, &stderr, runFlags{config: path, scenario: "concurrent-assign", out: t.TempDir()}, func() fixture.Provisioner {
+		factoryCalls++
+		return nil
+	})
+	if exitCodeFromError(err) != ci.ExitInput || factoryCalls != 0 || !strings.Contains(stderr.String(), "start frame size limit") {
+		t.Fatalf("oversized start exit/calls = %d/%d; err=%v; stderr=%s", exitCodeFromError(err), factoryCalls, err, stderr.String())
+	}
+}
+
 func TestExternalResolvePreflight(t *testing.T) {
 	cfg := externalResolveConfig(t)
 	resolved, err := Resolve(cfg, "concurrent-assign", "fixed")
@@ -85,14 +111,36 @@ func TestExternalResolvePreflight(t *testing.T) {
 	}
 	client := syncpoint.New()
 	defer client.Close()
-	if _, err := resolved.NewAdapter(client); err != nil {
+	adapter, err := resolved.NewAdapter(client)
+	if err != nil {
 		t.Fatalf("construct external: %v", err)
 	}
-	if err := os.WriteFile(cfg.Target.SUT.External.JAR, []byte("changed"), 0o644); err != nil {
+	snapshot := adapter.(*snapshotAdapter).path
+	wantSnapshot, err := os.ReadFile(snapshot)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if resolved.SUTSHA256 != fmt.Sprintf("sha256:%x", sha256.Sum256(wantSnapshot)) {
+		t.Fatalf("snapshot digest differs from manifest provenance")
+	}
+	replacement := filepath.Join(filepath.Dir(cfg.Target.SUT.External.JAR), "replacement.jar")
+	if err := os.WriteFile(replacement, []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, cfg.Target.SUT.External.JAR); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(snapshot); err != nil || !bytes.Equal(got, wantSnapshot) {
+		t.Fatalf("snapshot changed after configured JAR replacement: %v", err)
 	}
 	if _, err := resolved.NewAdapter(client); err == nil {
 		t.Fatal("factory accepted changed jar")
+	}
+	if err := adapter.Stop(context.Background()); err != nil {
+		t.Fatalf("stop unused adapter: %v", err)
+	}
+	if _, err := os.Stat(snapshot); !os.IsNotExist(err) {
+		t.Fatalf("snapshot remains after stop: %v", err)
 	}
 
 	cases := map[string]func(*config.Config){
@@ -105,7 +153,14 @@ func TestExternalResolvePreflight(t *testing.T) {
 			c.Scenarios["concurrent-assign"] = s
 		},
 		"invalid variant override": func(c *config.Config) { c.Target.SUT.Variant = "bad\nvariant" },
-		"budget overflow":          func(c *config.Config) { c.Run.ArriveTimeoutMS = int(^uint(0) >> 1) },
+		"oversized start frame": func(c *config.Config) {
+			s := c.Scenarios["concurrent-assign"]
+			for i := range s.Workers {
+				s.Workers[i].Args = map[string]string{"value": strings.Repeat("\"", 1<<20)}
+			}
+			c.Scenarios["concurrent-assign"] = s
+		},
+		"budget overflow": func(c *config.Config) { c.Run.ArriveTimeoutMS = int(^uint(0) >> 1) },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
