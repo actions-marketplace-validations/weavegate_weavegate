@@ -14,15 +14,17 @@ The Go-native entrypoint registry and its variant list remain independent.
 
 Before provisioning, the CLI resolves the Java executable and JAR relative to
 the config file (except a bare Java command resolved from `PATH`), checks that
-the JAR is readable and self-contained, requires one manifest with `Main-Class`
-in its main section, checks capacity against the selected scenario's worker
-count, validates wire names, and derives the sorted unique command list and
-ordered point list from that scenario. The external adapter checks the peer's
-`ready` registration against those lists
-before admitting workers. A command that exists only in the remote app cannot
+the JAR is readable and self-contained, requires one manifest with a unique
+`Main-Class` in its main section, checks capacity against the selected
+scenario's worker count, validates wire names, and derives the sorted unique
+command list and ordered point list from that scenario. The external adapter
+checks the peer's `ready` registration against those lists before admitting
+workers. A command that exists only in the remote app cannot
 be proved at static preflight; missing or mismatched remote registration fails
-startup. Each adapter factory copies the JAR into a private per-session snapshot
-and checks its digest before construction. The JVM launches that snapshot, so a
+startup. Preflight hashes the configured JAR while copying it into a private
+image, validates that image's manifest, then discards it. Each external adapter
+copies a per-session snapshot during `Start` and checks its digest against
+preflight before launching. The JVM launches that snapshot, so a
 replacement of the configured path after construction cannot change the
 executed bytes. A changed JAR during copying fails the run rather than
 publishing the earlier preflight digest as its provenance. One wire run ID is
@@ -38,9 +40,10 @@ coordination to 20×. For external runs, the run context is
 `startup_timeout_ms + 60 × arrive_timeout_ms`; this single deadline includes
 fixture reset, JVM startup, command execution, and Oracle evaluation. Startup
 is independently bounded by the configured startup budget and that remaining
-run context. The adapter factory receives the run context and stops waiting for
-snapshot copying when its deadline expires. If filesystem I/O remains blocked,
-the private copy finishes cleanup asynchronously once that I/O returns. Stop
+run context. The adapter's `Start` receives the run context and stops waiting
+for snapshot copying when its deadline expires; the engine factory signature
+remains adapter-independent. If filesystem I/O remains blocked, the private
+copy finishes cleanup asynchronously once that I/O returns. Stop
 has a detached context with `stop_timeout_ms`, which matches the external
 adapter's total stop budget; the adapter reserves the latter half for
 termination and process reaping, and sends the remaining first-half budget

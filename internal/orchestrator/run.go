@@ -201,7 +201,7 @@ func (o *Orchestrator) Run(
 		}
 	}()
 
-	created, err := o.config.NewAdapter(runCtx, runtime)
+	created, err := o.config.NewAdapter(runtime)
 	if err != nil {
 		return result, fmt.Errorf("run schedule %q: create adapter: %w", schedule.ID, err)
 	}

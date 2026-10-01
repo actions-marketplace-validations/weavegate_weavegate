@@ -80,7 +80,7 @@ func TestRunRejectsInvalidOracleEvaluationsAndCleansUp(t *testing.T) {
 				Fixture:               fixtureRunner,
 				DB:                    &fixture.DB{},
 				NewRuntime:            func() syncpoint.Runtime { return runtime },
-				NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
+				NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
 				BlockInferenceTimeout: testBlockTimeout,
 				StepTimeout:           testStepTimeout,
 				RunTimeout:            testRunTimeout,
@@ -116,12 +116,10 @@ func TestRunRejectsInvalidOracleEvaluationsAndCleansUp(t *testing.T) {
 func TestRunRejectsTypedNilOracleBeforeReset(t *testing.T) {
 	fixtureRunner := &recordingFixture{}
 	executor := newTestOrchestrator(t, Config{
-		Fixture:    fixtureRunner,
-		DB:         &fixture.DB{},
-		NewRuntime: syncpoint.New,
-		NewAdapter: func(_ context.Context, client syncpoint.Client) (sut.Adapter, error) {
-			return newScriptedAdapter(client), nil
-		},
+		Fixture:               fixtureRunner,
+		DB:                    &fixture.DB{},
+		NewRuntime:            syncpoint.New,
+		NewAdapter:            func(client syncpoint.Client) (sut.Adapter, error) { return newScriptedAdapter(client), nil },
 		BlockInferenceTimeout: testBlockTimeout,
 		StepTimeout:           testStepTimeout,
 		RunTimeout:            testRunTimeout,
@@ -150,7 +148,7 @@ func TestRunOracleEvaluationUsesRemainingDeadlineAndCleansUp(t *testing.T) {
 		Fixture:               fixtureRunner,
 		DB:                    &fixture.DB{},
 		NewRuntime:            func() syncpoint.Runtime { return runtime },
-		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
+		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
 		BlockInferenceTimeout: 5 * time.Millisecond,
 		StepTimeout:           20 * time.Millisecond,
 		RunTimeout:            100 * time.Millisecond,

@@ -3,7 +3,6 @@
 package orchestrator
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -17,10 +16,9 @@ import (
 type RuntimeFactory func() syncpoint.Runtime
 
 // AdapterFactory creates a fresh adapter bound to one run's runtime client.
-// The context carries that run's deadline, including adapter construction.
 // A factory that cannot compose an adapter for this run returns the reason,
 // so the run reports that cause instead of an anonymous factory failure.
-type AdapterFactory func(context.Context, syncpoint.Client) (sut.Adapter, error)
+type AdapterFactory func(syncpoint.Client) (sut.Adapter, error)
 
 // Config supplies the already-provisioned fixture and bounded run dependencies.
 type Config struct {

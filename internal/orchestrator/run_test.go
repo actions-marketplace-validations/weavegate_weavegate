@@ -25,34 +25,6 @@ const (
 	testStopTimeout  = 500 * time.Millisecond
 )
 
-func TestRunPassesDeadlineToAdapterFactory(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	called := false
-	orchestrator := newTestOrchestrator(t, Config{
-		Fixture:    &recordingFixture{},
-		DB:         &fixture.DB{},
-		NewRuntime: syncpoint.New,
-		NewAdapter: func(factoryCtx context.Context, _ syncpoint.Client) (sut.Adapter, error) {
-			called = true
-			if _, ok := factoryCtx.Deadline(); !ok {
-				t.Fatal("adapter factory has no run deadline")
-			}
-			cancel()
-			<-factoryCtx.Done()
-			return nil, factoryCtx.Err()
-		},
-		BlockInferenceTimeout: testBlockTimeout,
-		StepTimeout:           testStepTimeout,
-		RunTimeout:            testRunTimeout,
-		StopTimeout:           testStopTimeout,
-	})
-	_, err := orchestrator.Run(ctx, matchingScenario(), matchingSchedule(t), stableEvaluator)
-	if !called || !errors.Is(err, context.Canceled) {
-		t.Fatalf("factory called/error = %t/%v, want cancellation", called, err)
-	}
-}
-
 func TestRunSavedScheduleWithOracle(t *testing.T) {
 	fixtureRunner := &recordingFixture{}
 	runtime := newRuntimeProbe()
@@ -62,7 +34,7 @@ func TestRunSavedScheduleWithOracle(t *testing.T) {
 		Fixture:    fixtureRunner,
 		DB:         &fixture.DB{},
 		NewRuntime: func() syncpoint.Runtime { return runtime },
-		NewAdapter: func(_ context.Context, client syncpoint.Client) (sut.Adapter, error) {
+		NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
 			adapter = newScriptedAdapter(client)
 			return adapter, nil
 		},
@@ -177,7 +149,7 @@ func TestRunQuarantinesFailedStopAcrossCalls(t *testing.T) {
 				}
 				return runtime
 			},
-			NewAdapter: func(_ context.Context, client syncpoint.Client) (sut.Adapter, error) {
+			NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
 				starts++
 				adapter := newScriptedAdapter(client)
 				adapter.stopErr = stopCause
@@ -229,7 +201,7 @@ func TestRunQuarantinesSessionFaultAfterSuccessfulStop(t *testing.T) {
 	starts := 0
 	o := newTestOrchestrator(t, Config{
 		Fixture: fixtureRunner, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
-		NewAdapter: func(context.Context, syncpoint.Client) (sut.Adapter, error) {
+		NewAdapter: func(syncpoint.Client) (sut.Adapter, error) {
 			starts++
 			a := &outcomeAdapter{}
 			a.stop = func(context.Context) error { a.faults.Fail(cause); return nil }
@@ -259,7 +231,7 @@ func TestRunSuccessfulStopAllowsReuse(t *testing.T) {
 	starts := 0
 	o := newTestOrchestrator(t, Config{
 		Fixture: fixtureRunner, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
-		NewAdapter: func(_ context.Context, client syncpoint.Client) (sut.Adapter, error) {
+		NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
 			starts++
 			return newScriptedAdapter(client), nil
 		},
@@ -282,7 +254,7 @@ func TestRunDefersPointBehindPendingWorkerArrival(t *testing.T) {
 		Fixture:               fixtureRunner,
 		DB:                    &fixture.DB{},
 		NewRuntime:            func() syncpoint.Runtime { return runtime },
-		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
+		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
 		BlockInferenceTimeout: testBlockTimeout,
 		StepTimeout:           testStepTimeout,
 		RunTimeout:            testRunTimeout,
@@ -349,7 +321,7 @@ func TestRunResolvesDeferredWorkerPointsInOrder(t *testing.T) {
 		Fixture:               &recordingFixture{},
 		DB:                    &fixture.DB{},
 		NewRuntime:            func() syncpoint.Runtime { return runtime },
-		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
+		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
 		BlockInferenceTimeout: testBlockTimeout,
 		StepTimeout:           testStepTimeout,
 		RunTimeout:            testRunTimeout,
@@ -402,7 +374,7 @@ func TestRunPreservesScheduleBarrierWhenDrainingPending(t *testing.T) {
 		Fixture:               &recordingFixture{},
 		DB:                    &fixture.DB{},
 		NewRuntime:            func() syncpoint.Runtime { return runtime },
-		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
+		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
 		BlockInferenceTimeout: testBlockTimeout,
 		StepTimeout:           testStepTimeout,
 		RunTimeout:            testRunTimeout,
@@ -461,7 +433,7 @@ func TestRunReleasesLaterStepsBeforeCollectingFinalWorker(t *testing.T) {
 		Fixture:               &recordingFixture{},
 		DB:                    &fixture.DB{},
 		NewRuntime:            func() syncpoint.Runtime { return runtime },
-		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
+		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
 		BlockInferenceTimeout: testBlockTimeout,
 		StepTimeout:           testStepTimeout,
 		RunTimeout:            testRunTimeout,
@@ -515,7 +487,7 @@ func TestRunContinuesPendingDrainBeforeCollectingFinalWorker(t *testing.T) {
 		Fixture:               &recordingFixture{},
 		DB:                    &fixture.DB{},
 		NewRuntime:            func() syncpoint.Runtime { return runtime },
-		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
+		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
 		BlockInferenceTimeout: testBlockTimeout,
 		StepTimeout:           testStepTimeout,
 		RunTimeout:            testRunTimeout,
@@ -622,7 +594,7 @@ func TestRunSerializesSharedFixtureLifecycle(t *testing.T) {
 		Fixture:    fixtureRunner,
 		DB:         &fixture.DB{},
 		NewRuntime: syncpoint.New,
-		NewAdapter: func(_ context.Context, client syncpoint.Client) (sut.Adapter, error) {
+		NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
 			return newEagerAdapter(client), nil
 		},
 		BlockInferenceTimeout: testBlockTimeout,
@@ -707,7 +679,7 @@ func TestRunCleanup(t *testing.T) {
 				factoryCalls++
 				return syncpoint.New()
 			},
-			NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return newScriptedAdapter(nil), nil },
+			NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return newScriptedAdapter(nil), nil },
 			BlockInferenceTimeout: testBlockTimeout,
 			StepTimeout:           testStepTimeout,
 			RunTimeout:            testRunTimeout,
@@ -794,7 +766,7 @@ func TestRunCleanup(t *testing.T) {
 				Fixture:               fixtureRunner,
 				DB:                    &fixture.DB{},
 				NewRuntime:            func() syncpoint.Runtime { return runtime },
-				NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
+				NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
 				BlockInferenceTimeout: testBlockTimeout,
 				StepTimeout:           testStepTimeout,
 				RunTimeout:            testRunTimeout,
@@ -836,7 +808,7 @@ func TestRunPreservesCancellationBeforeFinalizationSetup(t *testing.T) {
 			Fixture:               fixtureRunner,
 			DB:                    &fixture.DB{},
 			NewRuntime:            syncpoint.New,
-			NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return newScriptedAdapter(nil), nil },
+			NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return newScriptedAdapter(nil), nil },
 			BlockInferenceTimeout: testBlockTimeout,
 			StepTimeout:           testStepTimeout,
 			RunTimeout:            testRunTimeout,
@@ -922,7 +894,7 @@ func TestRunPreservesCancellationBeforeFinalizationSetup(t *testing.T) {
 			Fixture:               fixtureRunner,
 			DB:                    &fixture.DB{},
 			NewRuntime:            syncpoint.New,
-			NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return newScriptedAdapter(nil), nil },
+			NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return newScriptedAdapter(nil), nil },
 			BlockInferenceTimeout: testBlockTimeout,
 			StepTimeout:           testStepTimeout,
 			RunTimeout:            10 * time.Millisecond,
@@ -954,7 +926,7 @@ func TestRunStopsWorkersBeforeCancelingCollectors(t *testing.T) {
 		Fixture:               &recordingFixture{},
 		DB:                    &fixture.DB{},
 		NewRuntime:            func() syncpoint.Runtime { return runtime },
-		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
+		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
 		BlockInferenceTimeout: testBlockTimeout,
 		StepTimeout:           testStepTimeout,
 		RunTimeout:            testRunTimeout,
@@ -983,12 +955,10 @@ func TestRunStopsWorkersBeforeCancelingCollectors(t *testing.T) {
 
 func TestRunRejectsInvalidConfig(t *testing.T) {
 	base := Config{
-		Fixture:    &recordingFixture{},
-		DB:         &fixture.DB{},
-		NewRuntime: syncpoint.New,
-		NewAdapter: func(_ context.Context, client syncpoint.Client) (sut.Adapter, error) {
-			return newScriptedAdapter(client), nil
-		},
+		Fixture:               &recordingFixture{},
+		DB:                    &fixture.DB{},
+		NewRuntime:            syncpoint.New,
+		NewAdapter:            func(client syncpoint.Client) (sut.Adapter, error) { return newScriptedAdapter(client), nil },
 		BlockInferenceTimeout: testBlockTimeout,
 		StepTimeout:           testStepTimeout,
 		RunTimeout:            testRunTimeout,
@@ -1048,7 +1018,7 @@ func TestRunReportsAdapterCompositionFailure(t *testing.T) {
 		Fixture:               fixtureRunner,
 		DB:                    &fixture.DB{},
 		NewRuntime:            syncpoint.New,
-		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return nil, composeErr },
+		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return nil, composeErr },
 		BlockInferenceTimeout: testBlockTimeout,
 		StepTimeout:           testStepTimeout,
 		RunTimeout:            testRunTimeout,

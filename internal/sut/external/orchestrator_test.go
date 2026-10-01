@@ -44,7 +44,7 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 					return oracle.NewEvaluation(oracle.OracleResult{OracleID: "synthetic-pass"})
 				})
 				o, err := orchestrator.New(orchestrator.Config{Fixture: idleFixture{}, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
-					NewAdapter: func(_ context.Context, client syncpoint.Client) (sut.Adapter, error) {
+					NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
 						p.a.client = client
 						return preparedAdapter{p.a}, nil
 					},
@@ -135,7 +135,7 @@ func TestOrchestratorRetainsTerminalPendingBridgeAtFault(t *testing.T) {
 		p.a.beforeRelease = func() { close(held); <-resume }
 		o, err := orchestrator.New(orchestrator.Config{
 			Fixture: idleFixture{}, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
-			NewAdapter: func(_ context.Context, client syncpoint.Client) (sut.Adapter, error) {
+			NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
 				p.a.client = client
 				return preparedAdapter{p.a}, nil
 			},

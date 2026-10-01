@@ -24,6 +24,7 @@ import (
 
 	"github.com/weavegate/weavegate/internal/ci"
 	"github.com/weavegate/weavegate/internal/config"
+	"github.com/weavegate/weavegate/internal/fixture"
 	"github.com/weavegate/weavegate/internal/sut"
 	"github.com/weavegate/weavegate/internal/sut/external"
 	"github.com/weavegate/weavegate/internal/syncpoint"
@@ -98,21 +99,8 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 		StopTimeout:    time.Duration(e.StopTimeoutMS) * time.Millisecond,
 	}
 	return composition{
-		NewAdapter: func(ctx context.Context, client syncpoint.Client) (sut.Adapter, error) {
-			snapshot, err := boundedSnapshot(ctx, func() (string, error) {
-				return snapshotJAR(ctx, e.JAR, jarDigest)
-			})
-			if err != nil {
-				return nil, err
-			}
-			launchOpts := opts
-			launchOpts.JAR = snapshot
-			adapter, err := external.New(launchOpts, client)
-			if err != nil {
-				_ = os.RemoveAll(filepath.Dir(snapshot))
-				return nil, err
-			}
-			return &snapshotAdapter{Adapter: adapter, path: snapshot}, nil
+		NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+			return &snapshotAdapter{client: client, opts: opts, jar: e.JAR, digest: jarDigest}, nil
 		},
 		Variants: []string{variant},
 		Timeouts: &Timeouts{
@@ -182,18 +170,33 @@ func validateExternalStartSize(variant string, params map[string]string, command
 	return nil
 }
 
-func snapshotJAR(ctx context.Context, path, expected string) (_ string, err error) {
+func snapshotJAR(ctx context.Context, path, expected string) (string, error) {
+	snapshot, actual, err := copyJARImage(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	if actual != expected {
+		_ = os.RemoveAll(filepath.Dir(snapshot))
+		return "", fmt.Errorf("external SUT jar changed after preflight")
+	}
+	return snapshot, nil
+}
+
+// copyJARImage hashes only bytes written to the private image. Preflight
+// validates that image, so the advertised digest and manifest describe the
+// same immutable bytes even if the configured path is rewritten in place.
+func copyJARImage(ctx context.Context, path string) (_ string, _ string, err error) {
 	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+		return "", "", fmt.Errorf("snapshot external SUT jar: %w", err)
 	}
 	source, err := os.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("external SUT jar changed after preflight: %w", err)
+		return "", "", fmt.Errorf("open external SUT jar: %w", err)
 	}
 	defer func() { _ = source.Close() }()
 	dir, err := os.MkdirTemp("", "weavegate-jar-")
 	if err != nil {
-		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+		return "", "", fmt.Errorf("snapshot external SUT jar: %w", err)
 	}
 	defer func() {
 		if err != nil {
@@ -203,7 +206,7 @@ func snapshotJAR(ctx context.Context, path, expected string) (_ string, err erro
 	pathSnapshot := filepath.Join(dir, "sut.jar")
 	target, err := os.OpenFile(pathSnapshot, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+		return "", "", fmt.Errorf("snapshot external SUT jar: %w", err)
 	}
 	copyDone := make(chan struct{})
 	defer close(copyDone)
@@ -219,21 +222,18 @@ func snapshotJAR(ctx context.Context, path, expected string) (_ string, err erro
 	_, copyErr := copyWithContext(ctx, io.MultiWriter(target, h), source)
 	closeErr := target.Close()
 	if copyErr != nil || closeErr != nil {
-		return "", fmt.Errorf("snapshot external SUT jar: %w", errors.Join(copyErr, closeErr))
-	}
-	if hex.EncodeToString(h.Sum(nil)) != expected {
-		return "", fmt.Errorf("external SUT jar changed after preflight")
+		return "", "", fmt.Errorf("snapshot external SUT jar: %w", errors.Join(copyErr, closeErr))
 	}
 	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+		return "", "", fmt.Errorf("snapshot external SUT jar: %w", err)
 	}
 	if err := os.Chmod(pathSnapshot, 0o400); err != nil {
-		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+		return "", "", fmt.Errorf("snapshot external SUT jar: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+		return "", "", fmt.Errorf("snapshot external SUT jar: %w", err)
 	}
-	return pathSnapshot, nil
+	return pathSnapshot, hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
@@ -264,12 +264,44 @@ func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, 
 }
 
 type snapshotAdapter struct {
-	sut.Adapter
-	path string
+	client  syncpoint.Client
+	opts    external.Options
+	jar     string
+	digest  string
+	adapter sut.Adapter
+	path    string
+}
+
+func (a *snapshotAdapter) Start(ctx context.Context, cfg sut.SUTConfig, db *fixture.DB) (sut.Handle, error) {
+	if a.adapter != nil {
+		return nil, fmt.Errorf("external SUT adapter already started")
+	}
+	snapshot, err := boundedSnapshot(ctx, func() (string, error) {
+		return snapshotJAR(ctx, a.jar, a.digest)
+	})
+	if err != nil {
+		return nil, err
+	}
+	launchOpts := a.opts
+	launchOpts.JAR = snapshot
+	adapter, err := external.New(launchOpts, a.client)
+	if err != nil {
+		_ = os.RemoveAll(filepath.Dir(snapshot))
+		return nil, err
+	}
+	a.adapter, a.path = adapter, snapshot
+	return adapter.Start(ctx, cfg, db)
 }
 
 func (a *snapshotAdapter) Stop(ctx context.Context) error {
-	return errors.Join(a.Adapter.Stop(ctx), os.RemoveAll(filepath.Dir(a.path)))
+	var stopErr, removeErr error
+	if a.adapter != nil {
+		stopErr = a.adapter.Stop(ctx)
+	}
+	if a.path != "" {
+		removeErr = os.RemoveAll(filepath.Dir(a.path))
+	}
+	return errors.Join(stopErr, removeErr)
 }
 
 func wireName(value string) bool {
@@ -285,21 +317,37 @@ func wireName(value string) bool {
 }
 
 func digestJAR(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
+	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
 	if !info.Mode().IsRegular() || filepath.Ext(path) != ".jar" {
 		return "", fmt.Errorf("%q must name a regular .jar file", path)
 	}
+	snapshot, digest, err := copyJARImage(context.Background(), path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(filepath.Dir(snapshot)) }()
+	if err := validateJARImage(snapshot, path); err != nil {
+		return "", err
+	}
+	return digest, nil
+}
+
+func validateJARImage(snapshot, displayPath string) error {
+	file, err := os.Open(snapshot)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
 	archive, err := zip.NewReader(file, info.Size())
 	if err != nil {
-		return "", fmt.Errorf("%q is not a readable jar", path)
+		return fmt.Errorf("%q is not a readable jar", displayPath)
 	}
 	var manifest *zip.File
 	for _, entry := range archive.File {
@@ -307,34 +355,30 @@ func digestJAR(path string) (string, error) {
 			continue
 		}
 		if manifest != nil {
-			return "", fmt.Errorf("%q has duplicate manifest entries", path)
+			return fmt.Errorf("%q has duplicate manifest entries", displayPath)
 		}
 		manifest = entry
 	}
 	if manifest == nil {
-		return "", fmt.Errorf("%q has no Main-Class manifest entry", path)
+		return fmt.Errorf("%q has no Main-Class manifest entry", displayPath)
 	}
 	stream, err := manifest.Open()
 	if err != nil {
-		return "", fmt.Errorf("%q has an unreadable manifest", path)
+		return fmt.Errorf("%q has an unreadable manifest", displayPath)
 	}
 	hasMain, hasClassPath, parseErr := mainManifestAttributes(stream)
 	_, drainErr := io.Copy(io.Discard, stream)
 	closeErr := stream.Close()
 	if err := errors.Join(parseErr, drainErr, closeErr); err != nil {
-		return "", fmt.Errorf("%q has an unreadable manifest: %w", path, err)
+		return fmt.Errorf("%q has an unreadable manifest: %w", displayPath, err)
 	}
 	if hasClassPath {
-		return "", fmt.Errorf("%q has a Class-Path manifest entry; external SUT jars must be self-contained", path)
+		return fmt.Errorf("%q has a Class-Path manifest entry; external SUT jars must be self-contained", displayPath)
 	}
 	if !hasMain {
-		return "", fmt.Errorf("%q has no Main-Class manifest entry", path)
+		return fmt.Errorf("%q has no Main-Class manifest entry", displayPath)
 	}
-	h := sha256.New()
-	if _, err := io.Copy(h, file); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return nil
 }
 
 // Java reads launch attributes from the first manifest section only. A blank
@@ -343,33 +387,41 @@ func mainManifestAttributes(stream io.Reader) (hasMain, hasClassPath bool, err e
 	reader := bufio.NewReader(stream)
 	var key string
 	var valuePresent bool
-	flush := func() {
+	var seenMain, seenClassPath bool
+	flush := func() error {
 		switch {
-		case strings.EqualFold(key, "Main-Class") && valuePresent:
-			hasMain = true
-		case strings.EqualFold(key, "Class-Path") && valuePresent:
-			hasClassPath = true
+		case strings.EqualFold(key, "Main-Class"):
+			if seenMain {
+				return fmt.Errorf("duplicate Main-Class manifest attribute")
+			}
+			seenMain, hasMain = true, valuePresent
+		case strings.EqualFold(key, "Class-Path"):
+			if seenClassPath {
+				return fmt.Errorf("duplicate Class-Path manifest attribute")
+			}
+			seenClassPath, hasClassPath = true, valuePresent
 		}
+		return nil
 	}
 	for {
 		prefix, tailValue, readErr := readManifestLine(reader)
 		if readErr == io.EOF {
-			flush()
-			return hasMain, hasClassPath, nil
+			return hasMain, hasClassPath, flush()
 		}
 		if readErr != nil {
 			return false, false, readErr
 		}
-		line := bytes.TrimSuffix(prefix, []byte{'\r'})
+		line := prefix
 		if len(line) == 0 {
-			flush()
-			return hasMain, hasClassPath, nil
+			return hasMain, hasClassPath, flush()
 		}
 		if line[0] == ' ' {
 			valuePresent = valuePresent || len(bytes.TrimSpace(line[1:])) > 0 || tailValue
 			continue
 		}
-		flush()
+		if err := flush(); err != nil {
+			return false, false, err
+		}
 		name, value, ok := bytes.Cut(line, []byte(": "))
 		if !ok {
 			key, valuePresent = "", false
@@ -385,19 +437,29 @@ func mainManifestAttributes(stream io.Reader) (hasMain, hasClassPath bool, err e
 // scanned for non-whitespace without retaining it.
 func readManifestLine(reader *bufio.Reader) (prefix []byte, tailValue bool, err error) {
 	const prefixLimit = 256
+	sawByte := false
 	for {
-		chunk, more, readErr := reader.ReadLine()
+		b, readErr := reader.ReadByte()
 		if readErr != nil {
+			if readErr == io.EOF && sawByte {
+				return prefix, tailValue, nil
+			}
 			return nil, false, readErr
 		}
-		if len(prefix) < prefixLimit {
-			retained := min(len(chunk), prefixLimit-len(prefix))
-			prefix = append(prefix, chunk[:retained]...)
-			chunk = chunk[retained:]
-		}
-		tailValue = tailValue || len(bytes.TrimSpace(chunk)) > 0
-		if !more {
+		sawByte = true
+		if b == '\n' {
 			return prefix, tailValue, nil
+		}
+		if b == '\r' {
+			if next, err := reader.Peek(1); err == nil && next[0] == '\n' {
+				_, _ = reader.Discard(1)
+			}
+			return prefix, tailValue, nil
+		}
+		if len(prefix) < prefixLimit {
+			prefix = append(prefix, b)
+		} else if b != ' ' && b != '\t' {
+			tailValue = true
 		}
 	}
 }

@@ -467,7 +467,7 @@ func newExploreTestOrchestrator(
 			cleanup.runtimes = append(cleanup.runtimes, runtime)
 			return runtime
 		},
-		NewAdapter: func(_ context.Context, client syncpoint.Client) (sut.Adapter, error) {
+		NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
 			adapter := newEagerAdapter(client)
 			cleanup.adapters = append(cleanup.adapters, adapter)
 			return adapter, nil

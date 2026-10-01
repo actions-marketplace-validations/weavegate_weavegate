@@ -17,6 +17,7 @@ import (
 	"github.com/weavegate/weavegate/internal/ci"
 	"github.com/weavegate/weavegate/internal/config"
 	"github.com/weavegate/weavegate/internal/fixture"
+	"github.com/weavegate/weavegate/internal/sut"
 	"github.com/weavegate/weavegate/internal/syncpoint"
 )
 
@@ -114,11 +115,15 @@ func TestExternalResolvePreflight(t *testing.T) {
 	}
 	client := syncpoint.New()
 	defer client.Close()
-	adapter, err := resolved.NewAdapter(context.Background(), client)
+	adapter, err := resolved.NewAdapter(client)
 	if err != nil {
 		t.Fatalf("construct external: %v", err)
 	}
-	snapshot := adapter.(*snapshotAdapter).path
+	snapshot, err := snapshotJAR(context.Background(), cfg.Target.SUT.External.JAR, strings.TrimPrefix(resolved.SUTSHA256, "sha256:"))
+	if err != nil {
+		t.Fatalf("snapshot external: %v", err)
+	}
+	adapter.(*snapshotAdapter).path = snapshot
 	wantSnapshot, err := os.ReadFile(snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -136,8 +141,8 @@ func TestExternalResolvePreflight(t *testing.T) {
 	if got, err := os.ReadFile(snapshot); err != nil || !bytes.Equal(got, wantSnapshot) {
 		t.Fatalf("snapshot changed after configured JAR replacement: %v", err)
 	}
-	if _, err := resolved.NewAdapter(context.Background(), client); err == nil {
-		t.Fatal("factory accepted changed jar")
+	if _, err := snapshotJAR(context.Background(), cfg.Target.SUT.External.JAR, strings.TrimPrefix(resolved.SUTSHA256, "sha256:")); err == nil {
+		t.Fatal("snapshot accepted changed jar")
 	}
 	if err := adapter.Stop(context.Background()); err != nil {
 		t.Fatalf("stop unused adapter: %v", err)
@@ -186,6 +191,11 @@ func TestExternalManifestLaunchAttributes(t *testing.T) {
 		{"named section only", "no Main-Class", []string{"Manifest-Version: 1.0\r\n\r\nName: Seat.class\r\nMain-Class: Seat\r\n\r\n"}},
 		{"relative class path", "self-contained", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\nClass-Path: dep.jar\r\n\r\n"}},
 		{"folded class path", "self-contained", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\nClass-Path: dep.\r\n jar\r\n\r\n"}},
+		{"duplicate main class", "duplicate Main-Class", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\nMain-Class: \r\n\r\n"}},
+		{"duplicate class path", "duplicate Class-Path", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\nClass-Path: dep.jar\r\nClass-Path: \r\n\r\n"}},
+		{"cr only main section", "", []string{"Manifest-Version: 1.0\rMain-Class: Seat\r\r"}},
+		{"cr only class path", "self-contained", []string{"Manifest-Version: 1.0\rMain-Class: Seat\rClass-Path: dep.jar\r\r"}},
+		{"cr only named section", "no Main-Class", []string{"Manifest-Version: 1.0\r\rName: Seat.class\rMain-Class: Seat\r\r"}},
 		{"duplicate manifests", "duplicate manifest", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\n\r\n", "Manifest-Version: 1.0\r\nMain-Class: Missing\r\nClass-Path: dep.jar\r\n\r\n"}},
 		{"large named section", "", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\n\r\n" + strings.Repeat("Name: filler\r\nSHA-256-Digest: abcdef\r\n\r\n", 2500)}},
 	} {
@@ -216,6 +226,32 @@ func TestExternalManifestLaunchAttributes(t *testing.T) {
 				t.Fatalf("digestJAR error = %v, want %q", err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestExternalPreflightValidatesHashedImage(t *testing.T) {
+	cfg := externalResolveConfig(t)
+	path := cfg.Target.SUT.External.JAR
+	imagePath, digest, err := copyJARImage(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(filepath.Dir(imagePath)) }()
+	if err := os.WriteFile(path, []byte("rewritten in place"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateJARImage(imagePath, path); err != nil {
+		t.Fatalf("private image no longer validates: %v", err)
+	}
+	image, err := os.ReadFile(imagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != fmt.Sprintf("%x", sha256.Sum256(image)) {
+		t.Fatalf("preflight digest does not describe validated image")
+	}
+	if _, err := digestJAR(path); err == nil {
+		t.Fatal("rewritten configured jar still passed preflight")
 	}
 }
 
@@ -271,7 +307,11 @@ func TestExternalSnapshotCopyObservesCancellation(t *testing.T) {
 	}
 	client := syncpoint.New()
 	defer client.Close()
-	if _, err := resolved.NewAdapter(ctx, client); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled adapter factory = %v", err)
+	adapter, err := resolved.NewAdapter(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Start(ctx, sut.SUTConfig{}, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled adapter start = %v", err)
 	}
 }
