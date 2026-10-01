@@ -24,7 +24,7 @@ TO_JAVA = {'start', 'invoke', 'release', 'cancel', 'stop'}
 EVENTS = set('''advance_cancel_cleanup_clock advance_fatal_cleanup_clock advance_startup_clock
 advance_stop_clock application_cleanup_complete begin_evaluation cancel_context
 check_operation_result check_stop_results child_exit command_exception complete_evaluation
-completion exhaust_arrivals exhaust_outbound_sequence hold_cleanup hold_release_enqueue invoke_call jdbc_blocked launch_child
+completion exhaust_arrivals exhaust_outbound_sequence hold_cleanup hold_release_enqueue invoke_call invoke_rejected jdbc_blocked launch_child
 provisional_evaluation readiness_complete resume_release_enqueue runtime_arrive_returns
 startup_before_write startup_deadline stderr_bytes stop_call stop_deadline stop_half_deadline
 wait_arrive_timeout worker_arrives'''.split())
@@ -42,7 +42,14 @@ JAVA_WIRE_CASES = {
     'java_sequence_gap': 'ready', 'java_capacity_exceeded': 'ready',
     'java_outbound_sequence_exhausted': 'ready', 'java_arrival_sequence_exhausted': 'active',
 }
-REQUIRED.add('java_wire_matrix')
+REQUIRED.update({'java_wire_matrix', 'go_wire_matrix'})
+GO_WIRE_CASES = {
+    'go_wrong_direction': 'ready', 'go_unknown_point': 'active',
+    'go_immutable_worker': 'active', 'go_semantic_duplicate_start': 'ready',
+    'go_semantic_duplicate_invoke': 'active', 'go_released_arrival_duplicate': 'released',
+    'go_unknown_command': 'ready', 'go_capacity_exceeded': 'ready',
+    'go_outbound_sequence_exhausted': 'ready', 'go_arrival_sequence_exhausted': 'active',
+}
 # Reviewed harness assertion names, independent of the vector file being checked.
 EXPECTATIONS = set('''abort_run all_calls_return_same_failure all_calls_return_success
 application_cleanup_blocked application_shutdown_barrier_armed arm_cleanup_watchdog
@@ -63,6 +70,7 @@ no_client_arrive no_command_start no_fatal no_handle no_invoke no_new_deadline n
 no_protocol_effect no_ready no_redispatch no_release no_release_before_runtime_return no_reply
 no_resume no_rollback no_run_success no_runtime_finish no_second_child no_second_terminal
 no_start_frame no_start_return no_stop_frame no_stop_success no_stopped no_stopped_required
+no_wire_output admission_rejected
 no_terminal no_transport_fault no_worker_block no_worker_result operation_context_error
 operation_error owned_child_waiting_start pending_arrival_resolves prevent_command_start
 probe_database quarantine_fixture record_source_exception release_barrier_armed
@@ -212,6 +220,20 @@ def injected_premise(case_id, frame, effects, invocations, outstanding, returned
     body, kind = frame['body'], frame['type']
     invocation = body.get('invocation')
     current = outstanding.get(invocation)
+    if case_id == 'go_wrong_direction':
+        return kind == 'invoke' and 'fatal_protocol' in effects
+    if case_id == 'go_unknown_point':
+        return kind == 'arrive' and invocation in invocations and body['point'] == 'missing'
+    if case_id == 'go_immutable_worker':
+        return kind == 'arrive' and invocation in invocations and body['worker'] != invocations[invocation][0]
+    if case_id == 'go_semantic_duplicate_start':
+        return kind == 'start' and start == body and 'fatal_protocol' in effects
+    if case_id == 'go_semantic_duplicate_invoke':
+        return kind == 'invoke' and invocations.get(invocation) == (body['worker'], body['command'])
+    if case_id == 'go_released_arrival_duplicate':
+        return kind == 'arrive' and current is None and returned.get(invocation) == (body, 'nil')
+    if case_id == 'go_arrival_sequence_exhausted':
+        return kind == 'arrive' and invocation in invocations and body['arrival'] == '100000'
     if case_id == 'java_immutable_worker':
         return kind == 'cancel' and invocation in invocations and body['worker'] != invocations[invocation][0]
     if case_id == 'java_semantic_duplicate_start':
@@ -306,6 +328,12 @@ def history(case, steps):
                 need(iid not in invocations and a['worker'] not in active, 'duplicate/unretired Go reservation')
                 invocations[iid] = (a['worker'], a['command'])
                 active[a['worker']] = iid
+            if event(step, 'invoke_rejected', 'go'):
+                need(set(a) == {'worker', 'command', 'reason'} and a['reason'] in ('unknown_command', 'capacity')
+                     and 'admission_rejected' in effects and 'no_wire_output' in effects,
+                     'rejected invocation shape/evidence')
+                need((a['command'] != 'assign') if a['reason'] == 'unknown_command' else len(active) >= 2,
+                     'rejected invocation premise')
             if event(step, 'worker_arrives', 'java'):
                 identity = a['identity']
                 iid = identity['invocation']
@@ -313,10 +341,10 @@ def history(case, steps):
                 need(iid not in outstanding and iid not in pending_arrivals, 'arrival event while gate is live')
                 need(int(identity['arrival']) == last_arrival.get(iid, 0) + 1, 'arrival event does not increment')
                 pending_arrivals[iid] = identity
-            if event(step, 'exhaust_outbound_sequence', 'java'):
+            if event(step, 'exhaust_outbound_sequence'):
                 need(a == {'limit': 100000} and 'outbound_sequence_at_limit' in effects,
                      'outbound exhaustion setup')
-            if event(step, 'exhaust_arrivals', 'java'):
+            if event(step, 'exhaust_arrivals'):
                 need(a.get('limit') == 100000 and a.get('invocation') in invocations
                      and 'arrival_sequence_at_limit' in effects, 'arrival exhaustion setup')
                 last_arrival[a['invocation']] = 100000
@@ -348,7 +376,9 @@ def history(case, steps):
         frame_shape(f)
         peer, t, b = step['peer'], f['type'], f['body']
         need(step['delivery'] != 'input' or peer in targets, 'injected input has no target receiver')
-        if case['id'] == 'java_wrong_direction' and step['delivery'] == 'input' and peer == 'java' and t == 'ready':
+        if ((case['id'] == 'java_wrong_direction' and peer == 'java' and t == 'ready')
+                or (case['id'] in ('go_wrong_direction', 'go_semantic_duplicate_invoke') and peer == 'go' and t == 'invoke')
+                or (case['id'] == 'go_semantic_duplicate_start' and peer == 'go' and t == 'start')) and step['delivery'] == 'input':
             need('fatal_protocol' in effects, 'wrong direction must be rejected')
             continue
         need(t == 'fatal' or (peer == 'java') == (t in TO_JAVA), 'message direction')
@@ -446,6 +476,16 @@ def history(case, steps):
 def coverage(rule, case, steps):
     targets = case['targets']
     own = case['steps']
+    if rule == 'go_wire_matrix':
+        if targets != ['go'] or case['prefix'] != GO_WIRE_CASES.get(case['id']):
+            return False
+        go_effects = [effect for step in own if step['peer'] == 'go' for effect in step['expect']]
+        if case['id'] in ('go_unknown_command', 'go_capacity_exceeded'):
+            return {'admission_rejected', 'no_wire_output'} <= set(go_effects)
+        if case['id'] == 'go_outbound_sequence_exhausted':
+            return {'outbound_sequence_at_limit', 'fatal_without_wire'} <= set(go_effects)
+        return 'fatal_protocol' in go_effects and any(
+            message(step, 'fatal', 'java') and step.get('delivery') == 'exchange' for step in own)
     if rule == 'java_wire_matrix':
         if targets != ['java'] or case['prefix'] != JAVA_WIRE_CASES.get(case['id']):
             return False
@@ -654,6 +694,7 @@ def validate(data):
             raise ValueError(case['id'] + ': ' + str(err)) from err
     need(set(data['coverage']) == REQUIRED, 'coverage matrix families')
     need(set(data['coverage']['java_wire_matrix']) == set(JAVA_WIRE_CASES), 'Java wire matrix inventory')
+    need(set(data['coverage']['go_wire_matrix']) == set(GO_WIRE_CASES), 'Go wire matrix inventory')
     for rule, names in data['coverage'].items():
         need(names and len(names) == len(set(names)), rule + ': empty/duplicate coverage')
         for name in names:
