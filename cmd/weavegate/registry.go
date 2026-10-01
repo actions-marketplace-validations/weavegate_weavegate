@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -80,7 +81,7 @@ func bindGoNative(cfg config.Config, _ config.Scenario, _ string) (composition, 
 		))
 	}
 	return composition{
-		NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+		NewAdapter: func(_ context.Context, client syncpoint.Client) (sut.Adapter, error) {
 			return entry.NewAdapter(client), nil
 		},
 		Variants:  entry.Variants,

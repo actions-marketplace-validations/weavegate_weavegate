@@ -14,8 +14,9 @@ The Go-native entrypoint registry and its variant list remain independent.
 
 Before provisioning, the CLI resolves the Java executable and JAR relative to
 the config file (except a bare Java command resolved from `PATH`), checks that
-the JAR is readable and has a `Main-Class` manifest entry, checks capacity
-against the selected scenario's worker count, validates wire names, and derives
+the JAR is readable, self-contained, and has `Main-Class` in the manifest's
+main section, checks capacity against the selected scenario's worker count,
+validates wire names, and derives
 the sorted unique command list and ordered point list from that scenario. The
 external adapter checks the peer's `ready` registration against those lists
 before admitting workers. A command that exists only in the remote app cannot
@@ -37,8 +38,10 @@ coordination to 20×. For external runs, the run context is
 `startup_timeout_ms + 60 × arrive_timeout_ms`; this single deadline includes
 fixture reset, JVM startup, command execution, and Oracle evaluation. Startup
 is independently bounded by the configured startup budget and that remaining
-run context. Stop has a detached context with `stop_timeout_ms`, which matches
-the external adapter's total stop budget; the adapter reserves the latter half
+run context. The adapter factory receives the run context so snapshot copying
+stops when its deadline expires. Stop has a detached context with
+`stop_timeout_ms`, which matches the external adapter's total stop budget; the
+adapter reserves the latter half
 for termination and process reaping, and sends the remaining first-half budget
 in the wire `stop` frame. The cancellation budget must fit within stop. Budget
 arithmetic is checked before provisioning. These are failure bounds, never a

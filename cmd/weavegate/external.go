@@ -96,8 +96,8 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 		StopTimeout:    time.Duration(e.StopTimeoutMS) * time.Millisecond,
 	}
 	return composition{
-		NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
-			snapshot, err := snapshotJAR(e.JAR, jarDigest)
+		NewAdapter: func(ctx context.Context, client syncpoint.Client) (sut.Adapter, error) {
+			snapshot, err := snapshotJAR(ctx, e.JAR, jarDigest)
 			if err != nil {
 				return nil, err
 			}
@@ -142,7 +142,10 @@ func validateExternalStartSize(variant string, params map[string]string, command
 	return nil
 }
 
-func snapshotJAR(path, expected string) (_ string, err error) {
+func snapshotJAR(ctx context.Context, path, expected string) (_ string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+	}
 	source, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("external SUT jar changed after preflight: %w", err)
@@ -163,7 +166,7 @@ func snapshotJAR(path, expected string) (_ string, err error) {
 		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
 	}
 	h := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(target, h), source)
+	_, copyErr := copyWithContext(ctx, io.MultiWriter(target, h), source)
 	closeErr := target.Close()
 	if copyErr != nil || closeErr != nil {
 		return "", fmt.Errorf("snapshot external SUT jar: %w", errors.Join(copyErr, closeErr))
@@ -171,10 +174,43 @@ func snapshotJAR(path, expected string) (_ string, err error) {
 	if hex.EncodeToString(h.Sum(nil)) != expected {
 		return "", fmt.Errorf("external SUT jar changed after preflight")
 	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+	}
 	if err := os.Chmod(pathSnapshot, 0o400); err != nil {
 		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+	}
 	return pathSnapshot, nil
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			written, writeErr := dst.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if readErr == io.EOF {
+			return total, ctx.Err()
+		}
+		if readErr != nil {
+			return total, readErr
+		}
+	}
 }
 
 type snapshotAdapter struct {
@@ -224,15 +260,15 @@ func digestJAR(path string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("%q has an unreadable manifest", path)
 		}
-		content, readErr := io.ReadAll(io.LimitReader(stream, 64*1024))
+		content, readErr := io.ReadAll(io.LimitReader(stream, 64*1024+1))
 		_ = stream.Close()
-		if readErr != nil {
+		if readErr != nil || len(content) > 64*1024 {
 			return "", fmt.Errorf("%q has an unreadable manifest", path)
 		}
-		for _, line := range strings.Split(string(content), "\n") {
-			if strings.HasPrefix(line, "Main-Class: ") && strings.TrimSpace(strings.TrimPrefix(line, "Main-Class: ")) != "" {
-				hasMain = true
-			}
+		var hasClassPath bool
+		hasMain, hasClassPath = mainManifestAttributes(content)
+		if hasClassPath {
+			return "", fmt.Errorf("%q has a Class-Path manifest entry; external SUT jars must be self-contained", path)
 		}
 		break
 	}
@@ -244,4 +280,33 @@ func digestJAR(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// Java reads launch attributes from the first manifest section only. A blank
+// line starts named entry sections, whose attributes do not affect java -jar.
+func mainManifestAttributes(content []byte) (hasMain, hasClassPath bool) {
+	var key, value string
+	flush := func() {
+		switch {
+		case strings.EqualFold(key, "Main-Class") && strings.TrimSpace(value) != "":
+			hasMain = true
+		case strings.EqualFold(key, "Class-Path") && strings.TrimSpace(value) != "":
+			hasClassPath = true
+		}
+	}
+	for _, raw := range strings.Split(string(content), "\n") {
+		line := strings.TrimSuffix(raw, "\r")
+		if line == "" {
+			flush()
+			break
+		}
+		if strings.HasPrefix(line, " ") {
+			value += strings.TrimPrefix(line, " ")
+			continue
+		}
+		flush()
+		key, value, _ = strings.Cut(line, ": ")
+	}
+	flush()
+	return hasMain, hasClassPath
 }

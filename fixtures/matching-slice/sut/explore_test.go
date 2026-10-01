@@ -524,7 +524,7 @@ func newMatchingExploreOrchestrator(
 		Fixture:    runner,
 		DB:         db,
 		NewRuntime: syncpoint.New,
-		NewAdapter: func(client syncpoint.Client) (internalsut.Adapter, error) {
+		NewAdapter: func(_ context.Context, client syncpoint.Client) (internalsut.Adapter, error) {
 			return gonative.New(NewRegistry(client)), nil
 		},
 		BlockInferenceTimeout: replayLockInferenceTimeout,

@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,7 +113,7 @@ func TestExternalResolvePreflight(t *testing.T) {
 	}
 	client := syncpoint.New()
 	defer client.Close()
-	adapter, err := resolved.NewAdapter(client)
+	adapter, err := resolved.NewAdapter(context.Background(), client)
 	if err != nil {
 		t.Fatalf("construct external: %v", err)
 	}
@@ -133,7 +135,7 @@ func TestExternalResolvePreflight(t *testing.T) {
 	if got, err := os.ReadFile(snapshot); err != nil || !bytes.Equal(got, wantSnapshot) {
 		t.Fatalf("snapshot changed after configured JAR replacement: %v", err)
 	}
-	if _, err := resolved.NewAdapter(client); err == nil {
+	if _, err := resolved.NewAdapter(context.Background(), client); err == nil {
 		t.Fatal("factory accepted changed jar")
 	}
 	if err := adapter.Stop(context.Background()); err != nil {
@@ -171,5 +173,71 @@ func TestExternalResolvePreflight(t *testing.T) {
 				t.Fatalf("want input error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestExternalManifestLaunchAttributes(t *testing.T) {
+	for _, tc := range []struct {
+		name, manifest, wantError string
+	}{
+		{"main section", "Manifest-Version: 1.0\r\nMain-Class: Seat\r\n\r\n", ""},
+		{"named section only", "Manifest-Version: 1.0\r\n\r\nName: Seat.class\r\nMain-Class: Seat\r\n\r\n", "no Main-Class"},
+		{"relative class path", "Manifest-Version: 1.0\r\nMain-Class: Seat\r\nClass-Path: dep.jar\r\n\r\n", "self-contained"},
+		{"folded class path", "Manifest-Version: 1.0\r\nMain-Class: Seat\r\nClass-Path: dep.\r\n jar\r\n\r\n", "self-contained"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "app.jar")
+			file, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			archive := zip.NewWriter(file)
+			entry, err := archive.Create("META-INF/MANIFEST.MF")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.WriteString(entry, tc.manifest); err != nil {
+				t.Fatal(err)
+			}
+			if err := archive.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			_, err = digestJAR(path)
+			if tc.wantError == "" && err != nil || tc.wantError != "" && (err == nil || !strings.Contains(err.Error(), tc.wantError)) {
+				t.Fatalf("digestJAR error = %v, want %q", err, tc.wantError)
+			}
+		})
+	}
+}
+
+type cancelAfterRead struct {
+	cancel context.CancelFunc
+}
+
+func (r cancelAfterRead) Read(p []byte) (int, error) {
+	p[0] = 'x'
+	r.cancel()
+	return 1, nil
+}
+
+func TestExternalSnapshotCopyObservesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var dst bytes.Buffer
+	_, err := copyWithContext(ctx, &dst, cancelAfterRead{cancel: cancel})
+	if !errors.Is(err, context.Canceled) || dst.String() != "x" {
+		t.Fatalf("copy result = %q, %v; want first chunk and cancellation", dst.String(), err)
+	}
+	cfg := externalResolveConfig(t)
+	resolved, err := Resolve(cfg, "concurrent-assign", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := syncpoint.New()
+	defer client.Close()
+	if _, err := resolved.NewAdapter(ctx, client); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled adapter factory = %v", err)
 	}
 }

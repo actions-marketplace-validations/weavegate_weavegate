@@ -120,7 +120,7 @@ func runOutcomeTest(t *testing.T, ctx context.Context, adapter *outcomeAdapter, 
 	o := newTestOrchestrator(t, Config{
 		Fixture: &recordingFixture{}, DB: &fixture.DB{},
 		NewRuntime:            func() syncpoint.Runtime { return runtime },
-		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
+		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return adapter, nil },
 		BlockInferenceTimeout: time.Second, StepTimeout: time.Second,
 		RunTimeout: 3 * time.Second, StopTimeout: time.Second, OnEvent: observer,
 	})
@@ -535,7 +535,7 @@ func TestOutcomeOrdersConcurrentCollectorErrorsByScenario(t *testing.T) {
 	o := newTestOrchestrator(t, Config{
 		Fixture: &recordingFixture{}, DB: &fixture.DB{},
 		NewRuntime:            func() syncpoint.Runtime { return runtime },
-		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return a, nil },
+		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return a, nil },
 		BlockInferenceTimeout: time.Second,
 		StepTimeout:           time.Second,
 		RunTimeout:            3 * time.Second,
@@ -608,7 +608,7 @@ func TestOutcomeOrdersCollectorErrorsBeforeParentCancellation(t *testing.T) {
 	o := newTestOrchestrator(t, Config{
 		Fixture: &recordingFixture{}, DB: &fixture.DB{},
 		NewRuntime:            func() syncpoint.Runtime { return runtime },
-		NewAdapter:            func(syncpoint.Client) (sut.Adapter, error) { return a, nil },
+		NewAdapter:            func(_ context.Context, _ syncpoint.Client) (sut.Adapter, error) { return a, nil },
 		BlockInferenceTimeout: time.Second,
 		StepTimeout:           time.Second,
 		RunTimeout:            3 * time.Second,
