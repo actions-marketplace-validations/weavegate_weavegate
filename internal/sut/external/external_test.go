@@ -48,6 +48,7 @@ type peer struct {
 	next           int
 	killed         chan struct{}
 	killOnce       sync.Once
+	deferKillExit  bool
 }
 
 func testOptions() Options {
@@ -72,7 +73,9 @@ func newPeer(t *testing.T) *peer {
 	a.launch = func(string, string) (*child, error) {
 		return &child{stdin: inW, stdout: outR, stderr: errR, wait: func() error { return <-p.exitCh }, kill: func() error {
 			p.killOnce.Do(func() { close(p.killed) })
-			p.exit(errors.New("killed"))
+			if !p.deferKillExit {
+				p.exit(errors.New("killed"))
+			}
 			return nil
 		}}, nil
 	}

@@ -505,6 +505,78 @@ func TestOrchestratorResetAfterStopBeforeReady(t *testing.T) {
 	})
 }
 
+func TestOrchestratorDatabaseBlockingVector(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newPeer(t)
+		runtime := syncpoint.New()
+		timedOut := make(chan struct{}, 1)
+		o, err := orchestrator.New(orchestrator.Config{
+			Fixture: &quarantineProbe{}, DB: &fixture.DB{}, NewRuntime: func() syncpoint.Runtime { return runtime },
+			NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+				p.a.client = client
+				return preparedAdapter{p.a}, nil
+			},
+			BlockInferenceTimeout: 10 * time.Millisecond, StepTimeout: time.Second,
+			RunTimeout: 20 * time.Second, StopTimeout: 5 * time.Second,
+			OnEvent: func(event orchestrator.Event) error {
+				if event.Kind != orchestrator.EventPointTimeout {
+					return nil
+				}
+				if event.Worker != "w2" || event.Point != "after_read" || event.Status != orchestrator.ControlStatusTimeoutInferred {
+					return fmt.Errorf("unexpected timeout event: %#v", event)
+				}
+				snapshot, err := runtime.Snapshot("w2")
+				if err != nil || snapshot.State != syncpoint.WorkerStateDBBlocked || p.a.Faults().Err() != nil {
+					return fmt.Errorf("timeout did not observe blocked runtime worker: state=%v err=%v fault=%v", snapshot.State, err, p.a.Faults().Err())
+				}
+				timedOut <- struct{}{}
+				return nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		schedule, err := scenario.NewSchedule([]scenario.CoordinationStep{{Worker: "w1", Point: "after_read"}, {Worker: "w2", Point: "after_read"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := scenario.Scenario{Name: "database-blocking", Workers: []scenario.Worker{{ID: "w1", Command: "assign"}, {ID: "w2", Command: "assign"}}, SyncPoints: []string{"after_read"}}
+		type runResult struct {
+			result orchestrator.RunResult
+			err    error
+		}
+		done := make(chan runResult, 1)
+		go func() {
+			r, e := o.Run(context.Background(), value, schedule, oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
+				return oracle.NewEvaluation(oracle.OracleResult{OracleID: "synthetic-pass"})
+			}))
+			done <- runResult{r, e}
+		}()
+		p.read("start")
+		p.send("ready", map[string]any{"commands": []string{"assign"}, "points": []string{"after_read", "before_write"}, "capacity": 2})
+		w1 := p.read("invoke")
+		p.send("accepted", binding(w1))
+		p.send("arrive", arrivalBody(w1, 1, "after_read"))
+		w2 := p.read("invoke")
+		p.send("accepted", binding(w2))
+		<-timedOut
+		p.read("release")
+		p.send("terminal", terminalBody(w1, "committed", nil))
+		p.send("arrive", arrivalBody(w2, 1, "after_read"))
+		p.read("release")
+		p.send("terminal", terminalBody(w2, "committed", nil))
+		p.read("stop")
+		p.send("stopped", map[string]any{})
+		p.exit(nil)
+		r := <-done
+		if r.err != nil || r.result.Timeouts != 1 || r.result.PendingResolved != 1 || len(r.result.Workers) != 2 {
+			t.Fatal("database blocking timeout was not recovered", r.err, r.result.Timeouts, r.result.PendingResolved)
+		}
+		reportCheck(t, "case/database_blocking", "step/12/local/wait_arrive_timeout", "internal/sut/external/orchestrator_test.go:TestOrchestratorDatabaseBlockingVector")
+		reportCheck(t, "case/database_blocking", "step/12/expect/0/runtime_db_blocked", "internal/sut/external/orchestrator_test.go:TestOrchestratorDatabaseBlockingVector")
+	})
+}
+
 func TestOrchestratorProtocolAbortVectors(t *testing.T) {
 	for _, c := range []struct {
 		row, check string

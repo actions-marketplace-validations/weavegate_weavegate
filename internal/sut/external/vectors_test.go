@@ -30,6 +30,7 @@ func TestSharedLifecycleGo(t *testing.T) {
 		t.Run(c.ID, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				p := newPeer(t)
+				p.deferKillExit = c.ID == "readiness_mismatch" || c.ID == "startup_deadline"
 				p.a.id = func() (string, error) { return strings.Repeat("2", 32), nil }
 				h := &vectorHarness{p: p, outputs: make(chan frame, 128), streams: map[string]<-chan sut.InvocationOutcome{}, outcomes: map[string]sut.InvocationOutcome{}, contexts: map[string]context.Context{}, cancels: map[string]context.CancelFunc{}, calls: map[string]*arrivalCall{}, stopCalls: map[string]<-chan error{}, stopErrors: map[string]error{}}
 				if c.ID == "startup_submillisecond_budget" {
@@ -442,7 +443,9 @@ func (h *vectorHarness) step(t *testing.T, row string, index int, s vectorStep) 
 		default:
 			t.Fatalf("unhandled local event: %s", s.Event)
 		}
-		reportCheck(t, row, base+"/local/"+s.Event, "internal/sut/external/vectors_test.go:vectorHarness.step")
+		if s.Event != "wait_arrive_timeout" {
+			reportCheck(t, row, base+"/local/"+s.Event, "internal/sut/external/vectors_test.go:vectorHarness.step")
+		}
 	default:
 		t.Fatal("unknown target action")
 	}
@@ -464,7 +467,7 @@ func (h *vectorHarness) step(t *testing.T, row string, index int, s vectorStep) 
 	}
 	for i, label := range s.Expect {
 		h.observe(t, label, id, f, beforeSeq, beforeCalls)
-		if label != "quarantine_fixture" && label != "reset_rejected" && label != "reset_allowed" && label != "no_runtime_finish" && label != "operation_context_error" && label != "abort_run" {
+		if label != "quarantine_fixture" && label != "reset_rejected" && label != "reset_allowed" && label != "no_runtime_finish" && label != "operation_context_error" && label != "abort_run" && label != "runtime_db_blocked" {
 			reportCheck(t, row, fmt.Sprintf("%s/expect/%d/%s", base, i, label), "internal/sut/external/vectors_test.go:vectorHarness.observe")
 		}
 	}
@@ -735,6 +738,18 @@ func (h *vectorHarness) observe(t *testing.T, label, id string, f frame, beforeS
 		need(!a.stopped && a.faults.Err() != nil)
 	case "await_reaping":
 		need(a.stopping && a.faults.Err() != nil)
+		if h.p.deferKillExit {
+			select {
+			case <-a.exitDone:
+				t.Fatal("child reaped before the explicit exit event")
+			default:
+			}
+			select {
+			case <-a.stopDone:
+				t.Fatal("Stop completed before the explicit exit event")
+			default:
+			}
+		}
 	case "stop_error":
 		select {
 		case <-a.stopDone:
