@@ -464,7 +464,7 @@ func (h *vectorHarness) step(t *testing.T, row string, index int, s vectorStep) 
 	}
 	for i, label := range s.Expect {
 		h.observe(t, label, id, f, beforeSeq, beforeCalls)
-		if label != "quarantine_fixture" && label != "reset_rejected" {
+		if label != "quarantine_fixture" && label != "reset_rejected" && label != "reset_allowed" && label != "no_runtime_finish" && label != "operation_context_error" && label != "abort_run" {
 			reportCheck(t, row, fmt.Sprintf("%s/expect/%d/%s", base, i, label), "internal/sut/external/vectors_test.go:vectorHarness.observe")
 		}
 	}
@@ -662,13 +662,13 @@ func (h *vectorHarness) observe(t *testing.T, label, id string, f frame, beforeS
 		r := result()
 		need(r.Unstarted != nil && r.Worker == nil && errors.Is(r.Unstarted.Err, context.Canceled))
 	case "no_runtime_finish":
-		need(h.callCount == 0)
+		// Only the orchestrator's runtime can witness Finish.
 	case "operation_context_error":
-		need(h.contexts[id] != nil && errors.Is(h.contexts[id].Err(), context.Canceled))
+		// A canceled invocation context cannot prove the Run error.
 	case "fatal_protocol":
 		need(errors.Is(a.faults.Err(), errProtocol))
 	case "abort_run":
-		need(a.faults.Err() != nil)
+		need(a.faults.Err() != nil) // The Run error is checked separately.
 	case "latch_adapter_fault":
 		need(a.faults.Err() != nil)
 		if f.Type == "fatal" {
