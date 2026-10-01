@@ -269,7 +269,8 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 					p.send("ready", map[string]any{"commands": []string{"assign"}, "points": []string{"after_read", "before_write"}, "capacity": 2})
 					w := p.read("invoke")
 					p.send("accepted", binding(w))
-					if c.mode == "stop_timeout" || c.mode == "stop_fatal" {
+					switch c.mode {
+					case "stop_timeout", "stop_fatal":
 						p.send("arrive", arrivalBody(w, 1, "after_read"))
 						p.read("release")
 						p.send("terminal", terminalBody(w, "committed", nil))
@@ -280,14 +281,14 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 						} else {
 							<-p.killed
 						}
-					} else if c.mode == "protocol_fatal" {
+					case "protocol_fatal":
 						p.send("arrive", arrivalBody(w, 1, "missing"))
 						p.read("fatal")
 						p.exit(errors.New("protocol fault"))
-					} else if c.mode == "active_death" {
+					case "active_death":
 						p.send("arrive", arrivalBody(w, 1, "after_read"))
 						p.exit(errors.New("child died"))
-					} else {
+					default:
 						p.send("fatal", map[string]any{"kind": "cleanup", "message": "private cleanup failure"})
 						p.exit(errors.New("cleanup fault"))
 					}
