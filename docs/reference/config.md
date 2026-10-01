@@ -56,8 +56,10 @@ the list of known values.
 run with `java -jar <jar>`. Its child uses [wire v1](external-sut-v1.md) over
 owned stdin/stdout. The JAR must contain `Main-Class` in the manifest's main
 section and be self-contained; a nonempty manifest `Class-Path` entry is
-rejected because the private JAR snapshot does not include sibling files. The
-following is a **constructed configuration example**, not captured output:
+rejected because the private JAR snapshot does not include sibling files.
+Duplicate manifest entries are rejected because the JVM may select a different
+entry from the one checked during preflight. The following is a **constructed
+configuration example**, not captured output:
 
 ```yaml
 target:
@@ -80,7 +82,7 @@ target:
 | Key | Rule |
 | --- | --- |
 | `java` | Required executable path, or a bare command found on `PATH`. Paths containing a directory component are relative to the config directory. |
-| `jar` | Required readable, regular, self-contained `.jar` file with `Main-Class` in the manifest's main section and no nonempty `Class-Path`. Relative to the config directory. |
+| `jar` | Required readable, regular, self-contained `.jar` file with exactly one manifest, `Main-Class` in its main section, and no nonempty `Class-Path`. Relative to the config directory. |
 | `capacity` | Required integer from 1 to 1024, at least the selected scenario's worker count. |
 | `startup_timeout_ms`, `cancel_timeout_ms`, `stop_timeout_ms` | Required positive integers at most 2147483647. Cancellation cannot exceed stop. |
 
@@ -94,8 +96,9 @@ startup check; they cannot be inspected from a JAR during static preflight.
 Preflight rejects a selected scenario whose encoded start data leaves less
 than 4 KiB for the fixture-supplied database descriptor within the 1 MiB wire
 frame limit. Each child launches from a private JAR snapshot whose bytes match
-the digest recorded in `manifest.sut_sha256`. Snapshot copying observes the
-remaining run deadline.
+the digest recorded in `manifest.sut_sha256`. The run stops waiting for a
+snapshot when its deadline expires; a blocked filesystem operation may finish
+cleanup afterward.
 For an external adapter, replay IDs resolve from saved runs or portable
 schedule files; there is no embedded external schedule registry.
 

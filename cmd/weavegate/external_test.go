@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/weavegate/weavegate/internal/ci"
 	"github.com/weavegate/weavegate/internal/config"
@@ -178,12 +179,15 @@ func TestExternalResolvePreflight(t *testing.T) {
 
 func TestExternalManifestLaunchAttributes(t *testing.T) {
 	for _, tc := range []struct {
-		name, manifest, wantError string
+		name, wantError string
+		manifests       []string
 	}{
-		{"main section", "Manifest-Version: 1.0\r\nMain-Class: Seat\r\n\r\n", ""},
-		{"named section only", "Manifest-Version: 1.0\r\n\r\nName: Seat.class\r\nMain-Class: Seat\r\n\r\n", "no Main-Class"},
-		{"relative class path", "Manifest-Version: 1.0\r\nMain-Class: Seat\r\nClass-Path: dep.jar\r\n\r\n", "self-contained"},
-		{"folded class path", "Manifest-Version: 1.0\r\nMain-Class: Seat\r\nClass-Path: dep.\r\n jar\r\n\r\n", "self-contained"},
+		{"main section", "", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\n\r\n"}},
+		{"named section only", "no Main-Class", []string{"Manifest-Version: 1.0\r\n\r\nName: Seat.class\r\nMain-Class: Seat\r\n\r\n"}},
+		{"relative class path", "self-contained", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\nClass-Path: dep.jar\r\n\r\n"}},
+		{"folded class path", "self-contained", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\nClass-Path: dep.\r\n jar\r\n\r\n"}},
+		{"duplicate manifests", "duplicate manifest", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\n\r\n", "Manifest-Version: 1.0\r\nMain-Class: Missing\r\nClass-Path: dep.jar\r\n\r\n"}},
+		{"large named section", "", []string{"Manifest-Version: 1.0\r\nMain-Class: Seat\r\n\r\n" + strings.Repeat("Name: filler\r\nSHA-256-Digest: abcdef\r\n\r\n", 2500)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "app.jar")
@@ -192,12 +196,14 @@ func TestExternalManifestLaunchAttributes(t *testing.T) {
 				t.Fatal(err)
 			}
 			archive := zip.NewWriter(file)
-			entry, err := archive.Create("META-INF/MANIFEST.MF")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := io.WriteString(entry, tc.manifest); err != nil {
-				t.Fatal(err)
+			for _, manifest := range tc.manifests {
+				entry, err := archive.Create("META-INF/MANIFEST.MF")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.WriteString(entry, manifest); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := archive.Close(); err != nil {
 				t.Fatal(err)
@@ -210,6 +216,34 @@ func TestExternalManifestLaunchAttributes(t *testing.T) {
 				t.Fatalf("digestJAR error = %v, want %q", err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestExternalSnapshotDeadlineWhileIOBlocked(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	result := make(chan error, 1)
+	go func() {
+		_, err := boundedSnapshot(ctx, func() (string, error) {
+			close(started)
+			<-release
+			return "", ctx.Err()
+		})
+		result <- err
+	}()
+	<-started
+	cancel()
+	// The run must return independently of the stalled filesystem operation.
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("blocked snapshot error = %v, want cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("snapshot still waiting for blocked I/O after cancellation")
 	}
 }
 

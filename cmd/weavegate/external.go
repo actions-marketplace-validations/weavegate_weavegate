@@ -2,6 +2,8 @@ package main
 
 import (
 	"archive/zip"
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -97,7 +99,9 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 	}
 	return composition{
 		NewAdapter: func(ctx context.Context, client syncpoint.Client) (sut.Adapter, error) {
-			snapshot, err := snapshotJAR(ctx, e.JAR, jarDigest)
+			snapshot, err := boundedSnapshot(ctx, func() (string, error) {
+				return snapshotJAR(ctx, e.JAR, jarDigest)
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -119,6 +123,42 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 		},
 		SUTSHA256: "sha256:" + jarDigest,
 	}, nil
+}
+
+// A filesystem operation may remain blocked even after its file is closed.
+// Keep that operation off the run goroutine, and let its owner clean up any
+// late snapshot once the filesystem responds.
+func boundedSnapshot(ctx context.Context, snapshot func() (string, error)) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+	}
+	type result struct {
+		path string
+		err  error
+	}
+	done := make(chan result)
+	go func() {
+		path, err := snapshot()
+		select {
+		case done <- result{path, err}:
+		case <-ctx.Done():
+			if path != "" {
+				_ = os.RemoveAll(filepath.Dir(path))
+			}
+		}
+	}()
+	select {
+	case result := <-done:
+		if err := ctx.Err(); err != nil {
+			if result.path != "" {
+				_ = os.RemoveAll(filepath.Dir(result.path))
+			}
+			return "", fmt.Errorf("snapshot external SUT jar: %w", err)
+		}
+		return result.path, result.err
+	case <-ctx.Done():
+		return "", fmt.Errorf("snapshot external SUT jar: %w", ctx.Err())
+	}
 }
 
 // The fixture supplies the database descriptor later. Reserve room for its
@@ -165,6 +205,16 @@ func snapshotJAR(ctx context.Context, path, expected string) (_ string, err erro
 	if err != nil {
 		return "", fmt.Errorf("snapshot external SUT jar: %w", err)
 	}
+	copyDone := make(chan struct{})
+	defer close(copyDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = source.Close()
+			_ = target.Close()
+		case <-copyDone:
+		}
+	}()
 	h := sha256.New()
 	_, copyErr := copyWithContext(ctx, io.MultiWriter(target, h), source)
 	closeErr := target.Close()
@@ -251,26 +301,31 @@ func digestJAR(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%q is not a readable jar", path)
 	}
-	hasMain := false
+	var manifest *zip.File
 	for _, entry := range archive.File {
 		if entry.Name != "META-INF/MANIFEST.MF" {
 			continue
 		}
-		stream, err := entry.Open()
-		if err != nil {
-			return "", fmt.Errorf("%q has an unreadable manifest", path)
+		if manifest != nil {
+			return "", fmt.Errorf("%q has duplicate manifest entries", path)
 		}
-		content, readErr := io.ReadAll(io.LimitReader(stream, 64*1024+1))
-		_ = stream.Close()
-		if readErr != nil || len(content) > 64*1024 {
-			return "", fmt.Errorf("%q has an unreadable manifest", path)
-		}
-		var hasClassPath bool
-		hasMain, hasClassPath = mainManifestAttributes(content)
-		if hasClassPath {
-			return "", fmt.Errorf("%q has a Class-Path manifest entry; external SUT jars must be self-contained", path)
-		}
-		break
+		manifest = entry
+	}
+	if manifest == nil {
+		return "", fmt.Errorf("%q has no Main-Class manifest entry", path)
+	}
+	stream, err := manifest.Open()
+	if err != nil {
+		return "", fmt.Errorf("%q has an unreadable manifest", path)
+	}
+	hasMain, hasClassPath, parseErr := mainManifestAttributes(stream)
+	_, drainErr := io.Copy(io.Discard, stream)
+	closeErr := stream.Close()
+	if err := errors.Join(parseErr, drainErr, closeErr); err != nil {
+		return "", fmt.Errorf("%q has an unreadable manifest: %w", path, err)
+	}
+	if hasClassPath {
+		return "", fmt.Errorf("%q has a Class-Path manifest entry; external SUT jars must be self-contained", path)
 	}
 	if !hasMain {
 		return "", fmt.Errorf("%q has no Main-Class manifest entry", path)
@@ -284,29 +339,65 @@ func digestJAR(path string) (string, error) {
 
 // Java reads launch attributes from the first manifest section only. A blank
 // line starts named entry sections, whose attributes do not affect java -jar.
-func mainManifestAttributes(content []byte) (hasMain, hasClassPath bool) {
-	var key, value string
+func mainManifestAttributes(stream io.Reader) (hasMain, hasClassPath bool, err error) {
+	reader := bufio.NewReader(stream)
+	var key string
+	var valuePresent bool
 	flush := func() {
 		switch {
-		case strings.EqualFold(key, "Main-Class") && strings.TrimSpace(value) != "":
+		case strings.EqualFold(key, "Main-Class") && valuePresent:
 			hasMain = true
-		case strings.EqualFold(key, "Class-Path") && strings.TrimSpace(value) != "":
+		case strings.EqualFold(key, "Class-Path") && valuePresent:
 			hasClassPath = true
 		}
 	}
-	for _, raw := range strings.Split(string(content), "\n") {
-		line := strings.TrimSuffix(raw, "\r")
-		if line == "" {
+	for {
+		prefix, tailValue, readErr := readManifestLine(reader)
+		if readErr == io.EOF {
 			flush()
-			break
+			return hasMain, hasClassPath, nil
 		}
-		if strings.HasPrefix(line, " ") {
-			value += strings.TrimPrefix(line, " ")
+		if readErr != nil {
+			return false, false, readErr
+		}
+		line := bytes.TrimSuffix(prefix, []byte{'\r'})
+		if len(line) == 0 {
+			flush()
+			return hasMain, hasClassPath, nil
+		}
+		if line[0] == ' ' {
+			valuePresent = valuePresent || len(bytes.TrimSpace(line[1:])) > 0 || tailValue
 			continue
 		}
 		flush()
-		key, value, _ = strings.Cut(line, ": ")
+		name, value, ok := bytes.Cut(line, []byte(": "))
+		if !ok {
+			key, valuePresent = "", false
+			continue
+		}
+		key = string(name)
+		valuePresent = len(bytes.TrimSpace(value)) > 0 || tailValue
 	}
-	flush()
-	return hasMain, hasClassPath
+}
+
+// Retain only the beginning of each line: manifest keys are short, while
+// values and later named sections can be arbitrarily large. The rest is
+// scanned for non-whitespace without retaining it.
+func readManifestLine(reader *bufio.Reader) (prefix []byte, tailValue bool, err error) {
+	const prefixLimit = 256
+	for {
+		chunk, more, readErr := reader.ReadLine()
+		if readErr != nil {
+			return nil, false, readErr
+		}
+		if len(prefix) < prefixLimit {
+			retained := min(len(chunk), prefixLimit-len(prefix))
+			prefix = append(prefix, chunk[:retained]...)
+			chunk = chunk[retained:]
+		}
+		tailValue = tailValue || len(bytes.TrimSpace(chunk)) > 0
+		if !more {
+			return prefix, tailValue, nil
+		}
+	}
 }
