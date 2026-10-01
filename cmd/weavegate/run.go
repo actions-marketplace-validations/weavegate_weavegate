@@ -159,6 +159,7 @@ func runScenarioWithDiagnosticDeriver(
 	if err != nil {
 		return reportRunFailure(stderr, ci.FixtureError(fmt.Errorf("run: collect manifest: %w", err)))
 	}
+	manifest.SUTSHA256 = plan.Resolved.SUTSHA256
 
 	executor, err := orchestrator.New(orchestrator.Config{
 		Fixture:               fx,

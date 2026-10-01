@@ -71,10 +71,11 @@ cancellation. Evaluation remains provisional through final cleanup.
 | Schedule strategy | Candidate enumeration behind the scenario strategy contract | Fixture workflows and oracle evaluation |
 | Diagnostic | One embedded rule and its one-to-one reference page | Oracle semantics and report schema |
 
-These are extension points, not promises of runtime plugin loading. The current
-CLI supports only its registered `matching-slice` entrypoint and Go-native
-adapter, as documented in the
-[configuration reference](reference/config.md#built-in-entrypoints).
+These are extension points, not promises of runtime plugin loading. The CLI
+supports its registered `matching-slice` Go-native entrypoint and an owned
+external JVM selected through
+[configuration](reference/config.md#external-jvm). It does not load arbitrary
+Go code or discover Java application commands before child startup.
 
 Adding a fixture, oracle, schedule strategy, or adapter should not require a
 change to an engine package. If it does, treat that as a missing boundary and

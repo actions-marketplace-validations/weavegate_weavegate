@@ -1,18 +1,19 @@
 # ADR 0010: External SUT protocol and Spring transaction lifecycle
 
-- Status: Proposed — Go and Java peers in development; external CLI execution is not enabled
+- Status: Accepted — external CLI selection implemented; paired Spring evidence pending
 - Date: 2026-09-08
 - Issue: [#107](https://github.com/weavegate/weavegate/issues/107)
 - Inspected baseline: `078474f94cad6d1c1ffde0d44fada6853f769a97`
 
 ## Context
 
-Today [`sut.Adapter`](../../internal/sut/sut.go) is a Go interface,
+At the proposal date, [`sut.Adapter`](../../internal/sut/sut.go) was a Go interface,
 [`syncpoint.Client`](../../internal/syncpoint/runtime.go) is in-process, and
-configuration accepts only `gonative`. Spring support requires a transport
+configuration accepted only `gonative`. Spring support required a transport
 boundary without transferring schedule control or verdict logic to the SUT.
-This record selects the planned boundary; it does not add a configuration key,
-Java dependency, diagnostic, or claim of shipped Spring support.
+This record selected the boundary; its later implementation adds CLI
+configuration under [ADR 0016](0016-external-cli-composition.md). It does not
+claim completed paired Spring acceptance.
 
 ## Decision
 
@@ -120,23 +121,24 @@ capacity, and a correlation run ID; session IDs are generated per adapter.
 G1 is resolved by the fixture-owned descriptor contract. G2, G5, and G6 are
 resolved at the Go boundary by [ADR 0014](0014-adapter-outcome-boundaries.md).
 G3 is resolved by the fixture-owned quarantine boundary in
-[the connection contract](../reference/fixture-connection.md). G4 remains an
-**implementation blocker requiring a separate engine decision**.
+[the connection contract](../reference/fixture-connection.md). G4 is resolved
+by [ADR 0016](0016-external-cli-composition.md).
 
 | Gap | Current boundary | Decision or follow-up |
 | --- | --- | --- |
 | G1: Connection provisioning (resolved) | [`fixture.DB`](../../internal/fixture/fixture.go) exposes `ConnectionDescriptor` beside `SQL`; both address the same prepared database through its application account. | The [descriptor contract](../reference/fixture-connection.md) defines structured metadata, secret access/redaction, Reset preservation, Teardown invalidation, separate administrator access, and fresh reprovisioning credentials. External adapters consume it without adding another provisioner. |
 | G2: Asynchronous adapter failure (resolved) | Handle exposes a typed, latched session fault independently of invocation outcomes. | ADR 0014 observes faults during execution, provisional evaluation, and final cleanup; causes remain Run errors without fabricated worker terminals. |
 | G3: Reset after failed shutdown (resolved) | `Run` quarantines its fixture after failed Stop or a latched session fault, before releasing the run gate. Fixture-owned `Ready` and `Reset` reject reuse, and the descriptor is invalidated. | Teardown and successful reprovisioning clear quarantine. A fresh orchestrator must use the new DB handle; process exit alone does not prove server rollback finished. |
-| G4: Adapter selection and budgets | [`config`](../../internal/config/config.go) and [`Resolve`](../../cmd/weavegate/resolve.go) only resolve built-in Go entrypoints. Start consumes the existing run budget, which may be too small for JVM startup. | Specify one launch configuration, command/point preflight, capacity, and startup/run/stop budget composition before adding external dispatch. Keep argv and credentials separate; update config docs and validation markers in that change. |
+| G4: Adapter selection and budgets (resolved) | [`config`](../../internal/config/config.go) and [`Resolve`](../../cmd/weavegate/resolve.go) now select an external JVM through strict adapter-specific configuration. | [ADR 0016](0016-external-cli-composition.md) records launch, command/point preflight, capacity, and startup/run/stop budget composition while keeping argv and credentials separate. |
 | G5: Invocation never started (resolved) | Invoke returns one InvocationOutcome stream containing a WorkerResult or an UnstartedResult, then closes. | ADR 0014 requires resource return and reservation release; unstarted outcomes never call runtime Finish and are retained separately as run evidence. |
 | G6: Operation cancellation versus worker outcome (resolved) | Run retains truthful worker results and separately returns the operation context error. | ADR 0014 sets the final cancellation/fault observation after Stop, collection, and runtime Close; provisional evaluation is discarded on run error. |
 
 G1 was resolved by [#118](https://github.com/weavegate/weavegate/issues/118).
 [#119](https://github.com/weavegate/weavegate/issues/119) records the separately
 reviewable G2/G5/G6 decisions in ADR 0014 and implements the Go boundary.
-[#120](https://github.com/weavegate/weavegate/issues/120) resolves G3; G4 remains in
-[CLI integration #110](https://github.com/weavegate/weavegate/issues/110).
+[#120](https://github.com/weavegate/weavegate/issues/120) resolved G3 with
+fixture quarantine. [ADR 0016](0016-external-cli-composition.md) resolves G4
+through [CLI integration #110](https://github.com/weavegate/weavegate/issues/110).
 [#121](https://github.com/weavegate/weavegate/issues/121) tracks executable
 conformance acceptance across the Go and Java implementations. A wire terminal
 is a protocol completion fact; it does not by itself authorize a WorkerResult or
@@ -157,8 +159,7 @@ whether an invariant holds. Cancellation and process death can leave outcome
 unknown; preserving that uncertainty is more important than manufacturing a
 terminal to finish a schedule.
 
-The protocol can be implemented against peer doubles while G4 remains unresolved,
-but external execution must not be enabled end to end until that decision and
-the [shared checklist](../reference/external-sut-conformance.md#implementation-checklist)
-are completed. This ADR is ready for design review, not evidence that either
-language implementation has passed conformance.
+External CLI selection is implemented. The
+[shared checklist](../reference/external-sut-conformance.md#implementation-checklist)
+still governs complete language and paired acceptance; this ADR alone is not
+evidence that either peer has passed every conformance case.

@@ -43,6 +43,7 @@ type Resolved struct {
 	Timeouts    Timeouts
 	Schedules   fs.FS
 	Diagnostics diagnostic.Table
+	SUTSHA256   string
 }
 
 // Resolve translates cfg's named scenario into engine dependencies. variant,
@@ -77,7 +78,7 @@ func Resolve(cfg config.Config, scenarioName, variant string) (Resolved, error) 
 			knownAdapterIDs(),
 		))
 	}
-	bound, err := kind.Bind(cfg)
+	bound, err := kind.Bind(cfg, configuredScenario, selectedVariant)
 	if err != nil {
 		return Resolved{}, err
 	}
@@ -122,24 +123,30 @@ func Resolve(cfg config.Config, scenarioName, variant string) (Resolved, error) 
 
 	arrive := time.Duration(cfg.Run.ArriveTimeoutMS) * time.Millisecond
 
+	timeouts := Timeouts{
+		BlockInference: arrive,
+		Step:           20 * arrive,
+		Run:            60 * arrive,
+		Stop:           20 * arrive,
+	}
+	if bound.Timeouts != nil {
+		timeouts = *bound.Timeouts
+	}
+
 	return Resolved{
 		Fixture: fixture.FixtureSpec{
 			Image:      cfg.Target.DB,
 			Migrations: cfg.Target.Schema.Migrations,
 			Seed:       cfg.Target.Schema.Seed,
 		},
-		Scenario:   resolvedScenario,
-		Oracle:     oracleSet,
-		NewRuntime: syncpoint.New,
-		NewAdapter: bound.NewAdapter,
-		Timeouts: Timeouts{
-			BlockInference: arrive,
-			Step:           20 * arrive,
-			Run:            60 * arrive,
-			Stop:           20 * arrive,
-		},
+		Scenario:    resolvedScenario,
+		Oracle:      oracleSet,
+		NewRuntime:  syncpoint.New,
+		NewAdapter:  bound.NewAdapter,
+		Timeouts:    timeouts,
 		Schedules:   bound.Schedules,
 		Diagnostics: diagnosticTable,
+		SUTSHA256:   bound.SUTSHA256,
 	}, nil
 }
 

@@ -36,7 +36,9 @@ they start a real MySQL 8.4 container through Testcontainers. Without Docker
 you can still format, vet, and build the code; you cannot run `go test`
 against `internal/...`, `fixtures/...`, or `experiments/...`.
 
-`cmd/weavegate`'s Docker-backed integration test follows the same rule, but
+`cmd/weavegate`'s Docker-backed integration tests follow the same rule. The
+external CLI test also compiles a tiny child JAR and requires JDK 21 (`javac`
+and `jar`). The smoke workflow installs that JDK before running the test.
 `internal/config`, `internal/ci`, and `internal/report` run without Docker,
 and `go test ./cmd/... -short` skips the integration test so the rest of the
 package's tests — config resolution, exit codes, the root command — still
@@ -53,7 +55,7 @@ go build ./...
 go test ./internal/... -count=1     # Docker required
 go test ./fixtures/... -count=1     # Docker required
 go test ./experiments/... -count=1  # Docker required
-go test ./cmd/... -count=1          # Docker required
+go test ./cmd/... -count=1          # Docker and JDK required for external CLI integration
 go test ./cmd/... -short -count=1   # no Docker; skips the integration test
 ```
 

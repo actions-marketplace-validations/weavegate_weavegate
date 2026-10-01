@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -120,6 +121,13 @@ func Load(path string) (Config, error) {
 func (c *Config) resolveRelativePaths(baseDir string) {
 	c.Target.Schema.Migrations = resolvePath(baseDir, c.Target.Schema.Migrations)
 	c.Target.Schema.Seed = resolvePath(baseDir, c.Target.Schema.Seed)
+	if c.Target.SUT.External != nil {
+		e := c.Target.SUT.External
+		e.JAR = resolvePath(baseDir, e.JAR)
+		if strings.ContainsRune(e.Java, filepath.Separator) {
+			e.Java = resolvePath(baseDir, e.Java)
+		}
+	}
 }
 
 func resolvePath(baseDir, path string) string {

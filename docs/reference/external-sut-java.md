@@ -3,9 +3,9 @@
 [`sdk/java`](../../sdk/java/) implements the Java peer of
 [wire v1](external-sut-v1.md) for an explicitly instrumented Spring Boot test
 application. Its isolated Java acceptance gate passes on the pinned stack. It
-is not published as a package, and the `weavegate` CLI does not select it;
-CLI composition and paired live replay remain under
-[#110](https://github.com/weavegate/weavegate/issues/110) and
+is not published as a package. The CLI can launch a prebuilt application JAR
+through [external configuration](config.md#external-jvm); paired live
+Spring/MySQL replay remains under
 [#111](https://github.com/weavegate/weavegate/issues/111).
 [Issue #141](https://github.com/weavegate/weavegate/issues/141) defines this
 JDBC/SQL/Spring support matrix and its isolated acceptance evidence.
@@ -278,8 +278,8 @@ released and retired inputs, capacity and sequence limits. The wire matrix
 observer executes each history and records its requirement row. The strict
 `--require-complete` gate runs after the 20-repetition Java suite in CI. This
 is isolated peer acceptance under [#109](https://github.com/weavegate/weavegate/issues/109);
-CLI launch and budget composition remain
-[#110](https://github.com/weavegate/weavegate/issues/110); live paired MySQL
+CLI launch and budget composition are recorded in
+[ADR 0016](../adr/0016-external-cli-composition.md); live paired MySQL
 evidence remains [#111](https://github.com/weavegate/weavegate/issues/111).
 
 At implementation revision `8a7e0686c93b76f064b8f886320f997ca62fa501`,

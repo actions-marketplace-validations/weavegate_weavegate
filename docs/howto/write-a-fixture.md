@@ -118,6 +118,7 @@ and run the applicable Docker-backed checks from
 If a fixture, oracle, schedule strategy, or adapter requires an engine change,
 stop. That is an extension-point gap, not permission to force fixture-specific
 logic into the engine. Open an issue describing the missing boundary before
-writing engine code. In particular, the CLI currently recognizes only the
-registered built-in entrypoints; the composition step above does not imply
-dynamic external fixture loading.
+writing engine code. The CLI recognizes registered Go-native entrypoints and
+the [external JVM adapter](../reference/config.md#external-jvm). It does not
+dynamically load Go fixture code or inspect application commands from a JAR
+before startup.

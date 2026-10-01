@@ -54,6 +54,7 @@ commit or rollback is rejected even if Spring still binds its connection.
 
 The isolated Java gate can establish behavior only for the reviewed finite
 cases and pinned MySQL, Spring, driver, and pool versions. Repeating a suite
-cannot fill missing shared wire cases. CLI composition remains #110, paired
-live replay remains #111. Fixture quarantine is implemented under #120; the boundary
-must be consumed by those changes; it does not claim their evidence.
+cannot fill missing shared wire cases. CLI composition is recorded in
+[ADR 0016](0016-external-cli-composition.md), and fixture quarantine was
+implemented under #120. Paired live replay remains #111; this boundary does
+not claim its evidence.

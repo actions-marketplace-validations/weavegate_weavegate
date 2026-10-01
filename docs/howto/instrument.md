@@ -4,10 +4,12 @@ Sync-points expose selected boundaries in a concurrent workflow so a test
 orchestrator can release workers in a chosen order. They are coordination
 seams, not sleeps, locks, or verdict logic.
 
-The CLI currently ships one built-in Go-native entrypoint. This guide explains
-the instrumentation pattern used by that reference fixture; loading an
-arbitrary external adapter is not supported today. See the
-[configuration reference](../reference/config.md#built-in-entrypoints).
+The CLI ships one built-in Go-native entrypoint and can launch an explicitly
+instrumented external JVM from [configuration](../reference/config.md#external-jvm).
+This guide explains the Go-native reference fixture's instrumentation pattern.
+For a Spring application, use the [Java peer's opt-in boundary](../reference/external-sut-java.md#opting-in)
+and the external config keys. The live paired Spring/MySQL replay remains
+[#111](https://github.com/weavegate/weavegate/issues/111).
 
 ## Start from the contested decision
 

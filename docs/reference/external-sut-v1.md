@@ -1,7 +1,8 @@
 # External SUT wire contract v1 (proposed)
 
-This is planned v0.2.0 work from [ADR 0010](../adr/0010-external-sut-protocol.md),
-not an available CLI adapter or configuration format. The
+This is v0.2.0 work from [ADR 0010](../adr/0010-external-sut-protocol.md).
+The CLI can select the external adapter using the
+[configuration reference](config.md#external-jvm). The
 [Go peer](external-sut-go.md) and [Java Spring peer](external-sut-java.md) are in
 development; neither complete acceptance gate has passed. Normative words describe what conforming implementations must
 do. Artifact versions and wire versions are

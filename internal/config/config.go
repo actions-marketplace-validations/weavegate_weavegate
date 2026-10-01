@@ -11,8 +11,8 @@ import (
 
 var assertionIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
-// SupportedAdapter is the only sut.adapter value accepted today.
 const SupportedAdapter = "gonative"
+const ExternalAdapter = "external"
 
 // Default run values applied when the corresponding key is omitted.
 const (
@@ -42,11 +42,24 @@ type Schema struct {
 	Seed       string `yaml:"seed"`
 }
 
-// SUT selects the adapter, built-in entrypoint, and variant under test.
+// SUT selects the adapter and variant under test. Entrypoint belongs to
+// gonative; External declares an owned child JVM.
 type SUT struct {
-	Adapter    string `yaml:"adapter"`
-	Entrypoint string `yaml:"entrypoint"`
-	Variant    string `yaml:"variant"`
+	Adapter    string       `yaml:"adapter"`
+	Entrypoint string       `yaml:"entrypoint"`
+	Variant    string       `yaml:"variant"`
+	External   *ExternalSUT `yaml:"external,omitempty"`
+}
+
+// ExternalSUT holds the child launch and supervision contract. The database
+// credential is never configured here; the fixture supplies it at Start.
+type ExternalSUT struct {
+	Java             string `yaml:"java"`
+	JAR              string `yaml:"jar"`
+	Capacity         int    `yaml:"capacity"`
+	StartupTimeoutMS int    `yaml:"startup_timeout_ms"`
+	CancelTimeoutMS  int    `yaml:"cancel_timeout_ms"`
+	StopTimeoutMS    int    `yaml:"stop_timeout_ms"`
 }
 
 // Scenario names one scenario's workers and required sync-point order.
@@ -129,24 +142,61 @@ func (t Target) validate() error {
 	if strings.TrimSpace(t.SUT.Adapter) == "" {
 		return errors.New("target.sut.adapter is required")
 	}
-	if t.SUT.Adapter != SupportedAdapter {
+	if t.SUT.Adapter != SupportedAdapter && t.SUT.Adapter != ExternalAdapter {
 		return fmt.Errorf(
-			"target.sut.adapter %q is not supported; supported adapters: %s",
+			"target.sut.adapter %q is not supported; supported adapters: %s, %s",
 			t.SUT.Adapter,
 			SupportedAdapter,
-		)
-	}
-	if strings.TrimSpace(t.SUT.Entrypoint) == "" {
-		return errors.New("target.sut.entrypoint is required")
-	}
-	if strings.ContainsAny(t.SUT.Entrypoint, "/.") {
-		return fmt.Errorf(
-			"target.sut.entrypoint %q is a built-in ID, not a path; see docs/reference/config.md for known IDs",
-			t.SUT.Entrypoint,
+			ExternalAdapter,
 		)
 	}
 	if strings.TrimSpace(t.SUT.Variant) == "" {
 		return errors.New("target.sut.variant is required")
+	}
+	if t.SUT.Adapter == SupportedAdapter {
+		if t.SUT.External != nil {
+			return errors.New("target.sut.external is only supported with adapter external")
+		}
+		if strings.TrimSpace(t.SUT.Entrypoint) == "" {
+			return errors.New("target.sut.entrypoint is required")
+		}
+		if strings.ContainsAny(t.SUT.Entrypoint, "/.") {
+			return fmt.Errorf("target.sut.entrypoint %q is a built-in ID, not a path; see docs/reference/config.md for known IDs", t.SUT.Entrypoint)
+		}
+		return nil
+	}
+	if t.SUT.Entrypoint != "" {
+		return errors.New("target.sut.entrypoint is only supported with adapter gonative")
+	}
+	if t.SUT.External == nil {
+		return errors.New("target.sut.external is required for adapter external")
+	}
+	return t.SUT.External.Validate()
+}
+
+// Validate rejects incomplete external launch settings before provisioning.
+func (e ExternalSUT) Validate() error {
+	if strings.TrimSpace(e.Java) == "" {
+		return errors.New("target.sut.external.java is required")
+	}
+	if strings.TrimSpace(e.JAR) == "" {
+		return errors.New("target.sut.external.jar is required")
+	}
+	if e.Capacity < 1 || e.Capacity > 1024 {
+		return fmt.Errorf("target.sut.external.capacity must be between 1 and 1024, got %d", e.Capacity)
+	}
+	for _, b := range []struct {
+		name  string
+		value int
+	}{
+		{"startup_timeout_ms", e.StartupTimeoutMS}, {"cancel_timeout_ms", e.CancelTimeoutMS}, {"stop_timeout_ms", e.StopTimeoutMS},
+	} {
+		if b.value < 1 || b.value > 2147483647 {
+			return fmt.Errorf("target.sut.external.%s must be between 1 and 2147483647, got %d", b.name, b.value)
+		}
+	}
+	if e.CancelTimeoutMS > e.StopTimeoutMS {
+		return errors.New("target.sut.external.cancel_timeout_ms must not exceed stop_timeout_ms")
 	}
 	return nil
 }

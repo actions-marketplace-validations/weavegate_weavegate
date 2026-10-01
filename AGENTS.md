@@ -84,7 +84,7 @@ go build ./...
 go test ./internal/... -count=1     # Docker required
 go test ./fixtures/... -count=1     # Docker required
 go test ./experiments/... -count=1  # Docker required
-go test ./cmd/... -count=1          # Docker required
+go test ./cmd/... -count=1          # Docker and JDK required for external CLI integration
 go test ./cmd/... -short -count=1   # no Docker; skips the integration test
 ```
 

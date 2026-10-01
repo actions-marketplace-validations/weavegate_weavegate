@@ -54,7 +54,7 @@ See [Experiments](docs/README.md#measured-results) for methods and reproduction.
 
 1. **Declare ·** fixture data binds the scenario, migration, seed, and SQL assertions.
 2. **Orchestrate ·** the schedule engine explores, replays, and repeats sync-point release orders.
-3. **Execute ·** the Go-native adapter runs each worker with its own connection against real MySQL.
+3. **Execute ·** the selected Go-native or external JVM adapter runs workers with separate connections against real MySQL.
 4. **Judge and retain ·** composable oracles emit the verdict, schedule, trace, rows, report, and exit code.
 
 See [Architecture](docs/architecture.md#execution-flow) for details.

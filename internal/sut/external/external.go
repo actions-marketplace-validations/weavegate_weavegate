@@ -1,6 +1,6 @@
 // Package external implements the engine peer of external SUT wire v1 using
-// one owned child JVM per adapter. CLI enablement and fixture quarantine are
-// separate integration prerequisites; this package never resets a fixture.
+// one owned child JVM per adapter. The CLI selects it through configuration;
+// this package never resets a fixture.
 package external
 
 import (

@@ -14,7 +14,9 @@ import (
 	"unicode/utf8"
 )
 
-const maxFrame = 1 << 20
+// MaxFrameSize is the wire v1 JSON payload limit, excluding the length header.
+const MaxFrameSize = 1 << 20
+const maxFrame = MaxFrameSize
 const maxSequence = 100000
 
 var errProtocol = errors.New("external SUT protocol violation")

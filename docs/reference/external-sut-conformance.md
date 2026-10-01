@@ -207,7 +207,7 @@ Implementation prerequisites have explicit owners:
 | G1 fixture connection descriptor (resolved) | [#118](https://github.com/weavegate/weavegate/issues/118) and the [fixture connection contract](fixture-connection.md) | Real database provisioning for the external adapter |
 | G2 session faults, G5 unstarted outcomes, G6 operation cancellation (Go boundary resolved) | [#119](https://github.com/weavegate/weavegate/issues/119) and [adapter outcomes](adapter-outcomes.md) | External Go result mapping must consume the implemented boundary and prove wire conformance |
 | G3 quarantine and recovery after uncertain cleanup (Go boundary resolved) | [#120](https://github.com/weavegate/weavegate/issues/120) and the [fixture connection contract](fixture-connection.md) | External execution/repeat enablement still requires live peer evidence |
-| G4 launch, configuration and budget composition | [#110](https://github.com/weavegate/weavegate/issues/110) | External CLI enablement |
+| G4 launch, configuration and budget composition (resolved) | [ADR 0016](../adr/0016-external-cli-composition.md) and [#110](https://github.com/weavegate/weavegate/issues/110) | External CLI selection; live paired evidence remains #111 |
 | Executable assertion dispatch and remaining wire/lifecycle coverage | [#121](https://github.com/weavegate/weavegate/issues/121), implemented by #108/#109 | Language implementation acceptance; live paired evidence remains #111 |
 
 The unresolved rows remain implementation gates. Go boundary tests do not prove
@@ -411,7 +411,7 @@ configuration enablement; [Spring evidence #111](https://github.com/weavegate/we
 owns the combined MySQL reproduction. Do not mark this design checklist complete
 on the strength of prose or a mock-only test.
 
-- [ ] Resolve remaining ADR gap G4 before enabling external CLI execution: launch/config/budgets. G1 and G3 are resolved by the fixture connection contract; G2/G5/G6 are resolved at the Go boundary by ADR 0014. External implementations must still prove their mappings.
+- [x] Resolve ADR gap G4 for external CLI execution: launch/config/budgets in ADR 0016. G1 and G3 are resolved by the fixture connection contract; G2/G5/G6 are resolved at the Go boundary by ADR 0014. External implementations must still prove their mappings.
 - [ ] Consume all shared vector IDs targeting the implementation under test. Go owns runtime mapping, channel closure, process supervision, and error propagation; Java owns framing, dispatch, gates, proxy/lease tracking, and local cancellation. Both test malformed input and duplicate handling.
 - [ ] Implement only child-JVM launch with framed stdin/stdout. Test fragmented/coalesced frames, invalid JSON/UTF-8/fields/version, unknown names/IDs, gaps, conflicting duplicates, sequence exhaustion, and capacity exhaustion without changing application state on rejection.
 - [ ] Exercise concurrent arrivals and releases with barriers, including a blocked worker while another commits. The pipe reader/writer must remain live; no sleep-based coordination or polling for readiness.
