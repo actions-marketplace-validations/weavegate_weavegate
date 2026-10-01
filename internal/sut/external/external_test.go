@@ -355,7 +355,7 @@ func TestMySQLClassification(t *testing.T) {
 }
 
 func TestProtocolStateRejections(t *testing.T) {
-	for _, name := range []string{"unknown_invocation", "worker_binding", "unknown_point", "sequence_gap", "conflicting_duplicate", "terminal_while_arrived", "retired_terminal_conflict", "wrong_direction", "duplicate_accepted", "arrival_gap", "concurrent_arrival"} {
+	for _, name := range []string{"unknown_invocation", "worker_binding", "accepted_binding", "terminal_binding", "unknown_point", "sequence_gap", "sequence_exhaustion", "arrival_exhaustion", "conflicting_duplicate", "terminal_while_arrived", "retired_terminal_conflict", "wrong_direction", "duplicate_start", "duplicate_invoke", "duplicate_accepted", "arrival_gap", "concurrent_arrival", "released_arrival_duplicate"} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				p := newPeer(t)
@@ -370,11 +370,24 @@ func TestProtocolStateRejections(t *testing.T) {
 					b := binding(w)
 					b["worker"] = "w2"
 					p.send("arrive", withArrival(b))
+				case "accepted_binding":
+					b := binding(w)
+					b["worker"] = "w2"
+					p.send("accepted", b)
+				case "terminal_binding":
+					b := terminalBody(w, "committed", nil)
+					b["worker"] = "w2"
+					p.send("terminal", b)
 				case "unknown_point":
 					p.send("arrive", arrivalBody(w, 1, "missing"))
 				case "sequence_gap":
 					p.next++
 					p.send("arrive", arrivalBody(w, 1, "after_read"))
+				case "sequence_exhaustion":
+					p.next = maxSequence - 1
+					p.send("arrive", arrivalBody(w, 1, "after_read"))
+				case "arrival_exhaustion":
+					p.send("arrive", arrivalBody(w, maxSequence, "after_read"))
 				case "conflicting_duplicate":
 					p.next--
 					p.send("arrive", arrivalBody(w, 1, "after_read"))
@@ -389,6 +402,12 @@ func TestProtocolStateRejections(t *testing.T) {
 					p.send("terminal", terminalBody(w, "rolled_back", wireError("application", "rollback", 0, "")))
 				case "wrong_direction":
 					p.send("release", arrivalBody(w, 1, "after_read"))
+				case "duplicate_start":
+					p.send("start", startBody())
+				case "duplicate_invoke":
+					b := binding(w)
+					b["command"] = "assign"
+					p.send("invoke", b)
 				case "duplicate_accepted":
 					p.send("accepted", binding(w))
 				case "arrival_gap":
@@ -397,6 +416,12 @@ func TestProtocolStateRejections(t *testing.T) {
 					p.send("arrive", arrivalBody(w, 1, "after_read"))
 					<-p.client.calls
 					p.send("arrive", arrivalBody(w, 2, "before_write"))
+				case "released_arrival_duplicate":
+					p.send("arrive", arrivalBody(w, 1, "after_read"))
+					call := <-p.client.calls
+					call.result <- nil
+					p.read("release")
+					p.send("arrive", arrivalBody(w, 1, "after_read"))
 				}
 				<-p.a.Faults().Done()
 				p.read("fatal")
@@ -411,6 +436,7 @@ func TestProtocolStateRejections(t *testing.T) {
 			})
 		})
 	}
+	reportCheck(t, "requirement/go-wire-matrix", "observe/evidence", "internal/sut/external/external_test.go:TestProtocolStateRejections")
 }
 func withArrival(b map[string]any) map[string]any {
 	b["arrival"] = "1"
@@ -498,6 +524,7 @@ func TestStopActiveAndFirstCancellationOrigin(t *testing.T) {
 			})
 		})
 	}
+	reportCheck(t, "requirement/go-cancel-origin", "observe/evidence", "internal/sut/external/external_test.go:TestStopActiveAndFirstCancellationOrigin")
 }
 
 func TestProcessDeathUnwindsAndReaps(t *testing.T) {

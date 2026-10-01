@@ -196,7 +196,7 @@ checks passing. It does not require implementing a complete protocol state
 machine in the Python guard. Existing checks and wire requirements remain in
 force. New runtime combinations and exhaustive event/argument/assertion dispatch
 belong to [executable conformance #121](https://github.com/weavegate/weavegate/issues/121),
-which tracks the remaining finite coverage and per-target evidence for #108/#109.
+which tracks finite coverage and per-target evidence for #108/#109.
 A reproduced contradiction in the selected contract or regression in an existing
 checked premise still needs correction in the design/data.
 

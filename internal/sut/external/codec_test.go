@@ -15,7 +15,7 @@ import (
 )
 
 const vectorPath = "../../../docs/reference/testdata/external-sut-v1.json"
-const vectorDigest = "a04520c31157d9eedd174a9ed3c12bc54a9676b2e9a7fda6b04fa1c591563450"
+const vectorDigest = "7a8524fd609eec082322c0364717e92dbb4d19055c55203eef63c13d7056d43a"
 
 type vectorStep struct {
 	Prefix   string          `json:"prefix"`
@@ -142,7 +142,7 @@ func TestSharedFraming(t *testing.T) {
 			}
 		})
 	}
-	t.Log("EXTERNAL_SUT_FRAMING_RESULT pin=f32cd292246287a22c1a057012dd468f25c41c7d malformed=rejected control=independent")
+	t.Log("EXTERNAL_SUT_FRAMING_RESULT pin=c7cea1f3f5732066d1fb60b6bf6414fdb96019cf malformed=rejected control=independent")
 }
 
 type chunkReader struct {

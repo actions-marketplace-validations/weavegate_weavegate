@@ -80,9 +80,10 @@ python3 scripts/test-external-sut-go-results.py
 ```
 
 The [Go adapter reference](docs/reference/external-sut-go.md) explains how to
-publish the generated acceptance manifest. Its missing observers remain
-incomplete; passing package tests does not complete the external implementation
-gate or authorize fixture reuse after uncertain cleanup.
+publish the generated acceptance manifest. Passing package tests alone does not
+complete the external implementation gate: record their evidence and run the
+manifest checker with `--require-complete`. Fixture reuse after uncertain cleanup
+remains prohibited.
 
 Changes to the proposed external SUT protocol or its shared vectors also run
 the standard-library Python 3.9+ guard (Python is needed for this maintainer/CI

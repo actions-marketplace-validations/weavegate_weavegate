@@ -2,8 +2,8 @@
   "format": 1,
   "vector": {
     "path": "docs/reference/testdata/external-sut-v1.json",
-    "revision": "f32cd292246287a22c1a057012dd468f25c41c7d",
-    "sha256": "a04520c31157d9eedd174a9ed3c12bc54a9676b2e9a7fda6b04fa1c591563450"
+    "revision": "c7cea1f3f5732066d1fb60b6bf6414fdb96019cf",
+    "sha256": "7a8524fd609eec082322c0364717e92dbb4d19055c55203eef63c13d7056d43a"
   },
   "requirements": [
     {"id": "go-dispatch", "targets": ["go"], "owner": 108, "description": "Real handlers for every applicable event, argument shape and assertion; reject unknown names, fields and arguments before injection. Observers never synthesize input, completion, reaping or failure."},
