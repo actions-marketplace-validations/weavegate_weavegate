@@ -118,6 +118,9 @@ func (o *Orchestrator) Run(
 	if err := scenario.Validate(value, schedule); err != nil {
 		return result, fmt.Errorf("run schedule %q: %w", schedule.ID, err)
 	}
+	if err := o.config.Fixture.Ready(o.config.DB); err != nil {
+		return result, fmt.Errorf("run schedule %q: %w", schedule.ID, NewFixtureError(err))
+	}
 	trace := newTraceRecorder(o.config.OnEvent)
 	defer func() {
 		result.Trace = trace.clone()
@@ -188,7 +191,13 @@ func (o *Orchestrator) Run(
 		// Observe session faults after all cleanup work. The run- and operation-
 		// context boundaries run after this defer.
 		if faults != nil {
-			returnErr = joinRunError(returnErr, sessionFaultError(faults))
+			faultErr := sessionFaultError(faults)
+			returnErr = joinRunError(returnErr, faultErr)
+			if stopErr != nil || faultErr != nil {
+				o.config.Fixture.Quarantine(errors.Join(stopErr, faultErr))
+			}
+		} else if stopErr != nil {
+			o.config.Fixture.Quarantine(stopErr)
 		}
 	}()
 

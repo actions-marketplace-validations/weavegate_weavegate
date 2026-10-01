@@ -30,8 +30,9 @@ evidence in the plan. The pinned vectors include 12 Java wire matrix histories;
 their isolated Java handlers and real Spring checks are exercised by the Java
 suite. Go and paired execution have separate applicability. Launch/budget
 composition is recorded in
-[ADR 0016](../adr/0016-external-cli-composition.md); reset quarantine was
-resolved under [#120](https://github.com/weavegate/weavegate/issues/120).
+[ADR 0016](../adr/0016-external-cli-composition.md); the Go fixture
+[quarantine boundary](fixture-connection.md) is implemented under
+[#120](https://github.com/weavegate/weavegate/issues/120).
 
 When adding missing shared cases, review the vector change first, then update
 the pin, inventories and templates together. Re-run consumers against that

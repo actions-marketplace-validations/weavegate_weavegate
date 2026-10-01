@@ -162,6 +162,9 @@ func (*cancellationFixture) Reset(context.Context) error {
 	return errors.New("reset must not be called")
 }
 
+func (*cancellationFixture) Ready(*fixture.DB) error { return nil }
+func (*cancellationFixture) Quarantine(error)        {}
+
 func (f *cancellationFixture) Teardown(ctx context.Context) error {
 	f.teardownCalls++
 	f.cleanupErr = ctx.Err()

@@ -4,9 +4,11 @@ The repository root contains a [composite action](../../action.yml) that runs a
 published weavegate CLI release on a Linux runner with Docker. It verifies the
 release archive against that release's `checksums.txt`, runs the selected
 configuration and scenario, uploads the available evidence, writes a job
-summary, and only then decides whether the step passes. The action needs no
-write permission or secret. Use an ordinary `pull_request` workflow; this
-example does not use `pull_request_target`.
+summary, and only then decides whether the step passes. The gate needs no
+write permission or secret; only the optional
+[pull request comment](#pull-request-comment) needs `pull-requests: write`.
+Use an ordinary `pull_request` workflow; this example does not use
+`pull_request_target`.
 
 The following workflow is runnable in this repository. It uses the committed
 [matching-slice configuration](../../fixtures/matching-slice/.weavegate/config.yaml)
@@ -55,18 +57,56 @@ other application adapters are not available through this release.
 
 ## Inputs, outputs, and gate policy
 
+The action in this source tree also supports an omitted `version` when
+referenced by an exact release tag. This behavior will first be available
+from a release containing this change; `v0.1.0-alpha` predates the action.
+The pinned examples above and below remain the runnable route until then.
+
+The following is a **planned workflow fragment** for the final `v0.2.0`
+release, which has not been published. Use it only after that release and
+its CLI archives exist:
+
+```yaml
+- id: weavegate
+  uses: weavegate/weavegate@v0.2.0
+  with:
+    config: fixtures/matching-slice/.weavegate/config.yaml
+    scenario: concurrent-assign
+    variant: fixed
+    replay: sch_ba00582f9632
+```
+
+Here the CLI version defaults to `v0.2.0`. An exact prerelease reference,
+such as `@v0.2.0-rc.1`, similarly selects that CLI prerelease once published.
+A nonempty `version` overrides the action ref, so callers may choose a
+different published CLI while keeping their action code fixed. SHA pins,
+branch refs, local `uses: ./`, and moving major/minor refs such as `@v0` or
+`@v0.2` require an explicit `version`. The action reads its own
+[`github.action_ref`](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#github-context)
+and checks that it is a tag in `weavegate/weavegate` before using the default.
+A version-shaped branch without that tag requires an explicit `version`.
+Forked copies of the action also require an explicit `version`.
+The tag check uses GitHub's public API and fails installation if unavailable.
+The action never selects a CLI from the
+caller's branch, tag, checkout, or latest release. Invalid versions and
+missing release assets retain `install.txt` and fail the gate after the
+available evidence is uploaded.
+
 | Input | Use |
 | --- | --- |
-| `version` | Required published release tag, such as `v0.1.0-alpha`. The action chooses the runner's Linux architecture and verifies the archive SHA-256 against `checksums.txt`. |
+| `version` | Optional published CLI release tag, such as `v0.1.0-alpha`; defaults to the action's exact `vX.Y.Z[-prerelease]` ref. Required for SHA, branch, local, or moving major/minor refs. The Linux archive is SHA-256 verified against `checksums.txt`. |
 | `config`, `scenario` | Required CLI configuration path and scenario name. Relative paths are resolved in the caller's checkout. |
 | `variant` | Optional `--variant` override. |
 | `replay` | Optional literal schedule ID or file path for `--replay`. Omit to explore. |
 | `repeat` | Optional `--repeat` override. |
 | `artifact-name` | Artifact name; choose a unique value if the action runs more than once in a workflow. |
+| `comment` | `'true'` (default) posts the stored report as a [pull request comment](#pull-request-comment); `'false'` disables it. |
+| `github-token` | Token used only to post that comment. Defaults to the job's `github.token`. |
 
 The action records the real CLI `exit-code`, and publishes `verdict` only from
 a complete saved report. It also exposes `run-directory`, `schedule-id`,
-`report-path`, `evidence-directory`, and `artifact-url` when available. `verdict`
+`report-path`, `evidence-directory`, and `artifact-url` when available, plus
+`comment-outcome` and `comment-url` for the pull request comment. `verdict`
 is the report's scenario headline, so it can say `PASS` alongside exit 4 after
 a cleanup failure or exit 5 for retained version-3 diagnostic-derivation
 evidence. **Use the gate result or `exit-code`, not `verdict` alone, for CI.**
@@ -84,6 +124,178 @@ still retains its process logs; a diagnostic derivation failure retains its
 version-3 evidence and exit 5. The job summary states when a report or other
 evidence is missing. Outputs can be read in a later `if: always()` step even
 when the gate step failed.
+
+## Pull request comment
+
+The action in this source tree posts the run's stored `report.md` as a pull
+request comment. The commit pinned in the examples on this page predates that
+step; pin a reviewed commit that contains it to get comments.
+
+On a pull request event, after the evidence upload and before the gate
+decision, the action posts **one new comment per run**. It never edits or
+deletes an earlier comment, so each comment stays tied to the run that
+produced it. Grant the job the permission the comment needs:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+```
+
+The comment is a fixed wrapper around the stored report. Only the key facts
+are visible at first; the report and the replay steps are collapsed sections
+the reader opens:
+
+1. A heading with the process exit code, then one line with the report
+   verdict, the schedule ID, and links to the evidence artifact and its
+   workflow run.
+2. A collapsed section holding the bytes of `report.md`, unchanged, between
+   the lines `<!-- weavegate-report-begin -->` and
+   `<!-- weavegate-report-end -->`, in a fenced `text` block whose fence is
+   longer than any backtick run in the report. The report is shown as literal
+   text: nothing in it is rendered as Markdown, and no report value is copied
+   anywhere else in the comment. The verdict on the visible line is printed
+   only when it is exactly `PASS`, `FAIL`, or `FLAKY`.
+3. When the run saved a schedule, a collapsed section with the steps to
+   download the artifact, import `schedule.json` into `.weavegate/schedules/`,
+   and run the report's `replay:` line from the repository root.
+4. One closing line saying that `comment: 'false'` turns the comment off.
+
+This is a comment the `reusable-gate` job posted on the pull request that
+introduced the step, with the workflow run ID and artifact ID replaced by
+placeholders:
+
+`````markdown
+<!-- weavegate-gate-comment v1 -->
+### weavegate gate: process exit code 2
+
+Report verdict **FAIL** · schedule `sch_ba00582f9632` · [evidence artifact](https://github.com/weavegate/weavegate/actions/runs/<run-id>/artifacts/<artifact-id>) · [workflow run <run-id>](https://github.com/weavegate/weavegate/actions/runs/<run-id>)
+
+<details>
+<summary>Stored <code>report.md</code>, unchanged and shown as literal text</summary>
+
+<!-- weavegate-report-begin -->
+````text
+## weavegate: FAIL (WG001)
+scenario: concurrent-assign | schedules explored: 0 | violating: sch_ba00582f9632
+assertion: active-assignment-is-unique
+flaky: false (repeat=20)
+replay: weavegate run --config fixtures/matching-slice/.weavegate/config.yaml --scenario concurrent-assign --variant vulnerable --replay sch_ba00582f9632 --repeat 20
+
+error[WG001]: invariant violated under a controlled schedule
+  observed:  active-assignment-is-unique returned 1 row: active_assignment_count=2 project_request_id=42
+  assertion: active-assignment-is-unique
+  invariant: a declared state invariant must hold under every release schedule the database permits
+  reason:    commonly a read-then-write path without a lock or a unique constraint
+  help:      add a unique constraint on the contested key
+             take a pessimistic lock (SELECT ... FOR UPDATE) before insert
+             use an idempotency key on the write
+  evidence:  schedule sch_ba00582f9632 · trace.json · observation.json · 1 violating row
+````
+<!-- weavegate-report-end -->
+
+</details>
+
+<details>
+<summary>Replay schedule <code>sch_ba00582f9632</code></summary>
+
+1. Check out the revision this workflow run tested and install weavegate `v0.1.0-alpha`.
+2. Download the artifact and import its schedule from the repository root:
+
+   ```sh
+   gh run download <run-id> --repo weavegate/weavegate --name weavegate-gate-vulnerable --dir weavegate-evidence
+   mkdir -p .weavegate/schedules
+   cp weavegate-evidence/schedule.json .weavegate/schedules/sch_ba00582f9632.json
+   ```
+
+3. From the repository root, run the command on the report's `replay:` line. If that line contains a backslash escape it is a display form; rebuild the command from its original argument values.
+
+The [CI gate how-to](https://github.com/weavegate/weavegate/blob/main/docs/howto/ci-gate.md#pull-request-comment) describes this comment and the replay in full.
+
+</details>
+
+Set `comment: 'false'` on the weavegate action to turn this comment off.
+`````
+
+The download commands contain only the workflow run ID, the repository name,
+the validated GitHub server host, the `artifact-name` input, and the schedule
+ID. On GitHub Enterprise Server, `gh run download --repo` includes that host.
+Each value must match a closed grammar before it is printed; otherwise the step
+is described in words. The `replay:` line keeps the meaning defined by the
+[report schema](../reference/report-schema.md#reportmd): a line without a
+backslash escape is pasted unchanged, and a line with one is rebuilt from its
+original argument values.
+
+**Size limit.** The action embeds the report only when the complete comment is
+at most 65,536 UTF-8 bytes. Run `python3 -B scripts/test-actions-gate.py` to
+verify the boundary for the complete comment body. A larger report is
+not cut: the comment then states the report's size, says it was not truncated,
+and points to `runs/<run_id>/report.md` in the evidence artifact. The same
+fallback applies to a report a comment cannot carry byte for byte — one that
+is not valid UTF-8, contains a control character other than a line feed, or
+does not end with a line feed.
+
+**The comment never decides the gate.** `comment-outcome` reports what
+happened, and the gate step reads none of it:
+
+| `comment-outcome` | Meaning |
+| --- | --- |
+| `posted` | The comment exists; `comment-url` links to it. |
+| `disabled` | `comment` is `'false'`. No request was made. |
+| `skipped` | Nothing could be posted: the event is not a pull request, the run stored no report, no token is available, or GitHub answered 401, 403, or 404 because the token cannot write pull request comments. |
+| `failed` | The request did not complete or GitHub answered another status. |
+
+Pull requests from forks get a read-only `github.token`, so their comment is
+`skipped` while the gate result, the job summary, and the evidence artifact
+are unchanged. A job without `pull-requests: write` behaves the same way. The
+token is sent only in the request's authorization header; it is not written to
+the log, the job summary, the outputs, or the comment, and the request does
+not follow redirects.
+
+To build your own reporting, set `comment: 'false'` and read the outputs in a
+later step. The following fragment is constructed, not run by this
+repository's CI. It passes the report by path and the other outputs through
+the environment, so no report content becomes shell source:
+
+```yaml
+- id: weavegate
+  uses: weavegate/weavegate@<reviewed commit containing the comment step>
+  with:
+    version: v0.1.0-alpha
+    config: fixtures/matching-slice/.weavegate/config.yaml
+    scenario: concurrent-assign
+    comment: 'false'
+- name: Post a custom comment
+  if: always() && steps.weavegate.outputs.report-path != ''
+  env:
+    GH_TOKEN: ${{ github.token }}
+    PR_NUMBER: ${{ github.event.pull_request.number }}
+    REPORT_PATH: ${{ steps.weavegate.outputs.report-path }}
+    ARTIFACT_URL: ${{ steps.weavegate.outputs.artifact-url }}
+  run: |
+    {
+      printf 'weavegate evidence: %s\n\n' "$ARTIFACT_URL"
+      sed 's/^/    /' "$REPORT_PATH"
+    } > "$RUNNER_TEMP/weavegate-comment.md"
+    gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/weavegate-comment.md"
+```
+
+The unit checks for these cases run without Docker and print one fixed marker
+that the smoke workflow's `docs` job requires:
+
+```bash
+python3 -B scripts/test-actions-gate.py
+```
+
+The `reusable-gate` job posts a live comment from its vulnerable run when a
+pull request changes `action.yml` or `scripts/actions-gate.py`, reads the
+comment back through the API, and compares the embedded report with
+`report.md` byte for byte. The `gate-replay` job then follows the comment's
+instructions in a fresh checkout: it downloads the artifact, imports the
+schedule, runs the report's `replay:` line without a shell, and requires exit 2
+and an identical `report.md`. The matching-slice schedule is also built into
+the CLI, so that job shows the documented steps work, not that the imported
+file was the lookup stage that resolved the schedule.
 
 ## Download and replay the exact schedule
 
@@ -131,3 +343,6 @@ ID from `schedule.json` after this import, because it searches
 Keep the original config, fixture SQL, selected variant, and CLI release
 available in the reader's checkout; a schedule file alone does not carry
 those inputs.
+
+Maintainers preparing a release and Marketplace listing should follow the
+[action publication procedure](../maintainers/action-publication.md).

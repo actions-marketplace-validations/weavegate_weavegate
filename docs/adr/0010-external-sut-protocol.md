@@ -120,15 +120,16 @@ capacity, and a correlation run ID; session IDs are generated per adapter.
 
 G1 is resolved by the fixture-owned descriptor contract. G2, G5, and G6 are
 resolved at the Go boundary by [ADR 0014](0014-adapter-outcome-boundaries.md).
-At the proposal date, G3 and G4 were implementation blockers. The table below
-records the original gaps and decisions requested at that time.
+G3 is resolved by the fixture-owned quarantine boundary in
+[the connection contract](../reference/fixture-connection.md). G4 is resolved
+by [ADR 0016](0016-external-cli-composition.md).
 
-| Gap | Current code and missing capability | Required follow-up decision |
+| Gap | Current boundary | Decision or follow-up |
 | --- | --- | --- |
 | G1: Connection provisioning (resolved) | [`fixture.DB`](../../internal/fixture/fixture.go) exposes `ConnectionDescriptor` beside `SQL`; both address the same prepared database through its application account. | The [descriptor contract](../reference/fixture-connection.md) defines structured metadata, secret access/redaction, Reset preservation, Teardown invalidation, separate administrator access, and fresh reprovisioning credentials. External adapters consume it without adding another provisioner. |
 | G2: Asynchronous adapter failure (resolved) | Handle exposes a typed, latched session fault independently of invocation outcomes. | ADR 0014 observes faults during execution, provisional evaluation, and final cleanup; causes remain Run errors without fabricated worker terminals. |
-| G3: Reset after failed shutdown | `Run` defers Stop and joins its error, but returns its run gate even when Stop fails. Replay stops on error; a later direct `Run` can still call Reset. | Define fixture quarantine/invalidation after unproven child or DB-session cleanup; reject reuse until teardown and successful reprovisioning. Process exit alone does not prove server rollback finished. |
-| G4: Adapter selection and budgets | [`config`](../../internal/config/config.go) and [`Resolve`](../../cmd/weavegate/resolve.go) only resolve built-in Go entrypoints. Start consumes the existing run budget, which may be too small for JVM startup. | Specify one launch configuration, command/point preflight, capacity, and startup/run/stop budget composition before adding external dispatch. Keep argv and credentials separate; update config docs and validation markers in that change. |
+| G3: Reset after failed shutdown (resolved) | `Run` quarantines its fixture after failed Stop or a latched session fault, before releasing the run gate. Fixture-owned `Ready` and `Reset` reject reuse, and the descriptor is invalidated. | Teardown and successful reprovisioning clear quarantine. A fresh orchestrator must use the new DB handle; process exit alone does not prove server rollback finished. |
+| G4: Adapter selection and budgets (resolved) | [`config`](../../internal/config/config.go) and [`Resolve`](../../cmd/weavegate/resolve.go) now select an external JVM through strict adapter-specific configuration. | [ADR 0016](0016-external-cli-composition.md) records launch, command/point preflight, capacity, and startup/run/stop budget composition while keeping argv and credentials separate. |
 | G5: Invocation never started (resolved) | Invoke returns one InvocationOutcome stream containing a WorkerResult or an UnstartedResult, then closes. | ADR 0014 requires resource return and reservation release; unstarted outcomes never call runtime Finish and are retained separately as run evidence. |
 | G6: Operation cancellation versus worker outcome (resolved) | Run retains truthful worker results and separately returns the operation context error. | ADR 0014 sets the final cancellation/fault observation after Stop, collection, and runtime Close; provisional evaluation is discarded on run error. |
 

@@ -134,6 +134,118 @@ func TestRunSavedScheduleWithOracle(t *testing.T) {
 	)
 }
 
+func TestRunQuarantinesFailedStopAcrossCalls(t *testing.T) {
+	fixtureRunner := &recordingFixture{}
+	stopCause := errors.New("shutdown could not prove database cleanup")
+	starts := 0
+	var oldRuntime syncpoint.Runtime
+	newExecutor := func() *Orchestrator {
+		return newTestOrchestrator(t, Config{
+			Fixture: fixtureRunner, DB: &fixture.DB{},
+			NewRuntime: func() syncpoint.Runtime {
+				runtime := syncpoint.New()
+				if oldRuntime == nil {
+					oldRuntime = runtime
+				}
+				return runtime
+			},
+			NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+				starts++
+				adapter := newScriptedAdapter(client)
+				adapter.stopErr = stopCause
+				return adapter, nil
+			},
+			BlockInferenceTimeout: testBlockTimeout, StepTimeout: testStepTimeout,
+			RunTimeout: testRunTimeout, StopTimeout: testStopTimeout,
+		})
+	}
+	first := newExecutor()
+	value, schedule := matchingScenario(), matchingSchedule(t)
+	if _, err := first.Run(context.Background(), value, schedule, stableEvaluator); !errors.Is(err, stopCause) {
+		t.Fatalf("first run error = %v, want stop cause", err)
+	}
+	if fixtureRunner.resetCalls != 1 || starts != 1 {
+		t.Fatalf("first run reset/start calls = %d/%d, want 1/1", fixtureRunner.resetCalls, starts)
+	}
+	if err := oldRuntime.Arrive(context.Background(), "w1", "after_read_request"); !errors.Is(err, syncpoint.ErrClosed) {
+		t.Fatalf("old bridge arrival after failed Stop = %v, want closed runtime", err)
+	}
+	for _, call := range []struct {
+		name string
+		run  func() error
+	}{
+		{"direct Run", func() error { _, err := first.Run(context.Background(), value, schedule, stableEvaluator); return err }},
+		{"new Orchestrator", func() error {
+			_, err := newExecutor().Run(context.Background(), value, schedule, stableEvaluator)
+			return err
+		}},
+		{"Replay", func() error {
+			_, err := first.Replay(context.Background(), value, schedule, 2, stableEvaluator)
+			return err
+		}},
+	} {
+		err := call.run()
+		if !errors.Is(err, fixture.ErrQuarantined) || !errors.Is(err, stopCause) {
+			t.Fatalf("%s error = %v, want quarantine and original stop cause", call.name, err)
+		}
+		if fixtureRunner.resetCalls != 1 || starts != 1 {
+			t.Fatalf("%s reached Reset or adapter: resets=%d starts=%d", call.name, fixtureRunner.resetCalls, starts)
+		}
+	}
+	t.Log("FIXTURE_QUARANTINE_RESULT stop=failed direct_run=blocked replay=blocked old_bridge=closed resets=1 adapter_starts=1")
+}
+
+func TestRunQuarantinesSessionFaultAfterSuccessfulStop(t *testing.T) {
+	fixtureRunner := &recordingFixture{}
+	cause := errors.New("unknown transaction outcome")
+	starts := 0
+	o := newTestOrchestrator(t, Config{
+		Fixture: fixtureRunner, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
+		NewAdapter: func(syncpoint.Client) (sut.Adapter, error) {
+			starts++
+			a := &outcomeAdapter{}
+			a.stop = func(context.Context) error { a.faults.Fail(cause); return nil }
+			return a, nil
+		},
+		BlockInferenceTimeout: testBlockTimeout, StepTimeout: testStepTimeout,
+		RunTimeout: testRunTimeout, StopTimeout: testStopTimeout,
+	})
+	value := scenario.Scenario{Name: "fault", Workers: []scenario.Worker{{ID: "w1", Command: "command"}}, SyncPoints: []string{"point"}}
+	schedule, err := scenario.NewSchedule([]scenario.CoordinationStep{{Worker: "w1", Point: "point"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := o.Run(context.Background(), value, schedule, stableEvaluator); !errors.Is(err, cause) {
+		t.Fatalf("first run error = %v, want session cause", err)
+	}
+	if _, err := o.Run(context.Background(), value, schedule, stableEvaluator); !errors.Is(err, fixture.ErrQuarantined) || !errors.Is(err, cause) {
+		t.Fatalf("second run error = %v, want quarantine and session cause", err)
+	}
+	if fixtureRunner.resetCalls != 1 || starts != 1 {
+		t.Fatalf("fault allowed reuse: resets=%d starts=%d", fixtureRunner.resetCalls, starts)
+	}
+}
+
+func TestRunSuccessfulStopAllowsReuse(t *testing.T) {
+	fixtureRunner := &recordingFixture{}
+	starts := 0
+	o := newTestOrchestrator(t, Config{
+		Fixture: fixtureRunner, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
+		NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+			starts++
+			return newScriptedAdapter(client), nil
+		},
+		BlockInferenceTimeout: testBlockTimeout, StepTimeout: testStepTimeout,
+		RunTimeout: testRunTimeout, StopTimeout: testStopTimeout,
+	})
+	if _, err := o.Replay(context.Background(), matchingScenario(), matchingSchedule(t), 2, stableEvaluator); err != nil {
+		t.Fatalf("replay after successful Stop: %v", err)
+	}
+	if fixtureRunner.resetCalls != 2 || starts != 2 || fixtureRunner.quarantine != nil {
+		t.Fatalf("successful reuse: resets=%d starts=%d quarantine=%v", fixtureRunner.resetCalls, starts, fixtureRunner.quarantine)
+	}
+}
+
 func TestRunDefersPointBehindPendingWorkerArrival(t *testing.T) {
 	fixtureRunner := &recordingFixture{}
 	runtime := newRuntimeProbe()
@@ -981,6 +1093,7 @@ func matchingSchedule(t *testing.T) scenario.Schedule {
 type recordingFixture struct {
 	resetCalls int
 	resetErr   error
+	quarantine error
 }
 
 type cancelingResetFixture struct {
@@ -1024,7 +1137,23 @@ func (*recordingFixture) Provision(context.Context, fixture.FixtureSpec) (*fixtu
 
 func (f *recordingFixture) Reset(context.Context) error {
 	f.resetCalls++
+	if f.quarantine != nil {
+		return errors.Join(fixture.ErrQuarantined, f.quarantine)
+	}
 	return f.resetErr
+}
+
+func (f *recordingFixture) Ready(*fixture.DB) error {
+	if f.quarantine != nil {
+		return errors.Join(fixture.ErrQuarantined, f.quarantine)
+	}
+	return nil
+}
+
+func (f *recordingFixture) Quarantine(err error) {
+	if f.quarantine == nil {
+		f.quarantine = err
+	}
 }
 
 func (*recordingFixture) Teardown(context.Context) error {
