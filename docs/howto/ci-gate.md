@@ -13,7 +13,9 @@ Use an ordinary `pull_request` workflow; this example does not use
 The following workflow is runnable in this repository. It uses the committed
 [matching-slice configuration](../../fixtures/matching-slice/.weavegate/config.yaml)
 and its `concurrent-assign` scenario. The action is pinned to a reviewed commit
-that includes the comment step; the CLI release is selected separately. If the
+that includes the comment and complete job summary; the CLI release is selected
+separately. This action commit belongs to this change, so merge this pull
+request with a merge commit to keep the pinned SHA in `main`'s history. If the
 action is later changed, pin a reviewed commit containing that change.
 
 ```yaml
@@ -29,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: weavegate
-        uses: weavegate/weavegate@1947639b090bf5a61122275b26974b9f7293fcc4
+        uses: weavegate/weavegate@a022acaa909579f4ee5eb43dfa3329a16c2cef6e
         with:
           version: v0.1.0-alpha
           config: fixtures/matching-slice/.weavegate/config.yaml
@@ -259,7 +261,7 @@ the environment, so no report content becomes shell source:
 
 ```yaml
 - id: weavegate
-  uses: weavegate/weavegate@1947639b090bf5a61122275b26974b9f7293fcc4
+  uses: weavegate/weavegate@a022acaa909579f4ee5eb43dfa3329a16c2cef6e
   with:
     version: v0.1.0-alpha
     config: fixtures/matching-slice/.weavegate/config.yaml
@@ -325,7 +327,7 @@ steps:
       mkdir -p .weavegate/schedules
       cp imported/schedule.json .weavegate/schedules/producer.json
   - id: replay
-    uses: weavegate/weavegate@1947639b090bf5a61122275b26974b9f7293fcc4
+    uses: weavegate/weavegate@a022acaa909579f4ee5eb43dfa3329a16c2cef6e
     with:
       version: v0.1.0-alpha
       config: fixtures/matching-slice/.weavegate/config.yaml
