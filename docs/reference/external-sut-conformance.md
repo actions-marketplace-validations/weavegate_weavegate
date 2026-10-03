@@ -2,10 +2,12 @@
 
 These are constructed design examples for the
 [v1 wire contract](external-sut-v1.md), not captured output or passing tests.
-The [Go peer](external-sut-go.md) and [Java Spring peer](external-sut-java.md)
-have partial executable evidence; neither implementation has complete acceptance. The shared
-[JSON vectors](testdata/external-sut-v1.json) are the common input for both future
-implementation issues; do not fork language-specific copies of the protocol.
+The [Go peer](external-sut-go.md) has complete isolated acceptance: all 72
+applicable rows pass the strict gate. The [Java Spring peer](external-sut-java.md)
+and live paired targets still have incomplete acceptance. The Go reference
+documents the commands that reproduce the isolated evidence. The shared
+[JSON vectors](testdata/external-sut-v1.json) are the common input for both
+implementations; do not fork language-specific copies of the protocol.
 [ADR 0010](../adr/0010-external-sut-protocol.md) lists the engine decisions that
 must precede end-to-end enablement.
 

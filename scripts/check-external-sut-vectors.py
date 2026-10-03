@@ -216,24 +216,29 @@ def indices(steps, predicate):
     return [i for i, s in enumerate(steps) if predicate(s)]
 
 
-def injected_premise(case_id, frame, effects, invocations, outstanding, returned, completed, canceled, start, stop_seen, exhausted_arrivals):
+def injected_premise(case_id, frame, effects, invocations, outstanding, returned, completed, canceled, start, stop_seen, exhausted_arrivals, last_arrival):
     body, kind = frame['body'], frame['type']
     invocation = body.get('invocation')
     current = outstanding.get(invocation)
     if case_id == 'go_wrong_direction':
         return kind == 'invoke' and 'fatal_protocol' in effects
-    if case_id == 'go_unknown_point':
-        return kind == 'arrive' and invocation in invocations and body['point'] == 'missing'
-    if case_id == 'go_immutable_worker':
-        return kind == 'arrive' and invocation in invocations and body['worker'] != invocations[invocation][0]
+    if case_id in ('go_unknown_point', 'go_immutable_worker', 'go_arrival_sequence_exhausted'):
+        if kind != 'arrive' or invocation not in invocations or invocation in completed or current is not None:
+            return False
+        worker_matches = body['worker'] == invocations[invocation][0]
+        point_known = start is not None and body['point'] in start['points']
+        next_arrival = int(body['arrival']) == last_arrival.get(invocation, 0) + 1
+        if case_id == 'go_unknown_point':
+            return worker_matches and next_arrival and body['point'] == 'missing' and not point_known
+        if case_id == 'go_immutable_worker':
+            return not worker_matches and point_known and next_arrival
+        return worker_matches and point_known and invocation in exhausted_arrivals and body['arrival'] == '100000'
     if case_id == 'go_semantic_duplicate_start':
         return kind == 'start' and start == body and 'fatal_protocol' in effects
     if case_id == 'go_semantic_duplicate_invoke':
         return kind == 'invoke' and invocations.get(invocation) == (body['worker'], body['command'])
     if case_id == 'go_released_arrival_duplicate':
         return kind == 'arrive' and current is None and returned.get(invocation) == (body, 'nil')
-    if case_id == 'go_arrival_sequence_exhausted':
-        return kind == 'arrive' and invocation in exhausted_arrivals and body['arrival'] == '100000'
     if case_id == 'java_immutable_worker':
         return kind == 'cancel' and invocation in invocations and body['worker'] != invocations[invocation][0]
     if case_id == 'java_semantic_duplicate_start':
@@ -384,7 +389,7 @@ def history(case, steps):
             need('fatal_protocol' in effects, 'wrong direction must be rejected')
             if case['id'] in ('go_semantic_duplicate_start', 'go_semantic_duplicate_invoke'):
                 need(injected_premise(case['id'], f, effects, invocations, outstanding, returned,
-                                      completed, canceled, start, stop_seen, exhausted_arrivals), 'semantic duplicate lacks prior matching body')
+                                      completed, canceled, start, stop_seen, exhausted_arrivals, last_arrival), 'semantic duplicate lacks prior matching body')
             continue
         need(t == 'fatal' or (peer == 'java') == (t in TO_JAVA), 'message direction')
         if f['v'] != 1:
@@ -425,7 +430,7 @@ def history(case, steps):
                 need(required <= set(effects), 'retired terminal effects')
                 continue
             need(injected_premise(case['id'], f, effects, invocations, outstanding, returned,
-                                  completed, canceled, start, stop_seen, exhausted_arrivals), 'injected input lacks declared lifecycle premise')
+                                  completed, canceled, start, stop_seen, exhausted_arrivals, last_arrival), 'injected input lacks declared lifecycle premise')
             continue
         if t == 'invoke':
             need(invocations.get(b['invocation']) == (b['worker'], b['command']), 'invoke lacks Go Handle call')
@@ -799,6 +804,16 @@ def self_test(data):
     reject('VECTOR_GO_DUPLICATE_START_PREMISE_CAUGHT', lambda d: next(s for s in case(d, 'go_semantic_duplicate_start')['steps'] if message(s, 'start'))['frame']['body'].update(capacity=1))
     reject('VECTOR_GO_DUPLICATE_INVOKE_PREMISE_CAUGHT', lambda d: next(s for s in case(d, 'go_semantic_duplicate_invoke')['steps'] if message(s, 'invoke'))['frame']['body'].update(invocation='99999999999999999999999999999999'))
     reject('VECTOR_GO_ARRIVAL_EXHAUSTION_SETUP_CAUGHT', lambda d: case(d, 'go_arrival_sequence_exhausted')['steps'].__setitem__(slice(None), [s for s in case(d, 'go_arrival_sequence_exhausted')['steps'] if not event(s, 'exhaust_arrivals')]))
+    for name, field, value in (
+        ('go_unknown_point', 'worker', 'w2'),
+        ('go_unknown_point', 'arrival', '999'),
+        ('go_immutable_worker', 'point', 'missing'),
+        ('go_immutable_worker', 'arrival', '999'),
+        ('go_arrival_sequence_exhausted', 'worker', 'w2'),
+        ('go_arrival_sequence_exhausted', 'point', 'missing'),
+    ):
+        reject('VECTOR_' + name.upper() + '_' + field.upper() + '_CAUGHT',
+               lambda d: next(s for s in case(d, name)['steps'] if message(s, 'arrive'))['frame']['body'].update({field: value}))
     reject('VECTOR_LATE_FAULT_CAUGHT', lambda d: case(d, 'fatal_after_terminals')['steps'].__setitem__(slice(None), [s for s in case(d, 'fatal_after_terminals')['steps'] if not event(s, 'provisional_evaluation')]))
     reject('VECTOR_WATCHDOG_CAUGHT', lambda d: next(s for s in case(d, 'active_stop_cancel_watchdog_expires')['steps'] if event(s, 'advance_cancel_cleanup_clock') and s['args']['elapsed_ms'] == 1000)['args'].update(elapsed_ms=2500))
     reject('VECTOR_WATCHDOG_TRIGGER_ORDER_CAUGHT', move_clocks_before_trigger)

@@ -358,6 +358,10 @@ func TestMySQLClassification(t *testing.T) {
 }
 
 func TestProtocolStateRejections(t *testing.T) {
+	// Acceptance includes the codec stream boundaries as well as state rejection.
+	if modes := checkCodecStrictMatrix(t); modes != 3 {
+		t.Fatal("wire matrix lacks stream boundary evidence", modes)
+	}
 	for _, name := range []string{"unknown_invocation", "worker_binding", "accepted_binding", "terminal_binding", "unknown_point", "sequence_gap", "sequence_exhaustion", "arrival_exhaustion", "conflicting_duplicate", "terminal_while_arrived", "retired_terminal_conflict", "wrong_direction", "duplicate_start", "duplicate_invoke", "duplicate_accepted", "arrival_gap", "concurrent_arrival", "released_arrival_duplicate"} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

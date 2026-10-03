@@ -182,6 +182,13 @@ func assertFrame(t *testing.T, got, want frame) {
 }
 
 func TestCodecStrictMatrix(t *testing.T) {
+	if modes := checkCodecStrictMatrix(t); modes != 3 {
+		t.Fatal("missing stream boundary mode", modes)
+	}
+}
+
+func checkCodecStrictMatrix(t *testing.T) int {
+	t.Helper()
 	base := `{"v":1,"type":"ready","run":"11111111111111111111111111111111","session":"22222222222222222222222222222222","seq":1,"body":{"commands":["assign"],"points":["after_read"],"capacity":2}}`
 	for _, c := range []struct{ name, from, to string }{
 		{"fraction", `"v":1`, `"v":1.0`}, {"exponent", `"seq":1`, `"seq":1e0`},
@@ -217,7 +224,8 @@ func TestCodecStrictMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := stream.Bytes()
-	for _, chunk := range []int{1, len(raw)} {
+	modes := 0
+	for mode, chunk := range []int{1, len(raw)} {
 		r := &chunkReader{data: bytes.Clone(raw), chunks: make([]int, len(raw))}
 		for i := range r.chunks {
 			r.chunks[i] = chunk
@@ -232,10 +240,12 @@ func TestCodecStrictMatrix(t *testing.T) {
 		if _, _, err := readFrame(r); err != io.EOF {
 			t.Fatalf("boundary EOF: %v", err)
 		}
+		modes |= 1 << mode
 	}
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], maxFrame+1)
 	if _, _, err := readFrame(bytes.NewReader(header[:])); !errors.Is(err, errProtocol) {
 		t.Fatal(err)
 	}
+	return modes
 }

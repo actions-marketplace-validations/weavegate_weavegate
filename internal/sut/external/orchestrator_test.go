@@ -278,8 +278,8 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 		{"java_fatal_cleanup_watchdog_expires", "protocol_fatal", []string{"step/9/expect/3/abort_run"}},
 		{"java_startup_watchdog_expires", "startup_fatal", []string{"step/6/expect/3/quarantine_fixture", "step/6/expect/4/reset_rejected"}},
 		{"java_stop_watchdog_expires", "stop_fatal", []string{"step/17/expect/2/quarantine_fixture", "step/18/expect/3/quarantine_fixture", "step/18/expect/4/reset_rejected"}},
-		{"active_stop_cancel_watchdog_expires", "active_fatal", []string{"step/15/expect/3/quarantine_fixture", "step/16/expect/3/quarantine_fixture", "step/16/expect/4/reset_rejected"}},
-		{"active_stop_cancel_watchdog_expires", "active_fatal", []string{"step/15/expect/2/abort_run"}},
+		{"active_stop_cancel_watchdog_expires", "active_stop_deadline", []string{"step/15/expect/3/quarantine_fixture", "step/16/expect/3/quarantine_fixture", "step/16/expect/4/reset_rejected"}},
+		{"active_stop_cancel_watchdog_expires", "active_stop_deadline", []string{"step/15/expect/2/abort_run"}},
 	}
 	for _, c := range cases {
 		t.Run(c.row, func(t *testing.T) {
@@ -287,8 +287,9 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 				p := newPeer(t)
 				probe := &quarantineProbe{}
 				var deadlineProbe *cancelDeadlineProbe
+				var activeStop chan error
 				newRuntime := func() syncpoint.Runtime { return syncpoint.New() }
-				if c.mode == "cancel_deadline" {
+				if c.mode == "cancel_deadline" || c.mode == "active_stop_deadline" {
 					deadlineProbe = &cancelDeadlineProbe{
 						waitArriveProbe: &waitArriveProbe{Runtime: syncpoint.New(), held: make(chan struct{}), resume: make(chan struct{})},
 						arriveReturned:  make(chan error, 1),
@@ -348,13 +349,23 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 					w := p.read("invoke")
 					p.send("accepted", binding(w))
 					switch c.mode {
-					case "cancel_deadline":
+					case "cancel_deadline", "active_stop_deadline":
 						p.send("arrive", arrivalBody(w, 1, "after_read"))
 						<-deadlineProbe.held
-						cancelRun()
+						reason := "context"
+						if c.mode == "active_stop_deadline" {
+							reason = "stop"
+							activeStop = make(chan error, 1)
+							go func() { activeStop <- p.a.Stop(context.Background()) }()
+						} else {
+							cancelRun()
+						}
 						cancelFrame := p.read("cancel")
-						if cancelFrame.Body["invocation"] != w.Body["invocation"] || cancelFrame.Body["reason"] != "context" {
+						if cancelFrame.Body["invocation"] != w.Body["invocation"] || cancelFrame.Body["reason"] != reason {
 							t.Fatal("deadline cancellation did not target the arrived invocation")
+						}
+						if activeStop != nil {
+							p.read("stop")
 						}
 						if err := <-deadlineProbe.arriveReturned; !errors.Is(err, context.Canceled) {
 							t.Fatal("canceled runtime arrival did not unwind", err)
@@ -372,7 +383,9 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 						p.send("fatal", map[string]any{"kind": "cleanup", "message": "cancellation cleanup deadline exceeded"})
 						<-p.a.Faults().Done()
 						close(deadlineProbe.resume)
-						p.read("stop")
+						if activeStop == nil {
+							p.read("stop")
+						}
 						p.exit(errors.New("cleanup deadline"))
 					case "stop_timeout", "stop_fatal":
 						p.send("arrive", arrivalBody(w, 1, "after_read"))
@@ -398,6 +411,11 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 					}
 				}
 				r := <-done
+				if activeStop != nil {
+					if err := <-activeStop; !errors.Is(err, p.a.Faults().Err()) || p.a.Faults().Err() == nil || !errors.Is(r.err, p.a.Faults().Err()) || len(r.result.Workers) != 0 {
+						t.Fatal("active Stop deadline lost the adapter fault or fabricated a worker result", err, r.err)
+					}
+				}
 				if r.err == nil || probe.cause == nil || !errors.Is(probe.Reset(context.Background()), fixture.ErrQuarantined) {
 					t.Fatal("failed Run did not quarantine and reject Reset", r.err)
 				} else if c.mode == "cancel_deadline" && (!errors.Is(r.err, context.Canceled) || !errors.Is(r.err, p.a.Faults().Err()) || len(r.result.Workers) != 0) {
@@ -474,8 +492,12 @@ func TestOrchestratorResetAfterActiveStop(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := newPeer(t)
 		probe := &quarantineProbe{}
+		runtime := &cancelDeadlineProbe{
+			waitArriveProbe: &waitArriveProbe{Runtime: syncpoint.New(), held: make(chan struct{}), resume: make(chan struct{})},
+			arriveReturned:  make(chan error, 1),
+		}
 		o, err := orchestrator.New(orchestrator.Config{
-			Fixture: probe, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
+			Fixture: probe, DB: &fixture.DB{}, NewRuntime: func() syncpoint.Runtime { return runtime },
 			NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
 				p.a.client = client
 				return preparedAdapter{p.a}, nil
@@ -493,12 +515,14 @@ func TestOrchestratorResetAfterActiveStop(t *testing.T) {
 		value := scenario.Scenario{Name: "active-stop", Workers: []scenario.Worker{{ID: "w1", Command: "assign"}}, SyncPoints: []string{"after_read"}}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		results := make(chan orchestrator.RunResult, 1)
 		done := make(chan error, 1)
 		go func() {
-			_, err := o.Run(ctx, value, schedule, oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
+			result, err := o.Run(ctx, value, schedule, oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
 				t.Error("canceled command reached evaluation")
 				return oracle.Evaluation{}, nil
 			}))
+			results <- result
 			done <- err
 		}()
 		p.read("start")
@@ -506,15 +530,31 @@ func TestOrchestratorResetAfterActiveStop(t *testing.T) {
 		w := p.read("invoke")
 		p.send("accepted", binding(w))
 		p.send("arrive", arrivalBody(w, 1, "after_read"))
-		p.read("release")
-		cancel()
-		p.read("cancel")
+		<-runtime.held
+		stopDone := make(chan error, 1)
+		go func() { stopDone <- p.a.Stop(context.Background()) }()
+		cancelFrame := p.read("cancel")
+		if cancelFrame.Body["invocation"] != w.Body["invocation"] || cancelFrame.Body["reason"] != "stop" {
+			t.Fatal("active Stop did not own cancellation")
+		}
 		p.read("stop")
-		p.send("terminal", terminalBody(w, "rolled_back", wireError("cancelled", "cancelled by context", 0, "")))
+		if err := <-runtime.arriveReturned; !errors.Is(err, context.Canceled) {
+			t.Fatal("Stop did not unwind the runtime arrival", err)
+		}
+		p.send("terminal", terminalBody(w, "rolled_back", wireError("cancelled", "cancelled by stop", 0, "")))
 		p.send("stopped", map[string]any{})
 		p.exit(nil)
-		if err := <-done; !errors.Is(err, context.Canceled) {
+		if err := <-stopDone; err != nil {
+			t.Fatal("active Stop failed", err)
+		}
+		synctest.Wait()
+		close(runtime.resume)
+		if err := <-done; !errors.Is(err, syncpoint.ErrInvalidTransition) {
 			t.Fatal("active cancellation lost", err)
+		}
+		result := <-results
+		if len(result.Workers) != 1 || !errors.Is(result.Workers[0].Err, context.Canceled) {
+			t.Fatal("Stop lost the canceled worker outcome")
 		}
 		if probe.cause != nil {
 			t.Fatal("clean active Stop quarantined fixture", probe.cause)
