@@ -432,6 +432,7 @@ jobs:
           python3 -B scripts/test-actions-gate.py | tee /tmp/actions-gate.out
           grep -F 'ACTION_COMMENT_RESULT enabled=posted disabled=no_request fork=skipped no_permission=skipped no_token=skipped non_pull_request=skipped api_error=failed redirect=not_followed oversized=artifact_link report=byte_identical token=not_printed gate=unchanged' /tmp/actions-gate.out
           grep -F 'ACTION_VERSION_RESULT tag=default prerelease=accepted explicit=preferred nonrelease=requires_version caller_ref=ignored install_failure=retained gate=failed' /tmp/actions-gate.out
+          grep -F 'ACTION_SUMMARY_RESULT version=installed verdict=stored report=byte_identical missing=explicit token=not_printed' /tmp/actions-gate.out
 
       - name: Lint Markdown
         uses: DavidAnson/markdownlint-cli2-action@v24
@@ -649,11 +650,38 @@ jobs:
           if [ "$VARIANT" = vulnerable ] && [ -n "$PR_NUMBER" ]; then
             gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" \
               --jq '.[].filename' > "$RUNNER_TEMP/changed-files.txt"
-            if grep -qxF -e action.yml -e scripts/actions-gate.py "$RUNNER_TEMP/changed-files.txt"; then
+            if grep -qxF -e action.yml -e scripts/actions-gate.py -e .github/workflows/smoke.yml "$RUNNER_TEMP/changed-files.txt"; then
               comment=true
             fi
           fi
           printf 'comment=%s\n' "$comment" >> "$GITHUB_OUTPUT"
+
+      # Candidate 1 is a known violating schedule, but only candidate 2 is
+      # embedded in the published matching-slice CLI. Generate this file at
+      # runtime so the fresh-reader job cannot resolve it from its checkout.
+      - name: Prepare a schedule absent from the published CLI and checkout
+        env:
+          SCHEDULE_PATH: ${{ runner.temp }}/weavegate-nonembedded.json
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          steps = [
+              {"worker": "w1", "point": "after_read_request"},
+              {"worker": "w1", "point": "before_insert_assignment"},
+              {"worker": "w2", "point": "after_read_request"},
+              {"worker": "w2", "point": "before_insert_assignment"},
+          ]
+          digest = hashlib.sha256(json.dumps(steps, separators=(",", ":")).encode()).hexdigest()[:12]
+          schedule_id = "sch_" + digest
+          assert schedule_id == "sch_7dcb74b1e506", schedule_id
+          Path(os.environ["SCHEDULE_PATH"]).write_text(
+              json.dumps({"id": schedule_id, "steps": steps}, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
 
       - name: Run the published release through the local gate
         id: gate
@@ -664,7 +692,7 @@ jobs:
           config: fixtures/matching-slice/.weavegate/config.yaml
           scenario: concurrent-assign
           variant: ${{ matrix.variant }}
-          replay: sch_ba00582f9632
+          replay: ${{ runner.temp }}/weavegate-nonembedded.json
           artifact-name: weavegate-gate-${{ matrix.variant }}
           comment: ${{ steps.live.outputs.comment }}
 
@@ -684,7 +712,7 @@ jobs:
           test "$ACTUAL_OUTCOME" = "$EXPECTED_OUTCOME"
           test "$ACTUAL_EXIT" = "$EXPECTED_EXIT"
           test "$ACTUAL_VERDICT" = "$EXPECTED_VERDICT"
-          test "$ACTUAL_SCHEDULE" = sch_ba00582f9632
+          test "$ACTUAL_SCHEDULE" = sch_7dcb74b1e506
           test -f "$ACTUAL_REPORT"
           test -n "$ACTUAL_ARTIFACT"
           printf 'ACTION_GATE_RESULT variant=%s exit=%s verdict=%s artifact=uploaded outputs=usable\n' \
@@ -746,15 +774,27 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v7
 
-      - name: Download the evidence and import its schedule as the comment instructs
+      - name: Download and inspect the complete evidence artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name weavegate-gate-vulnerable --dir weavegate-evidence
-          schedule_id=$(python3 -c 'import json; print(json.load(open("weavegate-evidence/schedule.json"))["id"])')
-          [[ "$schedule_id" =~ ^sch_[0-9a-f]{12}$ ]]
-          mkdir -p .weavegate/schedules
-          cp weavegate-evidence/schedule.json ".weavegate/schedules/$schedule_id.json"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("weavegate-evidence")
+          runs = list((root / "runs").iterdir())
+          assert len(runs) == 1 and runs[0].is_dir(), runs
+          run = runs[0]
+          required = {"manifest.json", "scenario.json", "observation.json", "trace.json", "report.json", "report.md", "schedule.json"}
+          assert {path.name for path in run.iterdir()} == required, list(run.iterdir())
+          assert (root / "schedule.json").read_bytes() == (run / "schedule.json").read_bytes()
+          schedule = json.loads((root / "schedule.json").read_text(encoding="utf-8"))
+          assert schedule["id"] == "sch_7dcb74b1e506", schedule["id"]
+          assert json.loads((root / "status.json").read_text(encoding="utf-8"))["exit_code"] == 2
+          print("ACTION_ARTIFACT_RESULT run_directory=complete schedule=byte_identical report=present exit=2")
+          PY
 
       - name: Install the release the gate ran
         id: install
@@ -762,6 +802,35 @@ jobs:
           WEAVEGATE_VERSION: v0.1.0-alpha
           WEAVEGATE_EVIDENCE_DIR: ${{ runner.temp }}
         run: python3 scripts/actions-gate.py install
+
+      - name: Prove the replay command needs the uploaded schedule
+        env:
+          WEAVEGATE_BINARY: ${{ steps.install.outputs.binary }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import shlex
+          import subprocess
+
+          report, = Path("weavegate-evidence/runs").glob("*/report.md")
+          line, = (line for line in report.read_text(encoding="utf-8").splitlines() if line.startswith("replay: "))
+          argv = shlex.split(line[len("replay: "):])
+          assert argv[0] == "weavegate", argv
+          assert argv[argv.index("--replay") + 1] == "sch_7dcb74b1e506", argv
+          assert not Path(".weavegate").exists(), "fresh checkout already has replay evidence"
+          process = subprocess.run([os.environ["WEAVEGATE_BINARY"], *argv[1:]], capture_output=True, text=True, check=False)
+          assert process.returncode == 5, (process.returncode, process.stderr)
+          assert "not found" in process.stderr and "embedded schedules" in process.stderr, process.stderr
+          print("ACTION_REPLAY_MISSING_RESULT schedule=nonembedded imported=false exit=5")
+          PY
+
+      - name: Import the uploaded schedule as the comment instructs
+        run: |
+          schedule_id=$(python3 -c 'import json; print(json.load(open("weavegate-evidence/schedule.json"))["id"])')
+          [[ "$schedule_id" =~ ^sch_[0-9a-f]{12}$ ]]
+          mkdir -p .weavegate/schedules
+          cp weavegate-evidence/schedule.json ".weavegate/schedules/$schedule_id.json"
 
       # The replay line is split into arguments and executed without a shell;
       # report content never becomes shell source.
@@ -787,5 +856,5 @@ jobs:
           assert process.returncode == 2, process.returncode
           replayed = Path(process.stdout.splitlines()[-1]) / "report.md"
           assert replayed.read_bytes() == original, "replayed report differs from the uploaded report"
-          print("ACTION_REPLAY_RESULT source=uploaded_artifact schedule=imported command=report_replay_line exit=2 report=byte_identical")
+          print("ACTION_REPLAY_RESULT source=uploaded_artifact schedule=required_and_imported command=report_replay_line exit=2 report=byte_identical")
           PY

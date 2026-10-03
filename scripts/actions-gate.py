@@ -27,6 +27,7 @@ HEADLINE = re.compile(r"## weavegate: (PASS|FAIL|FLAKY)(?: \([^\n]*\))?\n")
 BASE_FILES = ("manifest.json", "scenario.json", "observation.json", "trace.json", "report.json", "report.md")
 # Keep the complete UTF-8 comment body within this action's 64 KiB budget.
 COMMENT_LIMIT = 65536
+SUMMARY_REPORT_LIMIT = 512 * 1024
 COMMENT_MARKER = "<!-- weavegate-gate-comment v1 -->"
 REPORT_BEGIN = "<!-- weavegate-report-begin -->"
 REPORT_END = "<!-- weavegate-report-end -->"
@@ -234,6 +235,7 @@ def summary():
     rows = [
         ("Process exit code", status.get("exit_code") if status.get("exit_code") is not None else "not launched"),
         ("Report verdict", status.get("verdict") or "unavailable"),
+        ("weavegate version", installed_version(root) or "unavailable"),
         ("Evidence", status.get("evidence_note", "unavailable")),
         ("Artifact upload", upload),
         ("Schedule ID", status.get("schedule_id") or "unavailable"),
@@ -244,6 +246,27 @@ def summary():
     content += "".join(f"| {safe_cell(key)} | {safe_cell(value)} |\n" for key, value in rows)
     if artifact_url and upload == "success":
         content += f"\n[Download retained evidence]({artifact_url})\n"
+    report_path = Path(status.get("report_path") or "/nonexistent")
+    content += "\n### Stored report\n\n"
+    evidence_hint = "read `report.md` in the evidence artifact" if upload == "success" else "the evidence artifact was not uploaded"
+    try:
+        if report_path.parent.parent != root.resolve() / "runs" or not report_path.is_file():
+            raise OSError("no stored report")
+        size = report_path.stat().st_size
+        if size > SUMMARY_REPORT_LIMIT:
+            content += f"The stored report is {size} bytes; {evidence_hint}.\n"
+        else:
+            report = report_path.read_bytes()
+            obstacle = report_embed_obstacle(report)
+            if obstacle:
+                content += f"The stored report cannot be shown unchanged here; {evidence_hint}.\n"
+            else:
+                report_text = report.decode("utf-8")
+                longest = max((len(run) for run in re.findall(r"`+", report_text)), default=0)
+                fence = "`" * max(4, longest + 1)
+                content += f"{fence}text\n{report_text}{fence}\n"
+    except (OSError, TypeError, ValueError):
+        content += "No stored report is available.\n"
     destination = os.environ.get("GITHUB_STEP_SUMMARY")
     if destination:
         with open(destination, "a", encoding="utf-8") as stream:

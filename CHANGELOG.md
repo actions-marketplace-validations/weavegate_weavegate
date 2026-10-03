@@ -19,10 +19,13 @@ workflow fails before publication if the placeholder remains.
 - A composite GitHub Action at the repository root that gates a job with a
   published weavegate release. It verifies the release archive against that
   release's `checksums.txt`, runs the selected configuration and scenario,
-  uploads the available evidence, and only then applies the CLI exit code. The
-  step passes only for exit 0 with a complete version-2 PASS report and a
-  successful evidence upload. `docs/howto/ci-gate.md` has the workflow and the
-  input and output contract.
+  and uses the action's exact release tag as the CLI version when `version` is
+  omitted. SHA, branch, and local action references require an explicit version.
+  The action uploads the available evidence, and only then applies the CLI
+  exit code. The step passes only for exit 0 with a complete version-2 PASS
+  report and a successful evidence upload. The job summary includes the CLI
+  version, verdict, and stored report when it can be shown in full.
+  `docs/howto/ci-gate.md` has the workflow and the input and output contract.
 - The composite GitHub Action posts the run's stored `report.md` as a new pull
   request comment, unchanged and as literal text, with the evidence artifact
   link and the steps to import and replay the saved schedule. The `comment`
