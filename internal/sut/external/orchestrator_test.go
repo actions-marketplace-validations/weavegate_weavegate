@@ -81,9 +81,9 @@ func (f *quarantineProbe) check() error {
 	return nil
 }
 
-func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
+func TestOrchestratorSuccessAndFingerprint(t *testing.T) {
 	var healthyFingerprint string
-	for _, mode := range []string{"healthy", "healthy_repeat", "wire_fatal", "process_death", "context_cancel"} {
+	for _, mode := range []string{"healthy", "healthy_repeat", "context_cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				p := newPeer(t)
@@ -143,26 +143,15 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 					if !errors.Is(r.err, context.Canceled) || len(r.result.Workers) != 1 || r.result.Workers[0].Err != nil || len(r.result.Unstarted) != 0 || fixtureProbe.cause != nil {
 						t.Fatal("cancel-before-terminal Run lost the committed outcome", r.err)
 					}
-					reportCheck(t, "case/commit_wins_cancel", "step/14/expect/0/operation_context_error", "internal/sut/external/orchestrator_test.go:TestOrchestratorLateFaultAndFingerprint")
+					reportCheck(t, "case/commit_wins_cancel", "step/14/expect/0/operation_context_error", "internal/sut/external/orchestrator_test.go:TestOrchestratorSuccessAndFingerprint")
 					return
 				}
 				p.send("terminal", terminalBody(w, "committed", nil))
-				evalCtx := <-evaluating
+				<-evaluating
 				select {
 				case <-done:
 					t.Fatal("evaluation returned before its release barrier")
 				default:
-				}
-				switch mode {
-				case "wire_fatal":
-					p.send("fatal", map[string]any{"kind": "cleanup", "message": "application cleanup failed"})
-					<-p.a.Faults().Done()
-					<-evalCtx.Done()
-					p.exit(errors.New("fatal exit"))
-				case "process_death":
-					p.exit(nil)
-					<-p.a.Faults().Done()
-					<-evalCtx.Done()
 				}
 				close(returnEvaluation)
 				if mode == "healthy" || mode == "healthy_repeat" {
@@ -171,12 +160,7 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 					p.exit(nil)
 				}
 				r := <-done
-				if mode == "wire_fatal" || mode == "process_death" {
-					if fixtureProbe.cause == nil || !errors.Is(fixtureProbe.Reset(context.Background()), fixture.ErrQuarantined) || !errors.Is(fixtureProbe.cause, p.a.Faults().Err()) {
-						t.Fatal("fault did not quarantine the fixture and reject Reset")
-					}
-					reportEvaluationVector(t, mode, r, p)
-				} else if fixtureProbe.cause != nil {
+				if fixtureProbe.cause != nil {
 					t.Fatal("healthy cleanup quarantined fixture")
 				}
 				if len(r.result.Workers) != 1 || r.result.Workers[0].Err != nil {
@@ -190,20 +174,13 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 						t.Fatal("successful Stop did not permit fixture Reset", err)
 					}
 					if mode == "healthy" {
-						reportCheck(t, "requirement/go-success-lifecycle", "observe/evidence", "internal/sut/external/orchestrator_test.go:TestOrchestratorLateFaultAndFingerprint")
-						reportCheck(t, "case/success", "step/15/expect/1/reset_allowed", "internal/sut/external/orchestrator_test.go:TestOrchestratorLateFaultAndFingerprint")
+						reportCheck(t, "requirement/go-success-lifecycle", "observe/evidence", "internal/sut/external/orchestrator_test.go:TestOrchestratorSuccessAndFingerprint")
+						reportCheck(t, "case/success", "step/15/expect/1/reset_allowed", "internal/sut/external/orchestrator_test.go:TestOrchestratorSuccessAndFingerprint")
 					}
 					if healthyFingerprint == "" {
 						healthyFingerprint = r.result.Fingerprint
 					} else if r.result.Fingerprint != healthyFingerprint {
 						t.Fatal("volatile wire identity changed fingerprint")
-					}
-				} else {
-					if r.err == nil || r.result.Fingerprint != "" || len(r.result.Evaluation.Results) != 0 {
-						t.Fatal("late failure left provisional success", r.err)
-					}
-					if mode == "process_death" && !errors.Is(r.err, errTransport) {
-						t.Fatal("transport cause lost")
 					}
 				}
 				select {
@@ -214,46 +191,7 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 			})
 		})
 	}
-	t.Log("EXTERNAL_SUT_RUN_RESULT late_fatal=invalidates late_death=invalidates committed_result=preserved cancellation=run_error fingerprints=stable")
-}
-
-func reportEvaluationVector(t *testing.T, mode string, r struct {
-	result orchestrator.RunResult
-	err    error
-}, p *peer) {
-	t.Helper()
-	row, faultLabel, faultEvent, retain := "case/fatal_after_terminals", "latch_adapter_fault", "receive/fatal", "retain_adapter_fault"
-	if mode == "process_death" {
-		row, faultLabel, faultEvent, retain = "case/death_after_terminals", "latch_transport_fault", "local/child_exit", "retain_transport_fault"
-	}
-	if r.err == nil || r.result.Fingerprint != "" || len(r.result.Evaluation.Results) != 0 || len(r.result.Workers) != 1 || r.result.Workers[0].Err != nil || p.a.Faults().Err() == nil {
-		t.Fatal("late fault did not discard the provisional result while preserving the terminal")
-	}
-	if !errors.Is(r.err, p.a.Faults().Err()) {
-		t.Fatal("run error did not retain the adapter fault")
-	}
-	if mode == "process_death" && !errors.Is(r.err, errTransport) {
-		t.Fatal("transport failure was not retained")
-	}
-	for _, phase := range []struct {
-		index  int
-		event  string
-		labels []string
-	}{
-		{12, "local/begin_evaluation", []string{"evaluation_started", "fault_supervision_active"}},
-		{13, "local/provisional_evaluation", []string{"hold_evaluation_return", "no_run_success"}},
-		{14, faultEvent, []string{faultLabel, "invalidate_evaluation", "abort_run", "quarantine_fixture"}},
-		{15, "local/complete_evaluation", []string{"discard_provisional_evaluation", retain, "no_run_success"}},
-		{16, "local/check_operation_result", []string{"operation_error", "no_run_success"}},
-	} {
-		reportCheck(t, row, fmt.Sprintf("step/%d/%s", phase.index, phase.event), "internal/sut/external/orchestrator_test.go:reportEvaluationVector")
-		for i, label := range phase.labels {
-			reportCheck(t, row, fmt.Sprintf("step/%d/expect/%d/%s", phase.index, i, label), "internal/sut/external/orchestrator_test.go:reportEvaluationVector")
-		}
-	}
-	if mode == "wire_fatal" {
-		reportCheck(t, "requirement/late-fatal-cleanup", "observe/evidence", "internal/sut/external/orchestrator_test.go:reportEvaluationVector")
-	}
+	t.Log("EXTERNAL_SUT_RUN_RESULT committed_result=preserved cancellation=run_error fingerprints=stable")
 }
 
 func TestOrchestratorQuarantineVectors(t *testing.T) {
@@ -266,16 +204,8 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 		{"readiness_mismatch", "mismatch", []string{"step/6/expect/2/quarantine_fixture", "step/6/expect/3/reset_rejected"}},
 		{"unsolicited_startup_stopped", "unsolicited_stopped", []string{"step/3/expect/2/reset_rejected"}},
 		{"startup_deadline", "startup_deadline", []string{"step/3/expect/2/quarantine_fixture", "step/3/expect/3/reset_rejected"}},
-		{"suppressed_cleanup_failure", "active_fatal", []string{"step/11/expect/3/quarantine_fixture"}},
-		{"suppressed_cleanup_failure", "active_fatal", []string{"step/11/expect/2/abort_run"}},
-		{"unknown_commit_outcome", "active_fatal", []string{"step/11/expect/3/quarantine_fixture"}},
-		{"unknown_commit_outcome", "active_fatal", []string{"step/11/expect/2/abort_run"}},
 		{"cancel_cleanup_deadline", "cancel_deadline", []string{"step/14/expect/2/abort_run", "step/14/expect/3/quarantine_fixture", "step/16/expect/2/quarantine_fixture", "step/16/expect/3/reset_rejected"}},
 		{"duplicate_stop_call", "stop_timeout", []string{"step/16/expect/1/quarantine_fixture"}},
-		{"java_receives_fatal_active", "protocol_fatal", []string{"step/15/expect/4/quarantine_fixture", "step/15/expect/5/reset_rejected"}},
-		{"java_receives_fatal_active", "protocol_fatal", []string{"step/8/expect/3/abort_run"}},
-		{"java_fatal_cleanup_watchdog_expires", "protocol_fatal", []string{"step/14/expect/4/quarantine_fixture", "step/14/expect/5/reset_rejected"}},
-		{"java_fatal_cleanup_watchdog_expires", "protocol_fatal", []string{"step/9/expect/3/abort_run"}},
 		{"java_startup_watchdog_expires", "startup_fatal", []string{"step/6/expect/3/quarantine_fixture", "step/6/expect/4/reset_rejected"}},
 		{"java_stop_watchdog_expires", "stop_fatal", []string{"step/17/expect/2/quarantine_fixture", "step/18/expect/3/quarantine_fixture", "step/18/expect/4/reset_rejected"}},
 		{"active_stop_cancel_watchdog_expires", "active_stop_deadline", []string{"step/15/expect/3/quarantine_fixture", "step/16/expect/3/quarantine_fixture", "step/16/expect/4/reset_rejected"}},
@@ -285,11 +215,12 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 		t.Run(c.row, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				p := newPeer(t)
+				p.deferKillExit = c.mode == "mismatch" || c.mode == "startup_deadline" || c.mode == "stop_timeout"
 				probe := &quarantineProbe{}
 				var deadlineProbe *cancelDeadlineProbe
 				var activeStop chan error
 				newRuntime := func() syncpoint.Runtime { return syncpoint.New() }
-				if c.mode == "cancel_deadline" || c.mode == "active_stop_deadline" {
+				if c.mode == "cancel_deadline" || c.mode == "active_stop_deadline" || c.mode == "active_death" {
 					deadlineProbe = &cancelDeadlineProbe{
 						waitArriveProbe: &waitArriveProbe{Runtime: syncpoint.New(), held: make(chan struct{}), resume: make(chan struct{})},
 						arriveReturned:  make(chan error, 1),
@@ -336,10 +267,22 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 				case "mismatch":
 					p.send("ready", map[string]any{"commands": []string{"other"}, "points": []string{"after_read", "before_write"}, "capacity": 2})
 					p.read("fatal")
+					<-p.killed
+					select {
+					case <-done:
+						t.Fatal("Run returned before startup child reap")
+					default:
+					}
 					p.exit(errors.New("startup failure"))
 				case "startup_deadline":
 					<-p.a.Faults().Done()
 					p.read("fatal")
+					<-p.killed
+					select {
+					case <-done:
+						t.Fatal("Run returned before startup child reap")
+					default:
+					}
 					p.exit(errors.New("startup deadline"))
 				case "startup_fatal":
 					p.send("fatal", map[string]any{"kind": "startup", "message": "startup deadline exceeded"})
@@ -396,18 +339,36 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 							p.send("fatal", map[string]any{"kind": "shutdown", "message": "stop deadline exceeded"})
 							p.exit(errors.New("stop watchdog"))
 						} else {
+							// Run owns the first Stop; an overlapping caller and a
+							// later caller must share its deadline and failure.
+							second := make(chan error, 1)
+							go func() { second <- p.a.Stop(context.Background()) }()
+							synctest.Wait()
+							select {
+							case <-second:
+								t.Fatal("second Stop returned before deadline")
+							default:
+							}
 							<-p.killed
+							<-p.a.stopDone
+							if err := <-second; err == nil || err != p.a.stopErr {
+								t.Fatal("concurrent Stop lost shared failure", err)
+							}
+							if err := p.a.Stop(context.Background()); err != p.a.stopErr {
+								t.Fatal("later Stop replaced failure", err)
+							}
+							p.exit(errors.New("reaped after Stop deadline"))
 						}
-					case "protocol_fatal":
-						p.send("arrive", arrivalBody(w, 1, "missing"))
-						p.read("fatal")
-						p.exit(errors.New("protocol fault"))
 					case "active_death":
 						p.send("arrive", arrivalBody(w, 1, "after_read"))
+						<-deadlineProbe.held
 						p.exit(errors.New("child died"))
+						if err := <-deadlineProbe.arriveReturned; !errors.Is(err, context.Canceled) {
+							t.Fatal("death did not cancel the pending runtime arrival", err)
+						}
+						close(deadlineProbe.resume)
 					default:
-						p.send("fatal", map[string]any{"kind": "cleanup", "message": "private cleanup failure"})
-						p.exit(errors.New("cleanup fault"))
+						t.Fatalf("unhandled run witness mode %q", c.mode)
 					}
 				}
 				r := <-done

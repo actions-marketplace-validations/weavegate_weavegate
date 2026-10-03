@@ -81,6 +81,23 @@ fixture quarantine, reset rejection, and late evaluation invalidation. Other
 tests exercise actual blocked/broken OS pipes, process death and reaping,
 cancellation races, and the wire matrix.
 
+Run-level evidence must come from the declared history, not a generic fault
+with the same final error. The released cleanup/transaction fatal histories,
+runtime-origin protocol fatal histories, and post-terminal evaluation histories
+are replayed from the shared vector inputs in `run_vectors_test.go`. Their check
+IDs come from the executed steps. Evaluation suffixes reject unknown events,
+arguments, and assertions before injection; mutation tests cover this boundary.
+The late-fatal witness keeps the child alive until Stop terminates it and checks
+reaping separately before emitting the composed cleanup requirement. Java-only
+application events remain scripted peer premises, not Java implementation evidence.
+
+The remaining cancellation, startup, concurrent-Stop, and protocol run witnesses
+use dedicated synchronization probes. Changes to their shared histories must
+also update those witnesses; the manifest validates evidence accounting, not
+the semantic equivalence of independently written tests. Fixture probes exercise
+the orchestrator's quarantine/Reset boundary without provisioning MySQL. Live
+paired acceptance remains separate.
+
 Run the repeated adapter tests and publish a manifest beside their log:
 
 ```bash

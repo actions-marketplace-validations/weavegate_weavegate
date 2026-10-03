@@ -55,7 +55,10 @@ func TestSharedLifecycleGo(t *testing.T) {
 				steps := append(expandPrefix(t, v, c.Prefix), c.Steps...)
 				for i, s := range steps {
 					if s.Event == "begin_evaluation" {
-						break // The orchestrator witness owns evaluation and fixture checks.
+						if !hasRunVector(c.ID) {
+							t.Fatal("evaluation suffix has no Run dispatcher")
+						}
+						break // The complete history is dispatched by runOrchestratorVector below.
 					}
 					h.step(t, "case/"+c.ID, i, s)
 				}
@@ -63,6 +66,9 @@ func TestSharedLifecycleGo(t *testing.T) {
 					p.exit(nil)
 				}
 			})
+			if hasRunVector(c.ID) {
+				runOrchestratorVector(t, c.ID, append(expandPrefix(t, v, c.Prefix), c.Steps...))
+			}
 		})
 	}
 	if cases != 53 {
