@@ -338,7 +338,9 @@ def history(case, steps):
                 need(set(a) == {'worker', 'command', 'reason'} and a['reason'] in ('unknown_command', 'capacity')
                      and 'admission_rejected' in effects and 'no_wire_output' in effects,
                      'rejected invocation shape/evidence')
-                need((a['command'] != 'assign') if a['reason'] == 'unknown_command' else len(active) >= 2,
+                need((a['command'] != 'assign') if a['reason'] == 'unknown_command' else
+                     (start is not None and a['command'] in start['commands']
+                      and a['worker'] not in active and len(active) >= start['capacity']),
                      'rejected invocation premise')
             if event(step, 'worker_arrives', 'java'):
                 identity = a['identity']
@@ -803,6 +805,10 @@ def self_test(data):
     reject('VECTOR_DUPLICATE_EFFECT_CAUGHT', lambda d: case(d, 'duplicate_invoke_java')['steps'][0]['expect'].remove('no_redispatch'))
     reject('VECTOR_GO_DUPLICATE_START_PREMISE_CAUGHT', lambda d: next(s for s in case(d, 'go_semantic_duplicate_start')['steps'] if message(s, 'start'))['frame']['body'].update(capacity=1))
     reject('VECTOR_GO_DUPLICATE_INVOKE_PREMISE_CAUGHT', lambda d: next(s for s in case(d, 'go_semantic_duplicate_invoke')['steps'] if message(s, 'invoke'))['frame']['body'].update(invocation='99999999999999999999999999999999'))
+    for field, value in (('worker', 'w1'), ('command', 'missing')):
+        reject('VECTOR_GO_CAPACITY_' + field.upper() + '_CAUGHT',
+               lambda d, key=field, replacement=value: next(s for s in case(d, 'go_capacity_exceeded')['steps']
+                                                           if event(s, 'invoke_rejected'))['args'].update({key: replacement}))
     reject('VECTOR_GO_ARRIVAL_EXHAUSTION_SETUP_CAUGHT', lambda d: case(d, 'go_arrival_sequence_exhausted')['steps'].__setitem__(slice(None), [s for s in case(d, 'go_arrival_sequence_exhausted')['steps'] if not event(s, 'exhaust_arrivals')]))
     for name, field, value in (
         ('go_unknown_point', 'worker', 'w2'),
