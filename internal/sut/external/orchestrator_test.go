@@ -45,6 +45,17 @@ type waitArriveProbe struct {
 	held, resume chan struct{}
 }
 
+type cancelDeadlineProbe struct {
+	*waitArriveProbe
+	arriveReturned chan error
+}
+
+func (r *cancelDeadlineProbe) Arrive(ctx context.Context, workerID, point string) error {
+	err := r.Runtime.Arrive(ctx, workerID, point)
+	r.arriveReturned <- err
+	return err
+}
+
 func (r *waitArriveProbe) WaitArrive(ctx context.Context, workerID, point string, timeout time.Duration) (syncpoint.ArriveStatus, error) {
 	status, err := r.Runtime.WaitArrive(ctx, workerID, point, timeout)
 	if status == syncpoint.ArriveStatusArrived && err == nil {
@@ -116,6 +127,25 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 				p.send("accepted", binding(w))
 				p.send("arrive", arrivalBody(w, 1, "after_read"))
 				p.read("release")
+				if mode == "context_cancel" {
+					// The peer has committed, but the terminal is still in transit.
+					committed := terminalBody(w, "committed", nil)
+					cancel()
+					cancelFrame := p.read("cancel")
+					if cancelFrame.Body["invocation"] != w.Body["invocation"] || cancelFrame.Body["reason"] != "context" {
+						t.Fatal("cancel did not target the pending committed invocation")
+					}
+					p.send("terminal", committed)
+					p.read("stop")
+					p.send("stopped", map[string]any{})
+					p.exit(nil)
+					r := <-done
+					if !errors.Is(r.err, context.Canceled) || len(r.result.Workers) != 1 || r.result.Workers[0].Err != nil || len(r.result.Unstarted) != 0 || fixtureProbe.cause != nil {
+						t.Fatal("cancel-before-terminal Run lost the committed outcome", r.err)
+					}
+					reportCheck(t, "case/commit_wins_cancel", "step/14/expect/0/operation_context_error", "internal/sut/external/orchestrator_test.go:TestOrchestratorLateFaultAndFingerprint")
+					return
+				}
 				p.send("terminal", terminalBody(w, "committed", nil))
 				evalCtx := <-evaluating
 				select {
@@ -133,12 +163,9 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 					p.exit(nil)
 					<-p.a.Faults().Done()
 					<-evalCtx.Done()
-				case "context_cancel":
-					cancel()
-					<-evalCtx.Done()
 				}
 				close(returnEvaluation)
-				if mode == "healthy" || mode == "healthy_repeat" || mode == "context_cancel" {
+				if mode == "healthy" || mode == "healthy_repeat" {
 					p.read("stop")
 					p.send("stopped", map[string]any{})
 					p.exit(nil)
@@ -174,12 +201,6 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 				} else {
 					if r.err == nil || r.result.Fingerprint != "" || len(r.result.Evaluation.Results) != 0 {
 						t.Fatal("late failure left provisional success", r.err)
-					}
-					if mode == "context_cancel" && !errors.Is(r.err, context.Canceled) {
-						t.Fatal("operation cancellation lost")
-					}
-					if mode == "context_cancel" {
-						reportCheck(t, "case/commit_wins_cancel", "step/14/expect/0/operation_context_error", "internal/sut/external/orchestrator_test.go:TestOrchestratorLateFaultAndFingerprint")
 					}
 					if mode == "process_death" && !errors.Is(r.err, errTransport) {
 						t.Fatal("transport cause lost")
@@ -249,8 +270,7 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 		{"suppressed_cleanup_failure", "active_fatal", []string{"step/11/expect/2/abort_run"}},
 		{"unknown_commit_outcome", "active_fatal", []string{"step/11/expect/3/quarantine_fixture"}},
 		{"unknown_commit_outcome", "active_fatal", []string{"step/11/expect/2/abort_run"}},
-		{"cancel_cleanup_deadline", "active_fatal", []string{"step/14/expect/3/quarantine_fixture", "step/16/expect/2/quarantine_fixture", "step/16/expect/3/reset_rejected"}},
-		{"cancel_cleanup_deadline", "active_fatal", []string{"step/14/expect/2/abort_run"}},
+		{"cancel_cleanup_deadline", "cancel_deadline", []string{"step/14/expect/2/abort_run", "step/14/expect/3/quarantine_fixture", "step/16/expect/2/quarantine_fixture", "step/16/expect/3/reset_rejected"}},
 		{"duplicate_stop_call", "stop_timeout", []string{"step/16/expect/1/quarantine_fixture"}},
 		{"java_receives_fatal_active", "protocol_fatal", []string{"step/15/expect/4/quarantine_fixture", "step/15/expect/5/reset_rejected"}},
 		{"java_receives_fatal_active", "protocol_fatal", []string{"step/8/expect/3/abort_run"}},
@@ -266,8 +286,17 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				p := newPeer(t)
 				probe := &quarantineProbe{}
+				var deadlineProbe *cancelDeadlineProbe
+				newRuntime := func() syncpoint.Runtime { return syncpoint.New() }
+				if c.mode == "cancel_deadline" {
+					deadlineProbe = &cancelDeadlineProbe{
+						waitArriveProbe: &waitArriveProbe{Runtime: syncpoint.New(), held: make(chan struct{}), resume: make(chan struct{})},
+						arriveReturned:  make(chan error, 1),
+					}
+					newRuntime = func() syncpoint.Runtime { return deadlineProbe }
+				}
 				o, err := orchestrator.New(orchestrator.Config{
-					Fixture: probe, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
+					Fixture: probe, DB: &fixture.DB{}, NewRuntime: newRuntime,
 					NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
 						p.a.client = client
 						return preparedAdapter{p.a}, nil
@@ -286,8 +315,17 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 				eval := oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
 					return oracle.NewEvaluation(oracle.OracleResult{OracleID: "synthetic-pass"})
 				})
-				done := make(chan error, 1)
-				go func() { _, err := o.Run(context.Background(), value, schedule, eval); done <- err }()
+				runCtx, cancelRun := context.WithCancel(context.Background())
+				defer cancelRun()
+				type runResult struct {
+					result orchestrator.RunResult
+					err    error
+				}
+				done := make(chan runResult, 1)
+				go func() {
+					r, err := o.Run(runCtx, value, schedule, eval)
+					done <- runResult{r, err}
+				}()
 				p.read("start")
 				switch c.mode {
 				case "unsolicited_stopped":
@@ -310,6 +348,32 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 					w := p.read("invoke")
 					p.send("accepted", binding(w))
 					switch c.mode {
+					case "cancel_deadline":
+						p.send("arrive", arrivalBody(w, 1, "after_read"))
+						<-deadlineProbe.held
+						cancelRun()
+						cancelFrame := p.read("cancel")
+						if cancelFrame.Body["invocation"] != w.Body["invocation"] || cancelFrame.Body["reason"] != "context" {
+							t.Fatal("deadline cancellation did not target the arrived invocation")
+						}
+						if err := <-deadlineProbe.arriveReturned; !errors.Is(err, context.Canceled) {
+							t.Fatal("canceled runtime arrival did not unwind", err)
+						}
+						<-time.After(999 * time.Millisecond)
+						if p.a.Faults().Err() != nil {
+							t.Fatal("cleanup fault arrived before the deadline")
+						}
+						select {
+						case <-p.a.exitDone:
+							t.Fatal("child exited before the cleanup deadline")
+						default:
+						}
+						<-time.After(time.Millisecond)
+						p.send("fatal", map[string]any{"kind": "cleanup", "message": "cancellation cleanup deadline exceeded"})
+						<-p.a.Faults().Done()
+						close(deadlineProbe.resume)
+						p.read("stop")
+						p.exit(errors.New("cleanup deadline"))
 					case "stop_timeout", "stop_fatal":
 						p.send("arrive", arrivalBody(w, 1, "after_read"))
 						p.read("release")
@@ -333,8 +397,11 @@ func TestOrchestratorQuarantineVectors(t *testing.T) {
 						p.exit(errors.New("cleanup fault"))
 					}
 				}
-				if err := <-done; err == nil || probe.cause == nil || !errors.Is(probe.Reset(context.Background()), fixture.ErrQuarantined) {
-					t.Fatal("failed Run did not quarantine and reject Reset", err)
+				r := <-done
+				if r.err == nil || probe.cause == nil || !errors.Is(probe.Reset(context.Background()), fixture.ErrQuarantined) {
+					t.Fatal("failed Run did not quarantine and reject Reset", r.err)
+				} else if c.mode == "cancel_deadline" && (!errors.Is(r.err, context.Canceled) || !errors.Is(r.err, p.a.Faults().Err()) || len(r.result.Workers) != 0) {
+					t.Fatal("cleanup deadline Run did not retain cancellation and adapter fault without a worker result", r.err)
 				}
 				if !errors.Is(probe.cause, p.a.Faults().Err()) && c.mode != "stop_timeout" {
 					t.Fatal("fixture lost the original session fault")
