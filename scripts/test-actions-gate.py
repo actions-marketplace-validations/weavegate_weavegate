@@ -159,6 +159,36 @@ class GateTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"WEAVEGATE_EVIDENCE_DIR": str(self.evidence), "WEAVEGATE_UPLOAD_OUTCOME": "failure"}, clear=True):
             self.assertEqual(gate.gate(), 1)
 
+    def test_summary_shows_version_and_exact_stored_report(self):
+        status = self.execute(2)
+        (self.evidence / "install.txt").write_text("version=v0.1.0-alpha\narchive=a\nsha256=b\n")
+        report = Path(status["report_path"])
+        report_bytes = b"## weavegate: FAIL (WG001)\nreplay: weavegate run --replay sch_ba00582f9632\n````` </details>\n"
+        report.write_bytes(report_bytes)
+        destination = self.root / "summary.md"
+        with mock.patch.dict(os.environ, {
+            "WEAVEGATE_EVIDENCE_DIR": str(self.evidence),
+            "WEAVEGATE_UPLOAD_OUTCOME": "success",
+            "GITHUB_STEP_SUMMARY": str(destination),
+        }, clear=True):
+            gate.summary()
+        content = destination.read_text(encoding="utf-8")
+        self.assertIn("| weavegate version | v0.1.0-alpha |", content)
+        self.assertIn("| Report verdict | FAIL |", content)
+        self.assertIn("\n``````text\n" + report_bytes.decode() + "``````\n", content)
+        self.assertNotIn(TOKEN, content)
+
+        report.unlink()
+        destination.unlink()
+        with mock.patch.dict(os.environ, {
+            "WEAVEGATE_EVIDENCE_DIR": str(self.evidence),
+            "WEAVEGATE_UPLOAD_OUTCOME": "failure",
+            "GITHUB_STEP_SUMMARY": str(destination),
+        }, clear=True):
+            gate.summary()
+        self.assertIn("No stored report is available.", destination.read_text())
+        print("ACTION_SUMMARY_RESULT version=installed verdict=stored report=byte_identical missing=explicit token=not_printed")
+
     def start_api(self):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), CommentAPI)
         server.requests = []

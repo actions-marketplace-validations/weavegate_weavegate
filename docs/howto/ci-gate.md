@@ -12,17 +12,18 @@ Use an ordinary `pull_request` workflow; this example does not use
 
 The following workflow is runnable in this repository. It uses the committed
 [matching-slice configuration](../../fixtures/matching-slice/.weavegate/config.yaml)
-and its `concurrent-assign` scenario. The action is pinned to a commit that
-contains `action.yml`; the CLI release is selected separately. The pinned
-commit belongs to the change that introduced this action, so that change must
-be merged with a merge commit to keep the referenced SHA in `main`'s history.
-If the action is later changed, pin a reviewed commit containing that change.
+and its `concurrent-assign` scenario. The action is pinned to a reviewed commit
+that includes the comment and complete job summary; the CLI release is selected
+separately. This action commit belongs to this change, so merge this pull
+request with a merge commit to keep the pinned SHA in `main`'s history. If the
+action is later changed, pin a reviewed commit containing that change.
 
 ```yaml
 name: weavegate gate
 on: pull_request
 permissions:
   contents: read
+  pull-requests: write
 jobs:
   gate:
     runs-on: ubuntu-latest
@@ -30,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: weavegate
-        uses: weavegate/weavegate@afc6b4fa493602bd64b6401c5bae0c6f7bf108b2
+        uses: weavegate/weavegate@a022acaa909579f4ee5eb43dfa3329a16c2cef6e
         with:
           version: v0.1.0-alpha
           config: fixtures/matching-slice/.weavegate/config.yaml
@@ -121,15 +122,16 @@ archive, `stdout.log` and `stderr.log` when the process launched,
 `status.json`, the run directory when one was published, and a root
 `schedule.json` copy when the run saved a schedule. Thus a preflight failure
 still retains its process logs; a diagnostic derivation failure retains its
-version-3 evidence and exit 5. The job summary states when a report or other
-evidence is missing. Outputs can be read in a later `if: always()` step even
-when the gate step failed.
+version-3 evidence and exit 5. The job summary shows the installed CLI version,
+report verdict, and complete stored `report.md` as literal text when it fits
+within the 512 KiB summary report budget. Otherwise it points to the artifact,
+or states that a report is unavailable. Outputs can be read in a later
+`if: always()` step even when the gate step failed.
 
 ## Pull request comment
 
-The action in this source tree posts the run's stored `report.md` as a pull
-request comment. The commit pinned in the examples on this page predates that
-step; pin a reviewed commit that contains it to get comments.
+The action posts the run's stored `report.md` as a pull request comment. The
+workflow above grants `pull-requests: write` for its default `comment: 'true'`.
 
 On a pull request event, after the evidence upload and before the gate
 decision, the action posts **one new comment per run**. It never edits or
@@ -259,7 +261,7 @@ the environment, so no report content becomes shell source:
 
 ```yaml
 - id: weavegate
-  uses: weavegate/weavegate@<reviewed commit containing the comment step>
+  uses: weavegate/weavegate@a022acaa909579f4ee5eb43dfa3329a16c2cef6e
   with:
     version: v0.1.0-alpha
     config: fixtures/matching-slice/.weavegate/config.yaml
@@ -288,14 +290,16 @@ python3 -B scripts/test-actions-gate.py
 ```
 
 The `reusable-gate` job posts a live comment from its vulnerable run when a
-pull request changes `action.yml` or `scripts/actions-gate.py`, reads the
-comment back through the API, and compares the embedded report with
-`report.md` byte for byte. The `gate-replay` job then follows the comment's
-instructions in a fresh checkout: it downloads the artifact, imports the
-schedule, runs the report's `replay:` line without a shell, and requires exit 2
-and an identical `report.md`. The matching-slice schedule is also built into
-the CLI, so that job shows the documented steps work, not that the imported
-file was the lookup stage that resolved the schedule.
+pull request changes `action.yml`, `scripts/actions-gate.py`, or the smoke
+workflow, reads the comment back through the API, and compares the embedded
+report with `report.md` byte for byte. The `gate-replay` job then follows the
+comment's instructions in a fresh checkout. Its producer uses
+`sch_7dcb74b1e506`, a schedule absent from both that checkout and the
+published CLI. The job first runs the report's `replay:` line without the
+import and requires input exit 5.
+It downloads and checks the complete run directory, imports the artifact's
+`schedule.json`, runs the same line without a shell, and requires exit 2 and an
+identical `report.md`.
 
 ## Download and replay the exact schedule
 
@@ -323,7 +327,7 @@ steps:
       mkdir -p .weavegate/schedules
       cp imported/schedule.json .weavegate/schedules/producer.json
   - id: replay
-    uses: weavegate/weavegate@afc6b4fa493602bd64b6401c5bae0c6f7bf108b2
+    uses: weavegate/weavegate@a022acaa909579f4ee5eb43dfa3329a16c2cef6e
     with:
       version: v0.1.0-alpha
       config: fixtures/matching-slice/.weavegate/config.yaml
