@@ -11,7 +11,7 @@ The isolated consumers and live paired run report evidence separately.
 
 [The acceptance plan](testdata/external-sut-acceptance.json) pins
 [the shared vectors](testdata/external-sut-v1.json) at reviewed commit
-`f32cd292246287a22c1a057012dd468f25c41c7d`, including their exact SHA-256 digest.
+`c7cea1f3f5732066d1fb60b6bf6414fdb96019cf`, including their exact SHA-256 digest.
 The checker rejects different bytes. Its unit test also compares those bytes to
 the pinned Git revision and verifies that it is an ancestor of the checkout;
 CI fetches full history for this check. When a pull request pins a commit on
@@ -129,14 +129,14 @@ python3 scripts/check-external-sut-acceptance.py --results docs/reference/testda
 Captured output:
 
 ```text
-EXTERNAL_SUT_ACCEPTANCE_RESULT target=go manifest=valid acceptance=incomplete pass=0 fail=0 incomplete=62
+EXTERNAL_SUT_ACCEPTANCE_RESULT target=go manifest=valid acceptance=incomplete pass=0 fail=0 incomplete=72
 EXTERNAL_SUT_ACCEPTANCE_RESULT target=java manifest=valid acceptance=incomplete pass=0 fail=0 incomplete=60
 EXTERNAL_SUT_ACCEPTANCE_RESULT target=paired manifest=valid acceptance=incomplete pass=0 fail=0 incomplete=2
 ```
 
 For implementation acceptance, check its produced manifest with
-`--require-complete`. This command currently exits 1 because the checked-in Go
-manifest has no runtime evidence:
+`--require-complete`. The checked-in Go template intentionally exits 1 because
+it has no runtime evidence:
 
 ```bash
 python3 scripts/check-external-sut-acceptance.py --results docs/reference/testdata/external-sut-results-go.json --require-complete
@@ -150,6 +150,6 @@ all required evidence was reported, subject to the review limits above.
 Smoke CI tests rejection paths, checks the fixed
 `EXTERNAL_SUT_ACCOUNTING_TEST_RESULT` marker with `grep -F`, validates the three
 incomplete templates and proves they fail the strict gate. These checks are not
-adapter acceptance. The Java smoke job records a separate runtime manifest and
-applies `--require-complete`; Go and paired acceptance have their own remaining
-gates. Paired evidence must link accepted Go and Java manifests at the same pin.
+adapter acceptance. Separate Go and Java smoke jobs record runtime manifests
+and apply `--require-complete`. Live paired acceptance remains under #111;
+paired evidence must link accepted Go and Java manifests at the same pin.

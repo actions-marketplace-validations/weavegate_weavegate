@@ -3,8 +3,8 @@
   "target": "go",
   "vector": {
     "path": "docs/reference/testdata/external-sut-v1.json",
-    "revision": "f32cd292246287a22c1a057012dd468f25c41c7d",
-    "sha256": "a04520c31157d9eedd174a9ed3c12bc54a9676b2e9a7fda6b04fa1c591563450"
+    "revision": "c7cea1f3f5732066d1fb60b6bf6414fdb96019cf",
+    "sha256": "7a8524fd609eec082322c0364717e92dbb4d19055c55203eef63c13d7056d43a"
   },
   "run": null,
   "results": {
@@ -51,6 +51,16 @@
     "case/active_stop_cancel_watchdog_expires": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "case/retired_terminal_identical": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "case/retired_terminal_conflict": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/go_wrong_direction": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/go_unknown_point": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/go_immutable_worker": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/go_semantic_duplicate_start": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/go_semantic_duplicate_invoke": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/go_released_arrival_duplicate": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/go_unknown_command": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/go_capacity_exceeded": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/go_outbound_sequence_exhausted": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
+    "case/go_arrival_sequence_exhausted": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "framing/fragmented_valid_frame": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "framing/zero_length": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},
     "framing/oversized_length": {"status":"incomplete","reason":"No implementation evidence recorded.","checks":{}},

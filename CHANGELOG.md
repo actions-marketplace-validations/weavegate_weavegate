@@ -34,6 +34,10 @@ workflow fails before publication if the placeholder remains.
 
 ### Changed
 
+- Go external SUT isolated acceptance now exercises every applicable shared
+  lifecycle and wire vector, records observed evidence from repeated tests, and
+  requires a complete manifest in smoke CI. The shared vector pin includes Go
+  wire matrix cases and corrected startup cleanup observations.
 - Configuration-only CLI selection of an owned external JVM adapter, with
   launch, registration, and start-frame-size preflight, bounded startup/stop
   composition, and external JAR provenance in the run manifest. Each JVM

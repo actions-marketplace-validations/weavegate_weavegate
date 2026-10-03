@@ -1,11 +1,11 @@
-# Go external SUT adapter (in development)
+# Go external SUT adapter
 
 [`internal/sut/external`](../../internal/sut/external/) implements the Go peer
 of [wire v1](external-sut-v1.md). It launches one owned process with
 `exec(java, "-jar", jar)` and communicates over framed stdin/stdout. The
 [Java peer](external-sut-java.md) is a separate implementation. The CLI can
-select this adapter through [configuration](config.md#external-jvm); its
-complete Go acceptance gate has not passed.
+select this adapter through [configuration](config.md#external-jvm). Its isolated
+Go acceptance gate runs in smoke CI.
 
 ## Construction and ownership
 
@@ -70,17 +70,33 @@ stopped, stdout EOF, exit zero, closed invocation streams, unwound bridges, and
 no session fault. Concurrent callers share that outcome; an earlier caller
 deadline can return an error without restarting or extending shared cleanup.
 
-## Validation and remaining acceptance
+## Isolated Go acceptance
 
 The [acceptance plan](testdata/external-sut-acceptance.json) pins the shared
-vectors at `f32cd292246287a22c1a057012dd468f25c41c7d`. Tests verify the pinned
+vectors at `c7cea1f3f5732066d1fb60b6bf6414fdb96019cf`. Tests verify the pinned
 SHA-256 before execution. `TestSharedFraming` consumes all framing cases;
-`TestSharedLifecycleSubset` consumes thirteen shared lifecycle cases and fails on
-unknown event arguments or assertions within those cases. Independently written
-tests exercise additional lifecycle behavior, actual blocked/broken OS pipes,
-process death and reaping, cancellation races, and late evaluation invalidation.
-Those additional tests do not silently stand in for unimplemented shared-case
-observers.
+`TestSharedLifecycleGo` consumes all 53 Go-applicable shared lifecycle cases and
+fails on unknown event arguments or assertions. Orchestrator tests observe
+fixture quarantine, reset rejection, and late evaluation invalidation. Other
+tests exercise actual blocked/broken OS pipes, process death and reaping,
+cancellation races, and the wire matrix.
+
+Run-level evidence must come from the declared history, not a generic fault
+with the same final error. The released cleanup/transaction fatal histories,
+runtime-origin protocol fatal histories, and post-terminal evaluation histories
+are replayed from the shared vector inputs in `run_vectors_test.go`. Their check
+IDs come from the executed steps. Evaluation suffixes reject unknown events,
+arguments, and assertions before injection; mutation tests cover this boundary.
+The late-fatal witness keeps the child alive until Stop terminates it and checks
+reaping separately before emitting the composed cleanup requirement. Java-only
+application events remain scripted peer premises, not Java implementation evidence.
+
+The remaining cancellation, startup, concurrent-Stop, and protocol run witnesses
+use dedicated synchronization probes. Changes to their shared histories must
+also update those witnesses; the manifest validates evidence accounting, not
+the semantic equivalence of independently written tests. Fixture probes exercise
+the orchestrator's quarantine/Reset boundary without provisioning MySQL. Live
+paired acceptance remains separate.
 
 Run the repeated adapter tests and publish a manifest beside their log:
 
@@ -94,7 +110,7 @@ python3 scripts/record-external-sut-go-results.py \
   --command 'go test ./internal/sut/external -v -count=20' \
   --go-version "$(go version)"
 python3 scripts/check-external-sut-acceptance.py \
-  --results /tmp/weavegate-external-evidence/go.json
+  --results /tmp/weavegate-external-evidence/go.json --require-complete
 go test ./internal/sut/external -race -count=20
 python3 scripts/test-external-sut-go-results.py
 ```
@@ -106,16 +122,12 @@ cannot satisfy the count. Parallel test logs are rejected. Handler references
 must name an existing function or receiver method in the referenced Go source;
 comments and string literals do not count as declarations. Missing checks stay
 incomplete; unknown check IDs, changed handlers, failed logs and incorrect
-repetition counts are rejected. Existing checked-in result templates
-remain unchanged. The manifest and referenced log are review evidence, not an
-automatic proof that an observer establishes every claimed effect.
-
-The strict `--require-complete` gate still fails. Remaining work includes the
-rest of the shared Go histories and their run-level observers, and the complete
-wire-matrix acceptance family. The [fixture quarantine boundary](fixture-connection.md)
-now rejects Reset after a failed Stop or latched session fault. Process reaping
-is not evidence of completed server rollback. Keep
-[#108](https://github.com/weavegate/weavegate/issues/108) open until all applicable
-Go acceptance rows pass; CLI launch/budget composition is recorded in
-[ADR 0016](../adr/0016-external-cli-composition.md), and live paired MySQL
-evidence remains [#111](https://github.com/weavegate/weavegate/issues/111).
+repetition counts are rejected. The checked-in result template remains
+incomplete; CI publishes its filled manifest and log as an artifact. The strict
+gate requires all 72 Go rows to pass. The manifest and referenced log are
+review evidence, subject to the review limits in the
+[acceptance contract](external-sut-acceptance.md). The [fixture quarantine
+boundary](fixture-connection.md) rejects Reset after a failed Stop or latched
+session fault. CLI launch/budget composition is recorded in
+[ADR 0016](../adr/0016-external-cli-composition.md); live paired MySQL evidence
+remains [#111](https://github.com/weavegate/weavegate/issues/111).

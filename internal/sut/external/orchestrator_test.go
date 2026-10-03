@@ -3,6 +3,9 @@ package external
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -30,20 +33,73 @@ func (idleFixture) Ready(*fixture.DB) error        { return nil }
 func (idleFixture) Quarantine(error)               {}
 func (idleFixture) Teardown(context.Context) error { return nil }
 
-func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
+type quarantineProbe struct{ cause error }
+
+type finishProbe struct {
+	syncpoint.Runtime
+	finishes atomic.Int32
+}
+
+type waitArriveProbe struct {
+	syncpoint.Runtime
+	held, resume chan struct{}
+}
+
+type cancelDeadlineProbe struct {
+	*waitArriveProbe
+	arriveReturned chan error
+}
+
+func (r *cancelDeadlineProbe) Arrive(ctx context.Context, workerID, point string) error {
+	err := r.Runtime.Arrive(ctx, workerID, point)
+	r.arriveReturned <- err
+	return err
+}
+
+func (r *waitArriveProbe) WaitArrive(ctx context.Context, workerID, point string, timeout time.Duration) (syncpoint.ArriveStatus, error) {
+	status, err := r.Runtime.WaitArrive(ctx, workerID, point, timeout)
+	if status == syncpoint.ArriveStatusArrived && err == nil {
+		close(r.held)
+		<-r.resume
+	}
+	return status, err
+}
+
+func (r *finishProbe) Finish(workerID string, workerErr error) error {
+	r.finishes.Add(1)
+	return r.Runtime.Finish(workerID, workerErr)
+}
+
+func (f *quarantineProbe) Ready(*fixture.DB) error        { return f.check() }
+func (f *quarantineProbe) Reset(context.Context) error    { return f.check() }
+func (f *quarantineProbe) Quarantine(err error)           { f.cause = err }
+func (f *quarantineProbe) Teardown(context.Context) error { return nil }
+func (f *quarantineProbe) check() error {
+	if f.cause != nil {
+		return errors.Join(fixture.ErrQuarantined, f.cause)
+	}
+	return nil
+}
+
+func TestOrchestratorSuccessAndFingerprint(t *testing.T) {
 	var healthyFingerprint string
-	for _, mode := range []string{"healthy", "healthy_repeat", "wire_fatal", "process_death", "context_cancel"} {
+	for _, mode := range []string{"healthy", "healthy_repeat", "context_cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				p := newPeer(t)
 				p.a.id = randomID
+				fixtureProbe := &quarantineProbe{}
 				evaluating, returnEvaluation := make(chan context.Context, 1), make(chan struct{})
 				eval := oracle.EvaluatorFunc(func(ctx context.Context, _ oracle.DB, _ oracle.RunContext) (oracle.Evaluation, error) {
+					provisional, err := oracle.NewEvaluation(oracle.OracleResult{OracleID: "synthetic-pass"})
+					if err != nil {
+						return oracle.Evaluation{}, err
+					}
 					evaluating <- ctx
 					<-returnEvaluation
-					return oracle.NewEvaluation(oracle.OracleResult{OracleID: "synthetic-pass"})
+					return provisional, nil
 				})
-				o, err := orchestrator.New(orchestrator.Config{Fixture: idleFixture{}, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
+				o, err := orchestrator.New(orchestrator.Config{Fixture: fixtureProbe, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
 					NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
 						p.a.client = client
 						return preparedAdapter{p.a}, nil
@@ -71,29 +127,42 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 				p.send("accepted", binding(w))
 				p.send("arrive", arrivalBody(w, 1, "after_read"))
 				p.read("release")
-				p.send("terminal", terminalBody(w, "committed", nil))
-				evalCtx := <-evaluating
-				switch mode {
-				case "wire_fatal":
-					p.send("fatal", map[string]any{"kind": "transaction", "message": "private SQL and credentials"})
-					<-p.a.Faults().Done()
-					<-evalCtx.Done()
-					p.exit(errors.New("fatal exit"))
-				case "process_death":
-					p.exit(errors.New("child died"))
-					<-p.a.Faults().Done()
-					<-evalCtx.Done()
-				case "context_cancel":
+				if mode == "context_cancel" {
+					// The peer has committed, but the terminal is still in transit.
+					committed := terminalBody(w, "committed", nil)
 					cancel()
-					<-evalCtx.Done()
+					cancelFrame := p.read("cancel")
+					if cancelFrame.Body["invocation"] != w.Body["invocation"] || cancelFrame.Body["reason"] != "context" {
+						t.Fatal("cancel did not target the pending committed invocation")
+					}
+					p.send("terminal", committed)
+					p.read("stop")
+					p.send("stopped", map[string]any{})
+					p.exit(nil)
+					r := <-done
+					if !errors.Is(r.err, context.Canceled) || len(r.result.Workers) != 1 || r.result.Workers[0].Err != nil || len(r.result.Unstarted) != 0 || fixtureProbe.cause != nil {
+						t.Fatal("cancel-before-terminal Run lost the committed outcome", r.err)
+					}
+					reportCheck(t, "case/commit_wins_cancel", "step/14/expect/0/operation_context_error", "internal/sut/external/orchestrator_test.go:TestOrchestratorSuccessAndFingerprint")
+					return
+				}
+				p.send("terminal", terminalBody(w, "committed", nil))
+				<-evaluating
+				select {
+				case <-done:
+					t.Fatal("evaluation returned before its release barrier")
+				default:
 				}
 				close(returnEvaluation)
-				if mode == "healthy" || mode == "healthy_repeat" || mode == "context_cancel" {
+				if mode == "healthy" || mode == "healthy_repeat" {
 					p.read("stop")
 					p.send("stopped", map[string]any{})
 					p.exit(nil)
 				}
 				r := <-done
+				if fixtureProbe.cause != nil {
+					t.Fatal("healthy cleanup quarantined fixture")
+				}
 				if len(r.result.Workers) != 1 || r.result.Workers[0].Err != nil {
 					t.Fatal("committed worker fact lost", r.err)
 				}
@@ -101,20 +170,17 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 					if r.err != nil || r.result.Fingerprint == "" {
 						t.Fatal("normal run failed", r.err)
 					}
+					if err := fixtureProbe.Reset(context.Background()); err != nil {
+						t.Fatal("successful Stop did not permit fixture Reset", err)
+					}
+					if mode == "healthy" {
+						reportCheck(t, "requirement/go-success-lifecycle", "observe/evidence", "internal/sut/external/orchestrator_test.go:TestOrchestratorSuccessAndFingerprint")
+						reportCheck(t, "case/success", "step/15/expect/1/reset_allowed", "internal/sut/external/orchestrator_test.go:TestOrchestratorSuccessAndFingerprint")
+					}
 					if healthyFingerprint == "" {
 						healthyFingerprint = r.result.Fingerprint
 					} else if r.result.Fingerprint != healthyFingerprint {
 						t.Fatal("volatile wire identity changed fingerprint")
-					}
-				} else {
-					if r.err == nil || r.result.Fingerprint != "" || len(r.result.Evaluation.Results) != 0 {
-						t.Fatal("late failure left provisional success", r.err)
-					}
-					if mode == "context_cancel" && !errors.Is(r.err, context.Canceled) {
-						t.Fatal("operation cancellation lost")
-					}
-					if mode == "process_death" && !errors.Is(r.err, errTransport) {
-						t.Fatal("transport cause lost")
 					}
 				}
 				select {
@@ -125,7 +191,593 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 			})
 		})
 	}
-	t.Log("EXTERNAL_SUT_RUN_RESULT late_fatal=invalidates late_death=invalidates committed_result=preserved cancellation=run_error fingerprints=stable")
+	t.Log("EXTERNAL_SUT_RUN_RESULT committed_result=preserved cancellation=run_error fingerprints=stable")
+}
+
+func TestOrchestratorQuarantineVectors(t *testing.T) {
+	cases := []struct {
+		row, mode string
+		checks    []string
+	}{
+		{"process_death", "active_death", []string{"step/8/expect/4/quarantine_fixture", "step/11/expect/3/reset_rejected"}},
+		{"process_death", "active_death", []string{"step/8/expect/3/abort_run"}},
+		{"readiness_mismatch", "mismatch", []string{"step/6/expect/2/quarantine_fixture", "step/6/expect/3/reset_rejected"}},
+		{"unsolicited_startup_stopped", "unsolicited_stopped", []string{"step/3/expect/2/reset_rejected"}},
+		{"startup_deadline", "startup_deadline", []string{"step/3/expect/2/quarantine_fixture", "step/3/expect/3/reset_rejected"}},
+		{"cancel_cleanup_deadline", "cancel_deadline", []string{"step/14/expect/2/abort_run", "step/14/expect/3/quarantine_fixture", "step/16/expect/2/quarantine_fixture", "step/16/expect/3/reset_rejected"}},
+		{"duplicate_stop_call", "stop_timeout", []string{"step/16/expect/1/quarantine_fixture"}},
+		{"java_startup_watchdog_expires", "startup_fatal", []string{"step/6/expect/3/quarantine_fixture", "step/6/expect/4/reset_rejected"}},
+		{"java_stop_watchdog_expires", "stop_fatal", []string{"step/17/expect/2/quarantine_fixture", "step/18/expect/3/quarantine_fixture", "step/18/expect/4/reset_rejected"}},
+		{"active_stop_cancel_watchdog_expires", "active_stop_deadline", []string{"step/15/expect/3/quarantine_fixture", "step/16/expect/3/quarantine_fixture", "step/16/expect/4/reset_rejected"}},
+		{"active_stop_cancel_watchdog_expires", "active_stop_deadline", []string{"step/15/expect/2/abort_run"}},
+	}
+	for _, c := range cases {
+		t.Run(c.row, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				p := newPeer(t)
+				p.deferKillExit = c.mode == "mismatch" || c.mode == "startup_deadline" || c.mode == "stop_timeout"
+				probe := &quarantineProbe{}
+				var deadlineProbe *cancelDeadlineProbe
+				var activeStop chan error
+				newRuntime := func() syncpoint.Runtime { return syncpoint.New() }
+				if c.mode == "cancel_deadline" || c.mode == "active_stop_deadline" || c.mode == "active_death" {
+					deadlineProbe = &cancelDeadlineProbe{
+						waitArriveProbe: &waitArriveProbe{Runtime: syncpoint.New(), held: make(chan struct{}), resume: make(chan struct{})},
+						arriveReturned:  make(chan error, 1),
+					}
+					newRuntime = func() syncpoint.Runtime { return deadlineProbe }
+				}
+				o, err := orchestrator.New(orchestrator.Config{
+					Fixture: probe, DB: &fixture.DB{}, NewRuntime: newRuntime,
+					NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+						p.a.client = client
+						return preparedAdapter{p.a}, nil
+					},
+					BlockInferenceTimeout: time.Second, StepTimeout: time.Second,
+					RunTimeout: 20 * time.Second, StopTimeout: 5 * time.Second,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				schedule, err := scenario.NewSchedule([]scenario.CoordinationStep{{Worker: "w1", Point: "after_read"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				value := scenario.Scenario{Name: "quarantine", Workers: []scenario.Worker{{ID: "w1", Command: "assign"}}, SyncPoints: []string{"after_read"}}
+				eval := oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
+					return oracle.NewEvaluation(oracle.OracleResult{OracleID: "synthetic-pass"})
+				})
+				runCtx, cancelRun := context.WithCancel(context.Background())
+				defer cancelRun()
+				type runResult struct {
+					result orchestrator.RunResult
+					err    error
+				}
+				done := make(chan runResult, 1)
+				go func() {
+					r, err := o.Run(runCtx, value, schedule, eval)
+					done <- runResult{r, err}
+				}()
+				p.read("start")
+				switch c.mode {
+				case "unsolicited_stopped":
+					p.send("stopped", map[string]any{})
+					p.read("fatal")
+					p.exit(errors.New("unsolicited stopped"))
+				case "mismatch":
+					p.send("ready", map[string]any{"commands": []string{"other"}, "points": []string{"after_read", "before_write"}, "capacity": 2})
+					p.read("fatal")
+					<-p.killed
+					select {
+					case <-done:
+						t.Fatal("Run returned before startup child reap")
+					default:
+					}
+					p.exit(errors.New("startup failure"))
+				case "startup_deadline":
+					<-p.a.Faults().Done()
+					p.read("fatal")
+					<-p.killed
+					select {
+					case <-done:
+						t.Fatal("Run returned before startup child reap")
+					default:
+					}
+					p.exit(errors.New("startup deadline"))
+				case "startup_fatal":
+					p.send("fatal", map[string]any{"kind": "startup", "message": "startup deadline exceeded"})
+					p.exit(errors.New("startup watchdog"))
+				default:
+					p.send("ready", map[string]any{"commands": []string{"assign"}, "points": []string{"after_read", "before_write"}, "capacity": 2})
+					w := p.read("invoke")
+					p.send("accepted", binding(w))
+					switch c.mode {
+					case "cancel_deadline", "active_stop_deadline":
+						p.send("arrive", arrivalBody(w, 1, "after_read"))
+						<-deadlineProbe.held
+						reason := "context"
+						if c.mode == "active_stop_deadline" {
+							reason = "stop"
+							activeStop = make(chan error, 1)
+							go func() { activeStop <- p.a.Stop(context.Background()) }()
+						} else {
+							cancelRun()
+						}
+						cancelFrame := p.read("cancel")
+						if cancelFrame.Body["invocation"] != w.Body["invocation"] || cancelFrame.Body["reason"] != reason {
+							t.Fatal("deadline cancellation did not target the arrived invocation")
+						}
+						if activeStop != nil {
+							p.read("stop")
+						}
+						if err := <-deadlineProbe.arriveReturned; !errors.Is(err, context.Canceled) {
+							t.Fatal("canceled runtime arrival did not unwind", err)
+						}
+						<-time.After(999 * time.Millisecond)
+						if p.a.Faults().Err() != nil {
+							t.Fatal("cleanup fault arrived before the deadline")
+						}
+						select {
+						case <-p.a.exitDone:
+							t.Fatal("child exited before the cleanup deadline")
+						default:
+						}
+						<-time.After(time.Millisecond)
+						p.send("fatal", map[string]any{"kind": "cleanup", "message": "cancellation cleanup deadline exceeded"})
+						<-p.a.Faults().Done()
+						close(deadlineProbe.resume)
+						if activeStop == nil {
+							p.read("stop")
+						}
+						p.exit(errors.New("cleanup deadline"))
+					case "stop_timeout", "stop_fatal":
+						p.send("arrive", arrivalBody(w, 1, "after_read"))
+						p.read("release")
+						p.send("terminal", terminalBody(w, "committed", nil))
+						p.read("stop")
+						if c.mode == "stop_fatal" {
+							p.send("fatal", map[string]any{"kind": "shutdown", "message": "stop deadline exceeded"})
+							p.exit(errors.New("stop watchdog"))
+						} else {
+							// Run owns the first Stop; an overlapping caller and a
+							// later caller must share its deadline and failure.
+							second := make(chan error, 1)
+							go func() { second <- p.a.Stop(context.Background()) }()
+							synctest.Wait()
+							select {
+							case <-second:
+								t.Fatal("second Stop returned before deadline")
+							default:
+							}
+							<-p.killed
+							<-p.a.stopDone
+							if err := <-second; err == nil || err != p.a.stopErr {
+								t.Fatal("concurrent Stop lost shared failure", err)
+							}
+							if err := p.a.Stop(context.Background()); err != p.a.stopErr {
+								t.Fatal("later Stop replaced failure", err)
+							}
+							p.exit(errors.New("reaped after Stop deadline"))
+						}
+					case "active_death":
+						p.send("arrive", arrivalBody(w, 1, "after_read"))
+						<-deadlineProbe.held
+						p.exit(errors.New("child died"))
+						if err := <-deadlineProbe.arriveReturned; !errors.Is(err, context.Canceled) {
+							t.Fatal("death did not cancel the pending runtime arrival", err)
+						}
+						close(deadlineProbe.resume)
+					default:
+						t.Fatalf("unhandled run witness mode %q", c.mode)
+					}
+				}
+				r := <-done
+				if activeStop != nil {
+					if err := <-activeStop; !errors.Is(err, p.a.Faults().Err()) || p.a.Faults().Err() == nil || !errors.Is(r.err, p.a.Faults().Err()) || len(r.result.Workers) != 0 {
+						t.Fatal("active Stop deadline lost the adapter fault or fabricated a worker result", err, r.err)
+					}
+				}
+				if r.err == nil || probe.cause == nil || !errors.Is(probe.Reset(context.Background()), fixture.ErrQuarantined) {
+					t.Fatal("failed Run did not quarantine and reject Reset", r.err)
+				} else if c.mode == "cancel_deadline" && (!errors.Is(r.err, context.Canceled) || !errors.Is(r.err, p.a.Faults().Err()) || len(r.result.Workers) != 0) {
+					t.Fatal("cleanup deadline Run did not retain cancellation and adapter fault without a worker result", r.err)
+				}
+				if !errors.Is(probe.cause, p.a.Faults().Err()) && c.mode != "stop_timeout" {
+					t.Fatal("fixture lost the original session fault")
+				}
+				for _, check := range c.checks {
+					reportCheck(t, "case/"+c.row, check, "internal/sut/external/orchestrator_test.go:TestOrchestratorQuarantineVectors")
+				}
+			})
+		})
+	}
+}
+
+func TestOrchestratorCancelBeforeAccepted(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newPeer(t)
+		runtime := &finishProbe{Runtime: syncpoint.New()}
+		o, err := orchestrator.New(orchestrator.Config{
+			Fixture: &quarantineProbe{}, DB: &fixture.DB{}, NewRuntime: func() syncpoint.Runtime { return runtime },
+			NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+				p.a.client = client
+				return preparedAdapter{p.a}, nil
+			},
+			BlockInferenceTimeout: time.Second, StepTimeout: time.Second,
+			RunTimeout: 20 * time.Second, StopTimeout: 5 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		schedule, err := scenario.NewSchedule([]scenario.CoordinationStep{{Worker: "w1", Point: "after_read"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := scenario.Scenario{Name: "cancel-before-accepted", Workers: []scenario.Worker{{ID: "w1", Command: "assign"}}, SyncPoints: []string{"after_read"}}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		type runResult struct {
+			result orchestrator.RunResult
+			err    error
+		}
+		done := make(chan runResult, 1)
+		go func() {
+			r, e := o.Run(ctx, value, schedule, oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
+				t.Error("unstarted command reached evaluation")
+				return oracle.Evaluation{}, nil
+			}))
+			done <- runResult{r, e}
+		}()
+		p.read("start")
+		p.send("ready", map[string]any{"commands": []string{"assign"}, "points": []string{"after_read", "before_write"}, "capacity": 2})
+		w := p.read("invoke")
+		cancel()
+		p.read("cancel")
+		p.send("accepted", binding(w))
+		b := terminalBody(w, "not_started", wireError("cancelled", "cancelled by context", 0, ""))
+		b["connection"] = "not_acquired"
+		p.send("terminal", b)
+		p.read("stop")
+		p.send("stopped", map[string]any{})
+		p.exit(nil)
+		r := <-done
+		if !errors.Is(r.err, context.Canceled) || len(r.result.Unstarted) != 1 || !errors.Is(r.result.Unstarted[0].Err, context.Canceled) || len(r.result.Workers) != 0 || runtime.finishes.Load() != 0 {
+			t.Fatal("cancel-before-accepted Run lost its unstarted outcome or called Finish", r.err)
+		}
+		reportCheck(t, "case/cancel_before_accepted", "step/9/expect/2/no_runtime_finish", "internal/sut/external/orchestrator_test.go:TestOrchestratorCancelBeforeAccepted")
+		reportCheck(t, "case/cancel_before_accepted", "step/9/expect/3/operation_context_error", "internal/sut/external/orchestrator_test.go:TestOrchestratorCancelBeforeAccepted")
+	})
+}
+
+func TestOrchestratorResetAfterActiveStop(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newPeer(t)
+		probe := &quarantineProbe{}
+		runtime := &cancelDeadlineProbe{
+			waitArriveProbe: &waitArriveProbe{Runtime: syncpoint.New(), held: make(chan struct{}), resume: make(chan struct{})},
+			arriveReturned:  make(chan error, 1),
+		}
+		o, err := orchestrator.New(orchestrator.Config{
+			Fixture: probe, DB: &fixture.DB{}, NewRuntime: func() syncpoint.Runtime { return runtime },
+			NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+				p.a.client = client
+				return preparedAdapter{p.a}, nil
+			},
+			BlockInferenceTimeout: time.Second, StepTimeout: time.Second,
+			RunTimeout: 20 * time.Second, StopTimeout: 5 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		schedule, err := scenario.NewSchedule([]scenario.CoordinationStep{{Worker: "w1", Point: "after_read"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := scenario.Scenario{Name: "active-stop", Workers: []scenario.Worker{{ID: "w1", Command: "assign"}}, SyncPoints: []string{"after_read"}}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		results := make(chan orchestrator.RunResult, 1)
+		done := make(chan error, 1)
+		go func() {
+			result, err := o.Run(ctx, value, schedule, oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
+				t.Error("canceled command reached evaluation")
+				return oracle.Evaluation{}, nil
+			}))
+			results <- result
+			done <- err
+		}()
+		p.read("start")
+		p.send("ready", map[string]any{"commands": []string{"assign"}, "points": []string{"after_read", "before_write"}, "capacity": 2})
+		w := p.read("invoke")
+		p.send("accepted", binding(w))
+		p.send("arrive", arrivalBody(w, 1, "after_read"))
+		<-runtime.held
+		stopDone := make(chan error, 1)
+		go func() { stopDone <- p.a.Stop(context.Background()) }()
+		cancelFrame := p.read("cancel")
+		if cancelFrame.Body["invocation"] != w.Body["invocation"] || cancelFrame.Body["reason"] != "stop" {
+			t.Fatal("active Stop did not own cancellation")
+		}
+		p.read("stop")
+		if err := <-runtime.arriveReturned; !errors.Is(err, context.Canceled) {
+			t.Fatal("Stop did not unwind the runtime arrival", err)
+		}
+		p.send("terminal", terminalBody(w, "rolled_back", wireError("cancelled", "cancelled by stop", 0, "")))
+		p.send("stopped", map[string]any{})
+		p.exit(nil)
+		if err := <-stopDone; err != nil {
+			t.Fatal("active Stop failed", err)
+		}
+		synctest.Wait()
+		close(runtime.resume)
+		if err := <-done; !errors.Is(err, syncpoint.ErrInvalidTransition) {
+			t.Fatal("active cancellation lost", err)
+		}
+		result := <-results
+		if len(result.Workers) != 1 || !errors.Is(result.Workers[0].Err, context.Canceled) {
+			t.Fatal("Stop lost the canceled worker outcome")
+		}
+		if probe.cause != nil {
+			t.Fatal("clean active Stop quarantined fixture", probe.cause)
+		}
+		if err := probe.Reset(context.Background()); err != nil {
+			t.Fatal("Reset after clean active Stop failed", err)
+		}
+		reportCheck(t, "case/stop_active_invocation", "step/18/expect/1/reset_allowed", "internal/sut/external/orchestrator_test.go:TestOrchestratorResetAfterActiveStop")
+	})
+}
+
+func TestOrchestratorResetAfterStopBeforeReady(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newPeer(t)
+		probe := &quarantineProbe{}
+		o, err := orchestrator.New(orchestrator.Config{
+			Fixture: probe, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
+			NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+				p.a.client = client
+				return preparedAdapter{p.a}, nil
+			},
+			BlockInferenceTimeout: time.Second, StepTimeout: time.Second,
+			RunTimeout: 20 * time.Second, StopTimeout: 5 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		schedule, err := scenario.NewSchedule([]scenario.CoordinationStep{{Worker: "w1", Point: "after_read"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := scenario.Scenario{Name: "stop-before-ready", Workers: []scenario.Worker{{ID: "w1", Command: "assign"}}, SyncPoints: []string{"after_read"}}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := o.Run(ctx, value, schedule, oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
+				t.Error("startup cancellation reached evaluation")
+				return oracle.Evaluation{}, nil
+			}))
+			done <- err
+		}()
+		p.read("start")
+		cancel()
+		p.read("stop")
+		p.send("stopped", map[string]any{})
+		p.exit(nil)
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatal("startup cancellation lost", err)
+		}
+		if probe.cause != nil {
+			t.Fatal("clean startup Stop quarantined fixture", probe.cause)
+		}
+		if err := probe.Reset(context.Background()); err != nil {
+			t.Fatal("Reset after clean startup Stop failed", err)
+		}
+		reportCheck(t, "case/stop_before_ready", "step/4/expect/1/reset_allowed", "internal/sut/external/orchestrator_test.go:TestOrchestratorResetAfterStopBeforeReady")
+	})
+}
+
+func TestOrchestratorDatabaseBlockingVector(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newPeer(t)
+		runtime := syncpoint.New()
+		timedOut := make(chan struct{}, 1)
+		o, err := orchestrator.New(orchestrator.Config{
+			Fixture: &quarantineProbe{}, DB: &fixture.DB{}, NewRuntime: func() syncpoint.Runtime { return runtime },
+			NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+				p.a.client = client
+				return preparedAdapter{p.a}, nil
+			},
+			BlockInferenceTimeout: 10 * time.Millisecond, StepTimeout: time.Second,
+			RunTimeout: 20 * time.Second, StopTimeout: 5 * time.Second,
+			OnEvent: func(event orchestrator.Event) error {
+				if event.Kind != orchestrator.EventPointTimeout {
+					return nil
+				}
+				if event.Worker != "w2" || event.Point != "after_read" || event.Status != orchestrator.ControlStatusTimeoutInferred {
+					return fmt.Errorf("unexpected timeout event: %#v", event)
+				}
+				snapshot, err := runtime.Snapshot("w2")
+				if err != nil || snapshot.State != syncpoint.WorkerStateDBBlocked || p.a.Faults().Err() != nil {
+					return fmt.Errorf("timeout did not observe blocked runtime worker: state=%v err=%v fault=%v", snapshot.State, err, p.a.Faults().Err())
+				}
+				timedOut <- struct{}{}
+				return nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		schedule, err := scenario.NewSchedule([]scenario.CoordinationStep{{Worker: "w1", Point: "after_read"}, {Worker: "w2", Point: "after_read"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := scenario.Scenario{Name: "database-blocking", Workers: []scenario.Worker{{ID: "w1", Command: "assign"}, {ID: "w2", Command: "assign"}}, SyncPoints: []string{"after_read"}}
+		type runResult struct {
+			result orchestrator.RunResult
+			err    error
+		}
+		done := make(chan runResult, 1)
+		go func() {
+			r, e := o.Run(context.Background(), value, schedule, oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
+				return oracle.NewEvaluation(oracle.OracleResult{OracleID: "synthetic-pass"})
+			}))
+			done <- runResult{r, e}
+		}()
+		p.read("start")
+		p.send("ready", map[string]any{"commands": []string{"assign"}, "points": []string{"after_read", "before_write"}, "capacity": 2})
+		w1 := p.read("invoke")
+		p.send("accepted", binding(w1))
+		p.send("arrive", arrivalBody(w1, 1, "after_read"))
+		w2 := p.read("invoke")
+		p.send("accepted", binding(w2))
+		<-timedOut
+		p.read("release")
+		p.send("terminal", terminalBody(w1, "committed", nil))
+		p.send("arrive", arrivalBody(w2, 1, "after_read"))
+		p.read("release")
+		p.send("terminal", terminalBody(w2, "committed", nil))
+		p.read("stop")
+		p.send("stopped", map[string]any{})
+		p.exit(nil)
+		r := <-done
+		if r.err != nil || r.result.Timeouts != 1 || r.result.PendingResolved != 1 || len(r.result.Workers) != 2 {
+			t.Fatal("database blocking timeout was not recovered", r.err, r.result.Timeouts, r.result.PendingResolved)
+		}
+		reportCheck(t, "case/database_blocking", "step/12/local/wait_arrive_timeout", "internal/sut/external/orchestrator_test.go:TestOrchestratorDatabaseBlockingVector")
+		reportCheck(t, "case/database_blocking", "step/12/expect/0/runtime_db_blocked", "internal/sut/external/orchestrator_test.go:TestOrchestratorDatabaseBlockingVector")
+	})
+}
+
+func TestOrchestratorProtocolAbortVectors(t *testing.T) {
+	for _, c := range []struct {
+		row, check string
+	}{
+		{"conflicting_duplicate", "step/8/expect/1/abort_run"},
+		{"sequence_gap", "step/6/expect/1/abort_run"},
+		{"unknown_invocation", "step/6/expect/2/abort_run"},
+		{"terminal_while_arrived", "step/8/expect/2/abort_run"},
+	} {
+		t.Run(c.row, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				p := newPeer(t)
+				probe := &quarantineProbe{}
+				var heldRuntime *waitArriveProbe
+				newRuntime := func() syncpoint.Runtime {
+					if c.row == "terminal_while_arrived" || c.row == "conflicting_duplicate" {
+						heldRuntime = &waitArriveProbe{Runtime: syncpoint.New(), held: make(chan struct{}), resume: make(chan struct{})}
+						return heldRuntime
+					}
+					return syncpoint.New()
+				}
+				o, err := orchestrator.New(orchestrator.Config{
+					Fixture: probe, DB: &fixture.DB{}, NewRuntime: newRuntime,
+					NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+						p.a.client = client
+						return preparedAdapter{p.a}, nil
+					},
+					BlockInferenceTimeout: time.Second, StepTimeout: time.Second,
+					RunTimeout: 20 * time.Second, StopTimeout: 5 * time.Second,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				schedule, err := scenario.NewSchedule([]scenario.CoordinationStep{{Worker: "w1", Point: "after_read"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				value := scenario.Scenario{Name: c.row, Workers: []scenario.Worker{{ID: "w1", Command: "assign"}}, SyncPoints: []string{"after_read"}}
+				done := make(chan error, 1)
+				go func() {
+					_, err := o.Run(context.Background(), value, schedule, oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
+						t.Error("protocol failure reached evaluation")
+						return oracle.Evaluation{}, nil
+					}))
+					done <- err
+				}()
+				p.read("start")
+				p.send("ready", map[string]any{"commands": []string{"assign"}, "points": []string{"after_read", "before_write"}, "capacity": 2})
+				w := p.read("invoke")
+				p.send("accepted", binding(w))
+				switch c.row {
+				case "conflicting_duplicate":
+					arrival := p.send("arrive", arrivalBody(w, 1, "after_read"))
+					<-heldRuntime.held
+					arrival.Body = arrivalBody(w, 1, "before_write")
+					p.sendFrame(arrival)
+				case "sequence_gap":
+					p.next++
+					p.send("arrive", arrivalBody(w, 1, "after_read"))
+				case "unknown_invocation":
+					body := arrivalBody(w, 1, "after_read")
+					body["invocation"] = strings.Repeat("4", 32)
+					p.send("arrive", body)
+				case "terminal_while_arrived":
+					p.send("arrive", arrivalBody(w, 1, "after_read"))
+					<-heldRuntime.held
+					p.send("terminal", terminalBody(w, "committed", nil))
+				}
+				p.read("fatal")
+				if heldRuntime != nil {
+					close(heldRuntime.resume)
+				}
+				p.exit(errors.New("protocol fault"))
+				if err := <-done; err == nil || !errors.Is(err, errProtocol) || probe.cause == nil {
+					t.Fatal("protocol fault did not abort Run and quarantine fixture", err)
+				}
+				reportCheck(t, "case/"+c.row, c.check, "internal/sut/external/orchestrator_test.go:TestOrchestratorProtocolAbortVectors")
+			})
+		})
+	}
+}
+
+func TestOrchestratorRetiredTerminalConflictAbortsRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newPeer(t)
+		probe := &quarantineProbe{}
+		evaluating, releaseEvaluation := make(chan struct{}, 1), make(chan struct{})
+		o, err := orchestrator.New(orchestrator.Config{
+			Fixture: probe, DB: &fixture.DB{}, NewRuntime: syncpoint.New,
+			NewAdapter: func(client syncpoint.Client) (sut.Adapter, error) {
+				p.a.client = client
+				return preparedAdapter{p.a}, nil
+			},
+			BlockInferenceTimeout: time.Second, StepTimeout: time.Second,
+			RunTimeout: 20 * time.Second, StopTimeout: 5 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		schedule, err := scenario.NewSchedule([]scenario.CoordinationStep{{Worker: "w1", Point: "after_read"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := scenario.Scenario{Name: "retired-conflict", Workers: []scenario.Worker{{ID: "w1", Command: "assign"}}, SyncPoints: []string{"after_read"}}
+		done := make(chan error, 1)
+		go func() {
+			_, err := o.Run(context.Background(), value, schedule, oracle.EvaluatorFunc(func(context.Context, oracle.DB, oracle.RunContext) (oracle.Evaluation, error) {
+				evaluating <- struct{}{}
+				<-releaseEvaluation
+				return oracle.NewEvaluation(oracle.OracleResult{OracleID: "synthetic-pass"})
+			}))
+			done <- err
+		}()
+		p.read("start")
+		p.send("ready", map[string]any{"commands": []string{"assign"}, "points": []string{"after_read", "before_write"}, "capacity": 2})
+		w := p.read("invoke")
+		p.send("accepted", binding(w))
+		p.send("arrive", arrivalBody(w, 1, "after_read"))
+		p.read("release")
+		p.send("terminal", terminalBody(w, "committed", nil))
+		<-evaluating
+		p.send("terminal", terminalBody(w, "committed", wireError("application", "conflicting retired outcome", 0, "")))
+		p.read("fatal")
+		p.exit(errors.New("conflicting retired terminal"))
+		close(releaseEvaluation)
+		if err := <-done; err == nil || !errors.Is(err, errProtocol) || probe.cause == nil {
+			t.Fatal("retired terminal conflict did not abort Run", err)
+		}
+		reportCheck(t, "case/retired_terminal_conflict", "step/15/expect/2/abort_run", "internal/sut/external/orchestrator_test.go:TestOrchestratorRetiredTerminalConflictAbortsRun")
+	})
 }
 
 func TestOrchestratorRetainsTerminalPendingBridgeAtFault(t *testing.T) {

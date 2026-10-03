@@ -27,7 +27,7 @@ Use these pages when you need the exact CLI, configuration, artifact, or diagnos
 - [Report schema](reference/report-schema.md) — Consume run artifacts without guessing their fields or stability guarantees.
 - [Adapter outcomes](reference/adapter-outcomes.md) — Invocation streams, session faults, cancellation boundaries, and reproducible Go evidence.
 - [External SUT wire v1 (proposed)](reference/external-sut-v1.md) — Review the child-process protocol and its enabled CLI boundary.
-- [Go external SUT adapter (in development)](reference/external-sut-go.md) — Inspect the Go peer, executable evidence, and remaining acceptance.
+- [Go external SUT adapter](reference/external-sut-go.md) — Inspect the Go peer and its isolated acceptance evidence.
 - [Java Spring external SUT peer (in development)](reference/external-sut-java.md) — Opt into Spring instrumentation and inspect the Java peer's evidence and remaining acceptance.
 - [External SUT conformance (proposed)](reference/external-sut-conformance.md) — Share protocol vectors, lifecycle sequences, and implementation acceptance checks.
 - [External SUT acceptance accounting](reference/external-sut-acceptance.md) — Pin shared vectors and account for per-target handlers, results, and missing runtime evidence.

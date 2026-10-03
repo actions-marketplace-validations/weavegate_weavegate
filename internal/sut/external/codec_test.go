@@ -15,7 +15,7 @@ import (
 )
 
 const vectorPath = "../../../docs/reference/testdata/external-sut-v1.json"
-const vectorDigest = "a04520c31157d9eedd174a9ed3c12bc54a9676b2e9a7fda6b04fa1c591563450"
+const vectorDigest = "7a8524fd609eec082322c0364717e92dbb4d19055c55203eef63c13d7056d43a"
 
 type vectorStep struct {
 	Prefix   string          `json:"prefix"`
@@ -142,7 +142,7 @@ func TestSharedFraming(t *testing.T) {
 			}
 		})
 	}
-	t.Log("EXTERNAL_SUT_FRAMING_RESULT pin=f32cd292246287a22c1a057012dd468f25c41c7d malformed=rejected control=independent")
+	t.Log("EXTERNAL_SUT_FRAMING_RESULT pin=c7cea1f3f5732066d1fb60b6bf6414fdb96019cf malformed=rejected control=independent")
 }
 
 type chunkReader struct {
@@ -182,6 +182,13 @@ func assertFrame(t *testing.T, got, want frame) {
 }
 
 func TestCodecStrictMatrix(t *testing.T) {
+	if modes := checkCodecStrictMatrix(t); modes != 3 {
+		t.Fatal("missing stream boundary mode", modes)
+	}
+}
+
+func checkCodecStrictMatrix(t *testing.T) int {
+	t.Helper()
 	base := `{"v":1,"type":"ready","run":"11111111111111111111111111111111","session":"22222222222222222222222222222222","seq":1,"body":{"commands":["assign"],"points":["after_read"],"capacity":2}}`
 	for _, c := range []struct{ name, from, to string }{
 		{"fraction", `"v":1`, `"v":1.0`}, {"exponent", `"seq":1`, `"seq":1e0`},
@@ -217,7 +224,8 @@ func TestCodecStrictMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := stream.Bytes()
-	for _, chunk := range []int{1, len(raw)} {
+	modes := 0
+	for mode, chunk := range []int{1, len(raw)} {
 		r := &chunkReader{data: bytes.Clone(raw), chunks: make([]int, len(raw))}
 		for i := range r.chunks {
 			r.chunks[i] = chunk
@@ -232,10 +240,12 @@ func TestCodecStrictMatrix(t *testing.T) {
 		if _, _, err := readFrame(r); err != io.EOF {
 			t.Fatalf("boundary EOF: %v", err)
 		}
+		modes |= 1 << mode
 	}
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], maxFrame+1)
 	if _, _, err := readFrame(bytes.NewReader(header[:])); !errors.Is(err, errProtocol) {
 		t.Fatal(err)
 	}
+	return modes
 }

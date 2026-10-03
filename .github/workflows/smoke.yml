@@ -397,7 +397,16 @@ jobs:
             VECTOR_TERMINAL_AFTER_FATAL_CAUGHT VECTOR_RETIRED_IDENTICAL_BODY_CAUGHT \
             VECTOR_RETIRED_CONFLICT_BODY_CAUGHT VECTOR_RETIRED_RESULT_EFFECT_CAUGHT \
             VECTOR_RETIRED_FATAL_EXCHANGE_CAUGHT VECTOR_PROCESS_DEATH_REAP_CAUGHT \
-            VECTOR_PROCESS_DEATH_RESET_CAUGHT VECTOR_PROCESS_DEATH_UNWIND_CAUGHT; do
+            VECTOR_PROCESS_DEATH_RESET_CAUGHT VECTOR_PROCESS_DEATH_UNWIND_CAUGHT \
+            VECTOR_GO_DUPLICATE_START_PREMISE_CAUGHT VECTOR_GO_DUPLICATE_INVOKE_PREMISE_CAUGHT \
+            VECTOR_GO_CAPACITY_WORKER_CAUGHT VECTOR_GO_CAPACITY_COMMAND_CAUGHT \
+            VECTOR_GO_ARRIVAL_EXHAUSTION_SETUP_CAUGHT \
+            VECTOR_GO_UNKNOWN_POINT_WORKER_CAUGHT \
+            VECTOR_GO_UNKNOWN_POINT_ARRIVAL_CAUGHT \
+            VECTOR_GO_IMMUTABLE_WORKER_POINT_CAUGHT \
+            VECTOR_GO_IMMUTABLE_WORKER_ARRIVAL_CAUGHT \
+            VECTOR_GO_ARRIVAL_SEQUENCE_EXHAUSTED_WORKER_CAUGHT \
+            VECTOR_GO_ARRIVAL_SEQUENCE_EXHAUSTED_POINT_CAUGHT; do
             grep -qF "$marker" /tmp/external-sut-vectors-selftest.out
           done
           python3 scripts/check-external-sut-vectors.py | tee /tmp/external-sut-vectors.out
@@ -441,7 +450,7 @@ jobs:
 
   external-adapter:
     if: github.event_name != 'schedule'
-    name: external Go peer (partial acceptance)
+    name: external Go peer (isolated acceptance)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -467,14 +476,14 @@ jobs:
           grep -F 'EXTERNAL_SUT_DEATH_RESULT fault=transport outcome=absent bridge=unwound child=reaped stop=error' external-evidence/go.log
           grep -F 'EXTERNAL_SUT_TERMINAL_FAULT_RESULT validated=preserved unknown=absent late_terminal=ignored publication=after_bridge stop=error' external-evidence/go.log
           grep -F 'EXTERNAL_SUT_PROCESS_RESULT launch=owned pipes=real writer=bounded eof=supervised child=reaped stop=idempotent' external-evidence/go.log
-          grep -F 'EXTERNAL_SUT_RUN_RESULT late_fatal=invalidates late_death=invalidates committed_result=preserved cancellation=run_error fingerprints=stable' external-evidence/go.log
-          grep -F 'EXTERNAL_SUT_FRAMING_RESULT pin=f32cd292246287a22c1a057012dd468f25c41c7d malformed=rejected control=independent' external-evidence/go.log
-          grep -F 'EXTERNAL_SUT_VECTOR_SUBSET_RESULT cases=13 dispatch=closed assertions=observed acceptance=incomplete' external-evidence/go.log
+          grep -F 'EXTERNAL_SUT_RUN_RESULT committed_result=preserved cancellation=run_error fingerprints=stable' external-evidence/go.log
+          grep -F 'EXTERNAL_SUT_FRAMING_RESULT pin=c7cea1f3f5732066d1fb60b6bf6414fdb96019cf malformed=rejected control=independent' external-evidence/go.log
+          grep -F 'EXTERNAL_SUT_VECTOR_GO_RESULT cases=53 dispatch=closed assertions=observed' external-evidence/go.log
 
       - name: Repeat external adapter race tests
         run: go test ./internal/sut/external -race -count=20 | tee external-evidence/race.log
 
-      - name: Record observed checks without completing missing acceptance
+      - name: Record and require complete Go isolated acceptance
         run: |
           python3 scripts/test-external-sut-go-results.py | tee external-evidence/accounting.log
           grep -F 'EXTERNAL_SUT_GO_RECORD_TEST_RESULT missing=incomplete unknown=rejected repetitions=checked failures=rejected' external-evidence/accounting.log
@@ -483,7 +492,7 @@ jobs:
             --revision "$GITHUB_SHA" \
             --command 'go test ./internal/sut/external -v -count=20' \
             --go-version "$(go version)"
-          python3 scripts/check-external-sut-acceptance.py --results external-evidence/go.json
+          python3 scripts/check-external-sut-acceptance.py --results external-evidence/go.json --require-complete
 
       - name: Upload external adapter evidence
         if: always()
@@ -521,7 +530,7 @@ jobs:
           maven_command=(./mvnw -B verify -Dweavegate.repetitions=20 "-Dweavegate.evidence=$evidence/java.log")
           printf '%q ' "${maven_command[@]}" > "$evidence/command.txt"
           "${maven_command[@]}" | tee "$evidence/build.log"
-          grep -F 'EXTERNAL_SUT_JAVA_VECTOR_RESULT pin=f32cd292246287a22c1a057012dd468f25c41c7d cases=40 framing=11 dispatch=closed assertions=observed' "$evidence/java.log"
+          grep -F 'EXTERNAL_SUT_JAVA_VECTOR_RESULT pin=c7cea1f3f5732066d1fb60b6bf6414fdb96019cf cases=40 framing=11 dispatch=closed assertions=observed' "$evidence/java.log"
           grep -F 'EXTERNAL_SUT_JAVA_DISPATCH_RESULT events=closed arguments=closed assertions=closed injection=none' "$evidence/java.log"
           grep -F 'EXTERNAL_SUT_JAVA_EXCEPTION_SHAPE_RESULT phases=3 unknown_phase=rejected injection=none' "$evidence/java.log"
           grep -F 'EXTERNAL_SUT_JAVA_CANCEL_ORIGIN_RESULT context_then_stop=context stop_only=stop first_latched=retained' "$evidence/java.log"
