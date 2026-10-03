@@ -125,12 +125,12 @@ func TestOrchestratorLateFaultAndFingerprint(t *testing.T) {
 				}
 				switch mode {
 				case "wire_fatal":
-					p.send("fatal", map[string]any{"kind": "transaction", "message": "private SQL and credentials"})
+					p.send("fatal", map[string]any{"kind": "cleanup", "message": "application cleanup failed"})
 					<-p.a.Faults().Done()
 					<-evalCtx.Done()
 					p.exit(errors.New("fatal exit"))
 				case "process_death":
-					p.exit(errors.New("child died"))
+					p.exit(nil)
 					<-p.a.Faults().Done()
 					<-evalCtx.Done()
 				case "context_cancel":
@@ -207,6 +207,9 @@ func reportEvaluationVector(t *testing.T, mode string, r struct {
 	}
 	if r.err == nil || r.result.Fingerprint != "" || len(r.result.Evaluation.Results) != 0 || len(r.result.Workers) != 1 || r.result.Workers[0].Err != nil || p.a.Faults().Err() == nil {
 		t.Fatal("late fault did not discard the provisional result while preserving the terminal")
+	}
+	if !errors.Is(r.err, p.a.Faults().Err()) {
+		t.Fatal("run error did not retain the adapter fault")
 	}
 	if mode == "process_death" && !errors.Is(r.err, errTransport) {
 		t.Fatal("transport failure was not retained")

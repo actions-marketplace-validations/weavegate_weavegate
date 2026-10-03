@@ -216,7 +216,7 @@ def indices(steps, predicate):
     return [i for i, s in enumerate(steps) if predicate(s)]
 
 
-def injected_premise(case_id, frame, effects, invocations, outstanding, returned, completed, canceled, start, stop_seen):
+def injected_premise(case_id, frame, effects, invocations, outstanding, returned, completed, canceled, start, stop_seen, exhausted_arrivals):
     body, kind = frame['body'], frame['type']
     invocation = body.get('invocation')
     current = outstanding.get(invocation)
@@ -233,7 +233,7 @@ def injected_premise(case_id, frame, effects, invocations, outstanding, returned
     if case_id == 'go_released_arrival_duplicate':
         return kind == 'arrive' and current is None and returned.get(invocation) == (body, 'nil')
     if case_id == 'go_arrival_sequence_exhausted':
-        return kind == 'arrive' and invocation in invocations and body['arrival'] == '100000'
+        return kind == 'arrive' and invocation in exhausted_arrivals and body['arrival'] == '100000'
     if case_id == 'java_immutable_worker':
         return kind == 'cancel' and invocation in invocations and body['worker'] != invocations[invocation][0]
     if case_id == 'java_semantic_duplicate_start':
@@ -308,6 +308,7 @@ def history(case, steps):
     invocations, active, sources, reasons = {}, {}, {}, {}
     outstanding, completed, canceled = {}, set(), set()
     pending_arrivals, last_arrival = {}, {}
+    exhausted_arrivals = set()
     accepted, bridges, returned, cleanup, terminals = set(), {}, {}, {}, {}
     fatal_seen = False
     binding = None
@@ -348,6 +349,7 @@ def history(case, steps):
                 need(a.get('limit') == 100000 and a.get('invocation') in invocations
                      and 'arrival_sequence_at_limit' in effects, 'arrival exhaustion setup')
                 last_arrival[a['invocation']] = 100000
+                exhausted_arrivals.add(a['invocation'])
             if event(step, 'command_exception', 'java'):
                 sources[a['invocation']] = a['exception']
             if event(step, 'cancel_context', 'go'):
@@ -382,7 +384,7 @@ def history(case, steps):
             need('fatal_protocol' in effects, 'wrong direction must be rejected')
             if case['id'] in ('go_semantic_duplicate_start', 'go_semantic_duplicate_invoke'):
                 need(injected_premise(case['id'], f, effects, invocations, outstanding, returned,
-                                      completed, canceled, start, stop_seen), 'semantic duplicate lacks prior matching body')
+                                      completed, canceled, start, stop_seen, exhausted_arrivals), 'semantic duplicate lacks prior matching body')
             continue
         need(t == 'fatal' or (peer == 'java') == (t in TO_JAVA), 'message direction')
         if f['v'] != 1:
@@ -422,7 +424,8 @@ def history(case, steps):
                 required = {'consume_retired_invocation', 'no_worker_result', 'no_new_worker_effect', 'no_fatal', 'no_reply'} if same else {'fatal_protocol', 'no_worker_result', 'abort_run'}
                 need(required <= set(effects), 'retired terminal effects')
                 continue
-            need(injected_premise(case['id'], f, effects, invocations, outstanding, returned, completed, canceled, start, stop_seen), 'injected input lacks declared lifecycle premise')
+            need(injected_premise(case['id'], f, effects, invocations, outstanding, returned,
+                                  completed, canceled, start, stop_seen, exhausted_arrivals), 'injected input lacks declared lifecycle premise')
             continue
         if t == 'invoke':
             need(invocations.get(b['invocation']) == (b['worker'], b['command']), 'invoke lacks Go Handle call')
@@ -795,6 +798,7 @@ def self_test(data):
     reject('VECTOR_DUPLICATE_EFFECT_CAUGHT', lambda d: case(d, 'duplicate_invoke_java')['steps'][0]['expect'].remove('no_redispatch'))
     reject('VECTOR_GO_DUPLICATE_START_PREMISE_CAUGHT', lambda d: next(s for s in case(d, 'go_semantic_duplicate_start')['steps'] if message(s, 'start'))['frame']['body'].update(capacity=1))
     reject('VECTOR_GO_DUPLICATE_INVOKE_PREMISE_CAUGHT', lambda d: next(s for s in case(d, 'go_semantic_duplicate_invoke')['steps'] if message(s, 'invoke'))['frame']['body'].update(invocation='99999999999999999999999999999999'))
+    reject('VECTOR_GO_ARRIVAL_EXHAUSTION_SETUP_CAUGHT', lambda d: case(d, 'go_arrival_sequence_exhausted')['steps'].__setitem__(slice(None), [s for s in case(d, 'go_arrival_sequence_exhausted')['steps'] if not event(s, 'exhaust_arrivals')]))
     reject('VECTOR_LATE_FAULT_CAUGHT', lambda d: case(d, 'fatal_after_terminals')['steps'].__setitem__(slice(None), [s for s in case(d, 'fatal_after_terminals')['steps'] if not event(s, 'provisional_evaluation')]))
     reject('VECTOR_WATCHDOG_CAUGHT', lambda d: next(s for s in case(d, 'active_stop_cancel_watchdog_expires')['steps'] if event(s, 'advance_cancel_cleanup_clock') and s['args']['elapsed_ms'] == 1000)['args'].update(elapsed_ms=2500))
     reject('VECTOR_WATCHDOG_TRIGGER_ORDER_CAUGHT', move_clocks_before_trigger)
