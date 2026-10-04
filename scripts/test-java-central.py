@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
@@ -161,8 +162,11 @@ class PublishTest(unittest.TestCase):
             CENTRAL.publish_bundle(self.bundle, VERSION, "user", "token", REVISION)
 
         self.assertEqual(len(requests), 2)
-        self.assertTrue(all(isinstance(request, str) and "repo.maven.apache.org" in request
-                            for request in requests))
+        self.assertTrue(all(isinstance(request, str) for request in requests))
+        parsed = [urllib.parse.urlparse(request) for request in requests]
+        self.assertEqual([url.scheme for url in parsed], ["https", "https"])
+        self.assertEqual([url.hostname for url in parsed],
+                         ["repo.maven.apache.org", "repo.maven.apache.org"])
         gpg.assert_called_once()
 
     def test_different_published_pom_blocks_upload(self):
