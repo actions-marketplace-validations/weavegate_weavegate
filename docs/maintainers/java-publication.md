@@ -63,13 +63,15 @@ key is imported into a temporary GPG home, and the token is read from workflow
 secrets into process memory; neither is committed. The bundle is not uploaded
 as a GitHub artifact.
 
-On a job retry, the publisher first checks whether the same POM is already
-available on Maven Central with a valid signature. Otherwise it looks up the
-deployment named for the tag version and release commit in the Publisher Portal
-and resumes polling that deployment. It uploads a new bundle only when neither
-check finds the release. A failed or ambiguous existing deployment stops the
-job for investigation instead of creating another deployment for the immutable
-coordinate. Java publication jobs for the same tag run sequentially.
+On a job retry, the publisher looks up the deployment named for the tag version
+and release commit in the Publisher Portal and resumes polling that exact
+deployment. If no matching deployment remains, it compares all four published
+artifacts (POM, binary, sources, and Javadoc) byte for byte with the verified
+bundle and verifies each public signature before accepting an already published
+coordinate. A different public artifact or signature stops the job for
+investigation; a failed or ambiguous existing deployment also stops it instead
+of creating another deployment for the immutable coordinate. Java publication
+jobs for the same tag run sequentially.
 
 From scratch projects outside this repository, use default Maven and Gradle
 repositories to resolve the published coordinate and compile a class importing

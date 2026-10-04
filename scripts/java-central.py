@@ -137,31 +137,32 @@ def verify_bundle(bundle, target):
 
 
 def published_coordinate(data, target, repository_url=REPOSITORY_URL):
-    """Recognize a published coordinate even after Portal deployment cleanup."""
-    prefix = f"io/github/weavegate/{ARTIFACT}/{target}/{ARTIFACT}-{target}.pom"
+    """Verify published bytes and signatures after Portal deployment cleanup."""
+    prefix = f"io/github/weavegate/{ARTIFACT}/{target}/{ARTIFACT}-{target}"
+    names = [prefix + suffix for suffix in (".pom", ".jar", "-sources.jar", "-javadoc.jar")]
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        expected_pom = archive.read(prefix)
-    url = repository_url + "/" + prefix
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response:
-            require(response.status == 200, f"public POM returned HTTP {response.status}")
-            public_pom = response.read()
-    except urllib.error.HTTPError as error:
-        if error.code == 404:
-            return False
-        raise
-    require(public_pom == expected_pom, "published POM differs from the verified bundle")
-    with urllib.request.urlopen(url + ".asc", timeout=60) as response:
-        require(response.status == 200, f"public POM signature returned HTTP {response.status}")
-        signature = response.read()
-    with tempfile.TemporaryDirectory() as temporary:
-        pom_path = Path(temporary) / "published.pom"
-        signature_path = Path(temporary) / "published.pom.asc"
-        pom_path.write_bytes(public_pom)
-        signature_path.write_bytes(signature)
-        result = subprocess.run(["gpg", "--batch", "--quiet", "--verify", str(signature_path),
-                                 str(pom_path)], capture_output=True, text=True)
-        require(result.returncode == 0, "invalid published POM signature")
+        with tempfile.TemporaryDirectory() as temporary:
+            for index, name in enumerate(names):
+                url = repository_url + "/" + name
+                try:
+                    with urllib.request.urlopen(url, timeout=60) as response:
+                        require(response.status == 200, f"public artifact returned HTTP {response.status}: {name}")
+                        published = response.read()
+                except urllib.error.HTTPError as error:
+                    if index == 0 and error.code == 404:
+                        return False
+                    raise
+                require(published == archive.read(name), f"published artifact differs from verified bundle: {name}")
+                with urllib.request.urlopen(url + ".asc", timeout=60) as response:
+                    require(response.status == 200, f"public signature returned HTTP {response.status}: {name}")
+                    signature = response.read()
+                artifact_path = Path(temporary) / Path(name).name
+                signature_path = Path(temporary) / (Path(name).name + ".asc")
+                artifact_path.write_bytes(published)
+                signature_path.write_bytes(signature)
+                result = subprocess.run(["gpg", "--batch", "--quiet", "--verify", str(signature_path),
+                                         str(artifact_path)], capture_output=True, text=True)
+                require(result.returncode == 0, f"invalid published signature: {name}")
     return True
 
 
@@ -233,14 +234,20 @@ def publish_bundle(bundle, target, username, password, release_revision, base_ur
     require(re.fullmatch(r"[0-9a-f]{40}", release_revision) is not None, "invalid release revision")
     data = bundle.read_bytes()
     verify_bundle(io.BytesIO(data), target)
-    if published_coordinate(data, target, repository_url):
-        print(f"JAVA_CENTRAL_PUBLISH_RESULT version={target} state=published source=repository")
-        return
     token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     name = f"{ARTIFACT}-{target}-{release_revision}"
-    deployment_id = existing_deployment(name, target, token, base_url)
+    try:
+        deployment_id = existing_deployment(name, target, token, base_url)
+    except urllib.error.URLError:
+        if published_coordinate(data, target, repository_url):
+            print(f"JAVA_CENTRAL_PUBLISH_RESULT version={target} state=published source=repository")
+            return
+        raise
     if deployment_id:
         wait_for_publication(deployment_id, target, token, base_url)
+        return
+    if published_coordinate(data, target, repository_url):
+        print(f"JAVA_CENTRAL_PUBLISH_RESULT version={target} state=published source=repository")
         return
     boundary = "weavegate-" + uuid.uuid4().hex
     body = (f"--{boundary}\r\n"

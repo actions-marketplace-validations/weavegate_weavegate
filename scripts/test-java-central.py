@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -57,6 +58,15 @@ class PublishTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.bundle = Path(self.temporary.name) / "bundle.zip"
         self.bundle.write_bytes(b"verified zip bytes")
+
+    def write_artifact_bundle(self):
+        prefix = f"io/github/weavegate/{CENTRAL.ARTIFACT}/{VERSION}/{CENTRAL.ARTIFACT}-{VERSION}"
+        artifacts = {prefix + suffix: ("verified " + suffix).encode("ascii")
+                     for suffix in (".pom", ".jar", "-sources.jar", "-javadoc.jar")}
+        with zipfile.ZipFile(self.bundle, "w") as archive:
+            for name, content in artifacts.items():
+                archive.writestr(name, content)
+        return artifacts
 
     def test_uploads_the_bytes_that_were_verified(self):
         requests = []
@@ -116,7 +126,7 @@ class PublishTest(unittest.TestCase):
             return status("PUBLISHED")
 
         with patch.object(CENTRAL, "verify_bundle"), \
-                patch.object(CENTRAL, "published_coordinate", return_value=False), \
+                patch.object(CENTRAL, "published_coordinate", return_value=False) as public_probe, \
                 patch.object(CENTRAL.urllib.request, "urlopen", side_effect=open_request), \
                 patch.object(CENTRAL.time, "sleep") as sleep, \
                 contextlib.redirect_stdout(io.StringIO()):
@@ -127,6 +137,7 @@ class PublishTest(unittest.TestCase):
         uploads = [request for request in requests if "/publisher/upload?" in request.full_url]
         self.assertEqual(len(uploads), 1)
         self.assertIn("page=1", requests[4].full_url)
+        public_probe.assert_called_once()  # The resumed deployment needs no rebuilt-byte comparison.
         sleep.assert_called_once()
 
     def test_failed_existing_deployment_is_not_reuploaded(self):
@@ -145,39 +156,81 @@ class PublishTest(unittest.TestCase):
         self.assertFalse(any("/publisher/upload?" in request.full_url for request in requests))
 
     def test_published_coordinate_is_verified_without_reupload(self):
-        pom_name = f"io/github/weavegate/{CENTRAL.ARTIFACT}/{VERSION}/{CENTRAL.ARTIFACT}-{VERSION}.pom"
-        with zipfile.ZipFile(self.bundle, "w") as archive:
-            archive.writestr(pom_name, b"published POM")
+        artifacts = self.write_artifact_bundle()
         requests = []
 
         def open_request(request, timeout):
             requests.append(request)
-            return Response(200, b"published POM" if len(requests) == 1 else b"valid signature")
+            name = request.removeprefix(CENTRAL.REPOSITORY_URL + "/")
+            return Response(200, b"valid signature" if name.endswith(".asc") else artifacts[name])
 
         with patch.object(CENTRAL, "verify_bundle"), \
+                patch.object(CENTRAL, "existing_deployment", return_value=None), \
                 patch.object(CENTRAL.urllib.request, "urlopen", side_effect=open_request), \
                 patch.object(CENTRAL.subprocess, "run") as gpg, \
                 contextlib.redirect_stdout(io.StringIO()):
             gpg.return_value.returncode = 0
             CENTRAL.publish_bundle(self.bundle, VERSION, "user", "token", REVISION)
 
-        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(requests), 8)
         self.assertTrue(all(isinstance(request, str) for request in requests))
         parsed = [urllib.parse.urlparse(request) for request in requests]
-        self.assertEqual([url.scheme for url in parsed], ["https", "https"])
+        self.assertEqual([url.scheme for url in parsed], ["https"] * 8)
         self.assertEqual([url.hostname for url in parsed],
-                         ["repo.maven.apache.org", "repo.maven.apache.org"])
-        gpg.assert_called_once()
+                         ["repo.maven.apache.org"] * 8)
+        self.assertEqual({request.removeprefix(CENTRAL.REPOSITORY_URL + "/") for request in requests},
+                         set(artifacts) | {name + ".asc" for name in artifacts})
+        self.assertEqual(gpg.call_count, 4)
 
     def test_different_published_pom_blocks_upload(self):
-        pom_name = f"io/github/weavegate/{CENTRAL.ARTIFACT}/{VERSION}/{CENTRAL.ARTIFACT}-{VERSION}.pom"
-        with zipfile.ZipFile(self.bundle, "w") as archive:
-            archive.writestr(pom_name, b"verified POM")
+        self.write_artifact_bundle()
         with patch.object(CENTRAL, "verify_bundle"), \
+                patch.object(CENTRAL, "existing_deployment", return_value=None), \
                 patch.object(CENTRAL.urllib.request, "urlopen", return_value=Response(200, b"other POM")) as open_request:
-            with self.assertRaisesRegex(ValueError, "published POM differs"):
+            with self.assertRaisesRegex(ValueError, "published artifact differs"):
                 CENTRAL.publish_bundle(self.bundle, VERSION, "user", "token", REVISION)
         open_request.assert_called_once()
+
+    def test_same_pom_with_different_binary_blocks_upload(self):
+        artifacts = self.write_artifact_bundle()
+        requests = []
+
+        def open_request(request, timeout):
+            requests.append(request)
+            name = request.removeprefix(CENTRAL.REPOSITORY_URL + "/")
+            if name.endswith(".jar") and not name.endswith(("-sources.jar", "-javadoc.jar")):
+                return Response(200, b"different binary")
+            return Response(200, b"valid signature" if name.endswith(".asc") else artifacts[name])
+
+        with patch.object(CENTRAL, "verify_bundle"), \
+                patch.object(CENTRAL, "existing_deployment", return_value=None), \
+                patch.object(CENTRAL.urllib.request, "urlopen", side_effect=open_request), \
+                patch.object(CENTRAL.subprocess, "run") as gpg:
+            gpg.return_value.returncode = 0
+            with self.assertRaisesRegex(ValueError, "published artifact differs"):
+                CENTRAL.publish_bundle(self.bundle, VERSION, "user", "token", REVISION)
+        self.assertEqual(len(requests), 3)  # POM, POM signature, then mismatched binary.
+        gpg.assert_called_once()
+
+    def test_invalid_published_javadoc_signature_blocks_success(self):
+        artifacts = self.write_artifact_bundle()
+        requests = []
+
+        def open_request(request, timeout):
+            requests.append(request)
+            name = request.removeprefix(CENTRAL.REPOSITORY_URL + "/")
+            return Response(200, b"signature" if name.endswith(".asc") else artifacts[name])
+
+        with patch.object(CENTRAL, "verify_bundle"), \
+                patch.object(CENTRAL, "existing_deployment", return_value=None), \
+                patch.object(CENTRAL.urllib.request, "urlopen", side_effect=open_request), \
+                patch.object(CENTRAL.subprocess, "run") as gpg:
+            gpg.side_effect = [SimpleNamespace(returncode=0) for _ in range(3)] + [
+                SimpleNamespace(returncode=1)]
+            with self.assertRaisesRegex(ValueError, "invalid published signature: .*javadoc.jar"):
+                CENTRAL.publish_bundle(self.bundle, VERSION, "user", "token", REVISION)
+        self.assertEqual(len(requests), 8)
+        self.assertEqual(gpg.call_count, 4)
 
 
 if __name__ == "__main__":
