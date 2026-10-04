@@ -93,8 +93,11 @@ and its manifest has no `Class-Path`. The
 [`spring-matching` fixture configuration](../../fixtures/spring-matching/.weavegate/config.yaml)
 is a complete external configuration with these keys. Its measured
 vulnerable and fixed replays, versions and run durations are in
-[Spring paired replay](../experiments/spring-replay.md); the external path has
-no measured evidence beyond that fixture and baseline.
+[Spring paired replay](../experiments/spring-replay.md). One further synthetic
+application on the same baseline reproduces and fixes a race through the
+published release, with a classified instrumented JAR beside its production
+JAR; see [Spring Boot adoption](../howto/adopt-spring-boot.md). The external
+path has no measured evidence beyond these two applications and that baseline.
 
 There are no configurable shell arguments, environment overrides, credentials,
 or wire-version switches. The fixture's application database account travels

@@ -41,8 +41,10 @@ confirm its command, point, and capacity registration at startup. The CLI's
 minimal external JVM integration test proves launch and replay composition.
 Live Spring/JDBC reproduction is measured for one synthetic fixture on Java 21,
 Spring Boot 4.0.8, Connector/J 9.7.0 and MySQL 8.4 only; see
-[Spring paired replay](experiments/spring-replay.md). Other applications,
-versions and databases are untested. Each schedule run starts a new JVM, so an
+[Spring paired replay](experiments/spring-replay.md). One further synthetic
+application on the same versions reproduces and fixes a race through the
+published release in [Spring Boot adoption](howto/adopt-spring-boot.md). Other
+applications, versions and databases are untested. Each schedule run starts a new JVM, so an
 external replay costs seconds per repetition rather than milliseconds. See the
 [configuration reference](reference/config.md#external-jvm).
 

@@ -56,3 +56,14 @@ versions with module-version reporting show their resolved module version with
 configuration, migration, and seed files. Get them from a source checkout or a
 release archive, change into that directory, and run the [Quickstart](quickstart.md)
 commands there.
+
+## Java integration for Spring Boot
+
+A Spring Boot application under test also needs the Java integration,
+`io.github.weavegate:weavegate-spring`, from Maven Central. Use the version that
+matches the CLI: `0.2.0-rc.1` with CLI `v0.2.0-rc.1`, the first release that
+publishes it. It requires Java 21 and Spring Boot 4.0.8; the
+[Java peer reference](reference/external-sut-java.md#supported-baseline) lists
+the full baseline, and
+[Adopt weavegate in a Spring Boot project](howto/adopt-spring-boot.md) uses it
+end to end.

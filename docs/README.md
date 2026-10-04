@@ -15,6 +15,7 @@ Use these guides when you are new to weavegate or ready to create and instrument
 - [Instrument a workflow](howto/instrument.md) — Place sync-points around a contested decision without changing its semantics.
 - [Write a fixture](howto/write-a-fixture.md) — Package a schema, seed data, adapter, schedules, and oracle as a reusable fixture.
 - [Gate GitHub Actions with weavegate](howto/ci-gate.md) — Run a checksum-verified release, retain failed-run evidence, and replay a downloaded schedule.
+- [Adopt weavegate in a Spring Boot project](howto/adopt-spring-boot.md) — Instrument a transactional workflow, declare its invariant, and gate pull requests from an application repository.
 
 ## Reference (the contract)
 

@@ -17,6 +17,14 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ## [Unreleased]
 
+### Added
+
+- `docs/howto/adopt-spring-boot.md` walks a Spring Boot project from the
+  published `v0.2.0-rc.1` CLI and Java integration to a pull request gate:
+  sync-points, a command bean, an instrumented JAR, the SQL invariant, local
+  reproduction, the GitHub Actions workflow and a replay of downloaded
+  evidence, with output captured from an outside example repository.
+
 ## [0.2.0-rc.1] - 2026-10-04
 
 ### Added

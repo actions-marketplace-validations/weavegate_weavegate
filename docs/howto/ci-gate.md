@@ -53,15 +53,17 @@ This example deliberately gates on the vulnerable variant: a reproduced
 Change `variant` to `fixed` to replay the same schedule and get exit 0 and a
 passing job. The smoke workflow's `reusable-gate` job runs both cases. A runner
 must provide a working Docker daemon so Testcontainers can start MySQL 8.4.
-The current published binary has the built-in `matching-slice` Go adapter;
-other application adapters are not available through this release.
+The `v0.1.0-alpha` binary pinned here has only the built-in `matching-slice` Go
+adapter. From `v0.2.0-rc.1`, the CLI can also launch an instrumented Spring Boot
+JVM; [Adopt weavegate in a Spring Boot project](adopt-spring-boot.md) gates an
+application repository that way.
 
 ## Inputs, outputs, and gate policy
 
-The action in this source tree also supports an omitted `version` when
-referenced by an exact release tag. This behavior will first be available
-from a release containing this change; `v0.1.0-alpha` predates the action.
-The pinned examples above and below remain the runnable route until then.
+The action also supports an omitted `version` when referenced by an exact
+release tag. `v0.2.0-rc.1` is the first release that contains it;
+`v0.1.0-alpha` predates the action, so the examples above and below that
+select it pin a commit and set `version`.
 
 The following is a **planned workflow fragment** for the final `v0.2.0`
 release, which has not been published. Use it only after that release and
@@ -78,7 +80,9 @@ its CLI archives exist:
 ```
 
 Here the CLI version defaults to `v0.2.0`. An exact prerelease reference,
-such as `@v0.2.0-rc.1`, similarly selects that CLI prerelease once published.
+such as `@v0.2.0-rc.1`, similarly selects that CLI prerelease; the
+[Spring Boot adoption guide](adopt-spring-boot.md#8-gate-pull-requests-in-github-actions)
+uses it.
 A nonempty `version` overrides the action ref, so callers may choose a
 different published CLI while keeping their action code fixed. SHA pins,
 branch refs, local `uses: ./`, and moving major/minor refs such as `@v0` or
