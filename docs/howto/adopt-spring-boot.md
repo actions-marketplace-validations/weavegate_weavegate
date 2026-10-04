@@ -37,8 +37,10 @@ Spring and several JDBC features. The
 [Java peer reference](../reference/external-sut-java.md#opting-in) lists every
 rule.
 
-The CLI and the Java integration are released together. Use the same version
-for both: `0.2.0-rc.1` for the Java dependency and `v0.2.0-rc.1` for the CLI.
+Use the same version for the CLI and the Java integration: `v0.2.0-rc.1` for
+the CLI and `0.2.0-rc.1` for the Java dependency, which is published on Maven
+Central. A release tag publishes the CLI before the Java artifact, so for a
+later version, check that the Java coordinate exists before upgrading.
 
 ## 1. Install the CLI
 
