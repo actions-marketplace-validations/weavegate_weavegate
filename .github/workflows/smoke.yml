@@ -386,6 +386,28 @@ jobs:
             'RELEASE_BODY_RESULT exact=accepted trailing_newlines=normalized expected_empty=rejected actual_empty=rejected mismatch=rejected' \
             /tmp/release-body-selftest.out
 
+      - name: Check release prerequisites gate
+        run: |
+          bash scripts/release-prerequisites.sh --self-test | tee /tmp/release-prerequisites-selftest.out
+          for marker in COMPLETE_SECRETS_ACCEPTED EACH_MISSING_SECRET_CAUGHT \
+            SECRET_VALUES_HIDDEN ALL_MISSING_SECRETS_NAMED GATED_WORKFLOW_ACCEPTED \
+            UNGATED_JOB_CAUGHT MISSING_GATE_CAUGHT; do
+            grep -qF "$marker" /tmp/release-prerequisites-selftest.out
+          done
+          grep -qF \
+            'RELEASE_PREREQUISITES_RESULT complete=accepted each_missing=rejected all_missing=named values=hidden ungated_job=rejected missing_gate=rejected' \
+            /tmp/release-prerequisites-selftest.out
+          bash scripts/release-prerequisites.sh gated .github/workflows/release.yml
+          if env -u MAVEN_CENTRAL_GPG_PRIVATE_KEY_B64 -u MAVEN_CENTRAL_GPG_PASSPHRASE \
+            -u MAVEN_CENTRAL_USERNAME -u MAVEN_CENTRAL_PASSWORD \
+            bash scripts/release-prerequisites.sh check 2> /tmp/release-prerequisites-check.err; then
+            echo "release prerequisites check accepted a run without secrets" >&2
+            exit 1
+          fi
+          grep -qxF 'release prerequisites: stopping before publication; nothing was published' \
+            /tmp/release-prerequisites-check.err
+          echo "RELEASE_GATE_RESULT workflow=gated secrets_absent=stopped"
+
       - name: Check proposed external SUT vectors
         run: |
           python3 scripts/check-external-sut-vectors.py --self-test | tee /tmp/external-sut-vectors-selftest.out
