@@ -3,8 +3,8 @@
 [`sdk/java`](../../sdk/java/) implements the Java peer of
 [wire v1](external-sut-v1.md) for an explicitly instrumented Spring Boot test
 application. Its isolated Java acceptance gate passes on the pinned stack.
-The release workflow is configured to publish it to Maven Central from future
-release tags; no Java coordinate is available until that first publication.
+Each CLI release tag publishes it to Maven Central as
+`io.github.weavegate:weavegate-spring`, starting with `0.2.0-rc.1`.
 The CLI can launch a prebuilt application JAR
 through [external configuration](config.md#external-jvm). Paired live
 Spring/MySQL replay of the synthetic
@@ -53,10 +53,11 @@ parent's dependency management; the build fails on other Java or Maven versions.
 Test-only dependencies are Spring Boot's test starter, the JUnit launcher API
 for execution evidence and Testcontainers for a real MySQL 8.4 server.
 
-Once a release tag has completed [Java publication](../maintainers/java-publication.md),
-use the version printed by `weavegate --version` for the same tag in either build
-tool. Maven Central is already in their default repository set; `<release-version>`
-is a placeholder, not an available version:
+Use the version printed by `weavegate --version` for the same tag in either
+build tool; `0.2.0-rc.1` is the first published version, and
+[Java publication](../maintainers/java-publication.md) describes how each tag
+publishes it. Maven Central is already in their default repository set;
+replace the `<release-version>` placeholder:
 
 ```xml
 <dependency>
