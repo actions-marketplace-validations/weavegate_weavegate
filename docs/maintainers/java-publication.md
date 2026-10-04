@@ -63,6 +63,14 @@ key is imported into a temporary GPG home, and the token is read from workflow
 secrets into process memory; neither is committed. The bundle is not uploaded
 as a GitHub artifact.
 
+On a job retry, the publisher first checks whether the same POM is already
+available on Maven Central with a valid signature. Otherwise it looks up the
+deployment named for the tag version and release commit in the Publisher Portal
+and resumes polling that deployment. It uploads a new bundle only when neither
+check finds the release. A failed or ambiguous existing deployment stops the
+job for investigation instead of creating another deployment for the immutable
+coordinate. Java publication jobs for the same tag run sequentially.
+
 From scratch projects outside this repository, use default Maven and Gradle
 repositories to resolve the published coordinate and compile a class importing
 `io.github.weavegate.sdk.Weavegate`. Use the dependency declarations in the

@@ -66,6 +66,9 @@ jobs:
     name: Publish Java Spring artifact to Maven Central
     needs: release
     runs-on: ubuntu-latest
+    concurrency:
+      group: java-central-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
     steps:
@@ -93,6 +96,7 @@ jobs:
           : "${MAVEN_CENTRAL_USERNAME:?missing Central token username}"
           : "${MAVEN_CENTRAL_PASSWORD:?missing Central token password}"
           version="${GITHUB_REF_NAME#v}"
+          release_revision=$(git rev-parse HEAD)
           python3 scripts/java-central.py set-version "$version"
           export GNUPGHOME="$RUNNER_TEMP/java-central-gnupg"
           trap 'rm -rf "$GNUPGHOME"' EXIT
@@ -101,4 +105,4 @@ jobs:
           (cd sdk/java && ./mvnw -B -Pcentral-release -Dmaven.test.skip=true clean verify)
           python3 scripts/java-central.py build-bundle "$version"
           python3 scripts/java-central.py verify "$version"
-          python3 scripts/java-central.py publish "$version"
+          python3 scripts/java-central.py publish "$version" --release-revision "$release_revision"

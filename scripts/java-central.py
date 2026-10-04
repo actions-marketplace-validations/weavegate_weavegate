@@ -26,6 +26,7 @@ ARTIFACT = "weavegate-spring"
 NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?")
 CENTRAL_URL = "https://central.sonatype.com"
+REPOSITORY_URL = "https://repo.maven.apache.org/maven2"
 
 
 def require(condition, message):
@@ -135,30 +136,74 @@ def verify_bundle(bundle, target):
                             require(any(item.endswith("/Weavegate.class") for item in members), "binary JAR lacks API")
 
 
-def publish_bundle(bundle, target, username, password, base_url=CENTRAL_URL):
-    # Verify and upload the same in-memory bytes. A second Maven invocation would
-    # rebuild the artifacts and could upload a different, unverified bundle.
-    data = bundle.read_bytes()
-    verify_bundle(io.BytesIO(data), target)
-    token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-    boundary = "weavegate-" + uuid.uuid4().hex
-    body = (f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="bundle"; filename="central-bundle.zip"\r\n'
-            "Content-Type: application/octet-stream\r\n\r\n").encode("ascii") + data + f"\r\n--{boundary}--\r\n".encode("ascii")
-    headers = {"Authorization": f"Bearer {token}",
-               "Content-Type": f"multipart/form-data; boundary={boundary}"}
-    upload = urllib.request.Request(
-        base_url + "/api/v1/publisher/upload?" + urllib.parse.urlencode({
-            "name": f"{ARTIFACT}-{target}", "publishingType": "AUTOMATIC"}),
-        data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(upload, timeout=60) as response:
-        require(response.status == 201, f"Central upload returned HTTP {response.status}")
-        deployment_id = response.read().decode("ascii").strip()
+def published_coordinate(data, target, repository_url=REPOSITORY_URL):
+    """Recognize a published coordinate even after Portal deployment cleanup."""
+    prefix = f"io/github/weavegate/{ARTIFACT}/{target}/{ARTIFACT}-{target}.pom"
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        expected_pom = archive.read(prefix)
+    url = repository_url + "/" + prefix
     try:
-        uuid.UUID(deployment_id)
-    except ValueError as error:
-        raise ValueError("Central returned an invalid deployment ID") from error
+        with urllib.request.urlopen(url, timeout=60) as response:
+            require(response.status == 200, f"public POM returned HTTP {response.status}")
+            public_pom = response.read()
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return False
+        raise
+    require(public_pom == expected_pom, "published POM differs from the verified bundle")
+    with urllib.request.urlopen(url + ".asc", timeout=60) as response:
+        require(response.status == 200, f"public POM signature returned HTTP {response.status}")
+        signature = response.read()
+    with tempfile.TemporaryDirectory() as temporary:
+        pom_path = Path(temporary) / "published.pom"
+        signature_path = Path(temporary) / "published.pom.asc"
+        pom_path.write_bytes(public_pom)
+        signature_path.write_bytes(signature)
+        result = subprocess.run(["gpg", "--batch", "--quiet", "--verify", str(signature_path),
+                                 str(pom_path)], capture_output=True, text=True)
+        require(result.returncode == 0, "invalid published POM signature")
+    return True
 
+
+def existing_deployment(name, target, token, base_url=CENTRAL_URL):
+    """Find an accepted deployment for this exact tag and commit, across pages."""
+    matches = set()
+    page = 0
+    while True:
+        query = urllib.parse.urlencode({"namespace": GROUP, "deploymentName": name,
+                                        "page": page, "size": 100})
+        request = urllib.request.Request(base_url + "/api/v1/publisher/deployments?" + query,
+                                         headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            require(response.status == 200, f"Central deployment list returned HTTP {response.status}")
+            listing = json.load(response)
+        require(isinstance(listing, dict), "invalid Central deployment list")
+        deployments = listing.get("deployments")
+        page_count = listing.get("pageCount")
+        require(isinstance(deployments, list) and isinstance(page_count, int) and page_count >= 0,
+                "invalid Central deployment pagination")
+        for item in deployments:
+            require(isinstance(item, dict), "invalid Central deployment item")
+            if item.get("deploymentName") != name or item.get("namespace") != GROUP:
+                continue  # The API name filter is a case-insensitive substring match.
+            components = item.get("deploymentComponents") or []
+            purl = f"pkg:maven/{GROUP}/{ARTIFACT}@{target}"
+            require(isinstance(components, list) and all(isinstance(component, dict) for component in components),
+                    "invalid matching deployment components")
+            require(all(component.get("purl") in (None, purl) for component in components),
+                    "matching deployment has another coordinate")
+            deployment_id = item.get("deploymentId")
+            require(isinstance(deployment_id, str), "matching deployment lacks an ID")
+            uuid.UUID(deployment_id)
+            matches.add(deployment_id)
+        page += 1
+        if page >= page_count:
+            break
+    require(len(matches) <= 1, "multiple deployments match this release")
+    return next(iter(matches), None)
+
+
+def wait_for_publication(deployment_id, target, token, base_url=CENTRAL_URL):
     deadline = time.monotonic() + 1800
     status_url = base_url + "/api/v1/publisher/status?" + urllib.parse.urlencode({"id": deployment_id})
     while True:
@@ -181,6 +226,43 @@ def publish_bundle(bundle, target, username, password, base_url=CENTRAL_URL):
         time.sleep(min(15, max(0, deadline - time.monotonic())))
 
 
+def publish_bundle(bundle, target, username, password, release_revision, base_url=CENTRAL_URL,
+                   repository_url=REPOSITORY_URL):
+    # Verify and upload the same in-memory bytes. A second Maven invocation would
+    # rebuild the artifacts and could upload a different, unverified bundle.
+    require(re.fullmatch(r"[0-9a-f]{40}", release_revision) is not None, "invalid release revision")
+    data = bundle.read_bytes()
+    verify_bundle(io.BytesIO(data), target)
+    if published_coordinate(data, target, repository_url):
+        print(f"JAVA_CENTRAL_PUBLISH_RESULT version={target} state=published source=repository")
+        return
+    token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    name = f"{ARTIFACT}-{target}-{release_revision}"
+    deployment_id = existing_deployment(name, target, token, base_url)
+    if deployment_id:
+        wait_for_publication(deployment_id, target, token, base_url)
+        return
+    boundary = "weavegate-" + uuid.uuid4().hex
+    body = (f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="bundle"; filename="central-bundle.zip"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n").encode("ascii") + data + f"\r\n--{boundary}--\r\n".encode("ascii")
+    headers = {"Authorization": f"Bearer {token}",
+               "Content-Type": f"multipart/form-data; boundary={boundary}"}
+    upload = urllib.request.Request(
+        base_url + "/api/v1/publisher/upload?" + urllib.parse.urlencode({
+            "name": name, "publishingType": "AUTOMATIC"}),
+        data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(upload, timeout=60) as response:
+        require(response.status == 201, f"Central upload returned HTTP {response.status}")
+        deployment_id = response.read().decode("ascii").strip()
+    try:
+        uuid.UUID(deployment_id)
+    except ValueError as error:
+        raise ValueError("Central returned an invalid deployment ID") from error
+
+    wait_for_publication(deployment_id, target, token, base_url)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -197,6 +279,7 @@ def main():
     publisher = commands.add_parser("publish")
     publisher.add_argument("version")
     publisher.add_argument("--bundle", type=Path, default=Path("sdk/java/target/central-publishing/central-bundle.zip"))
+    publisher.add_argument("--release-revision", required=True)
     args = parser.parse_args()
     try:
         if args.command == "set-version":
@@ -210,7 +293,7 @@ def main():
             username = os.environ.get("MAVEN_CENTRAL_USERNAME")
             password = os.environ.get("MAVEN_CENTRAL_PASSWORD")
             require(bool(username and password), "missing Central token credentials")
-            publish_bundle(args.bundle, args.version, username, password)
+            publish_bundle(args.bundle, args.version, username, password, args.release_revision)
     except (ValueError, OSError, ET.ParseError, zipfile.BadZipFile,
             urllib.error.URLError, json.JSONDecodeError) as error:
         print(f"java-central: {error}", file=sys.stderr)
