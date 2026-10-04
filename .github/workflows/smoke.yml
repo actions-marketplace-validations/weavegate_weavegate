@@ -593,6 +593,84 @@ jobs:
           name: external-java-evidence
           path: external-java-evidence/
 
+  external-spring:
+    if: github.event_name != 'schedule'
+    name: external Spring replay (paired acceptance)
+    # Paired evidence links the complete isolated manifests from this run.
+    needs: [external-adapter, external-java]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build the instrumented Spring fixture against this revision's Java integration
+        run: |
+          (cd sdk/java && ./mvnw -B -Dmaven.test.skip=true install)
+          sdk/java/mvnw -B -f fixtures/spring-matching/app/pom.xml package
+
+      - name: Replay the vulnerable and fixed Spring variants against MySQL
+        run: |
+          evidence=paired-evidence
+          mkdir -p "$evidence"
+          command="WEAVEGATE_SPRING_PAIRED=1 go test ./cmd/weavegate -run '^TestSpringMatchingPairedReplay\$' -v -count=1 -timeout 25m"
+          printf '%s' "$command" > "$evidence/command.txt"
+          WEAVEGATE_SPRING_PAIRED=1 go test ./cmd/weavegate -run '^TestSpringMatchingPairedReplay$' -v -count=1 -timeout 25m | tee "$evidence/paired.log"
+          grep -F 'SPRING_EXPLORE_RESULT variant=vulnerable exit=2 diagnostic=WG001 schedule=sch_7dcb74b1e506 repeat=20 flaky=false saved=byte_identical' "$evidence/paired.log"
+          grep -F 'SPRING_REPLAY_RESULT schedule=sch_7dcb74b1e506 variant=vulnerable repeat=20 exit=2 diagnostic=WG001 violation_runs=20 flaky=false' "$evidence/paired.log"
+          grep -F 'SPRING_REPLAY_RESULT schedule=sch_7dcb74b1e506 variant=fixed repeat=20 exit=0 verdict=PASS violation_runs=0 blocked_runs=20 flaky=false' "$evidence/paired.log"
+          grep -F 'SPRING_ROLLBACK_RESULT exit=0 assignments=0 jvm=reaped connections=closed' "$evidence/paired.log"
+          grep -F 'SPRING_DEATH_RESULT exit=5 fault=session assignments=0 jvm=reaped connections=closed' "$evidence/paired.log"
+          grep -F 'SPRING_CANCEL_RESULT during=locking_read exit=130 jvm=reaped connections=closed' "$evidence/paired.log"
+          grep -F 'SPRING_LIFECYCLE_RESULT resets=checked blocked=observed rollback=rolled_back death=rolled_back cancel=cleaned jvm=reaped connections=closed snapshots=removed' "$evidence/paired.log"
+
+      - name: Download the isolated Go and Java acceptance from this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name external-go-evidence --dir paired-evidence/go
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name external-java-evidence --dir paired-evidence/java
+
+      - name: Record and require complete paired acceptance
+        run: |
+          evidence=paired-evidence
+          python3 scripts/test-external-sut-paired-results.py | tee "$evidence/accounting.log"
+          grep -F 'EXTERNAL_SUT_PAIRED_RECORD_TEST_RESULT markers=required isolated=complete_same_revision failures=rejected' "$evidence/accounting.log"
+          python3 scripts/record-external-sut-paired-results.py \
+            --log "$evidence/paired.log" --output "$evidence/paired.json" \
+            --go-manifest "$evidence/go/go.json" --java-manifest "$evidence/java/java.json" \
+            --revision "$GITHUB_SHA" \
+            --command "$(cat "$evidence/command.txt")" \
+            --build-tool "$(sdk/java/mvnw -B -v | head -n 1)"
+          python3 scripts/check-external-sut-acceptance.py --results "$evidence/paired.json" --require-complete
+
+      - name: Upload paired Spring evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: external-spring-evidence
+          path: paired-evidence/
+
   external-links:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: external links
