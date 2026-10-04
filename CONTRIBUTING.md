@@ -345,7 +345,11 @@ decision requires a human to inspect the complete behavior.
    `fixtures/matching-slice/.weavegate/config.yaml` path matches the
    [Quickstart run example](docs/quickstart.md#2-reproduce-the-violation).
 8. Confirm that the release workflow will use that CHANGELOG section as its
-   release notes, then create the tag manually. The workflow publishes that
+   release notes. Check that the Java Central bundle smoke job passed for the
+   tagged commit and that the namespace, signing key, and token prerequisites
+   in [`docs/maintainers/java-publication.md`](docs/maintainers/java-publication.md)
+   are ready; the tag also triggers immutable Java publication. Then create
+   the tag manually. The workflow publishes that
    section as the release body and verifies the remote body before succeeding;
    retries replace the body from CHANGELOG, so manual edits are not the source
    of truth. Do not tag if any earlier item is incomplete.
@@ -353,8 +357,14 @@ decision requires a human to inspect the complete behavior.
    `.lycheeignore` so the compare and release URLs return to external-link
    validation.
 10. After the tag and release artifacts exist, add the release badge and
-   CHANGELOG link to the README. Never advertise a release that has not been
-   published.
+    CHANGELOG link to the README. Never advertise a release that has not been
+    published.
+11. After a prerelease tag, compile a scratch Maven project and a scratch
+    Gradle project outside this repository against the published
+    `io.github.weavegate:weavegate-spring:<version>` coordinate from their
+    default repositories. Compare that version with the CLI release from the
+    same tag and retain the commands and output. See the
+    [Java publication procedure](docs/maintainers/java-publication.md).
 
 For the planned `v0.2.0` action listing, also follow the
 [action publication procedure](docs/maintainers/action-publication.md).

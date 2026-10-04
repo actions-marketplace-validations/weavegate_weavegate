@@ -502,6 +502,37 @@ jobs:
           name: external-go-evidence
           path: external-evidence/
 
+  java-central-bundle:
+    if: github.event_name != 'schedule'
+    name: Java Central bundle (no upload)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build and verify the unpublished artifact set
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/java-central-gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          gpg --batch --pinentry-mode loopback --passphrase '' \
+            --quick-generate-key 'weavegate CI <ci@weavegate.invalid>' default default never
+          python3 scripts/java-central.py set-version 0.2.0-rc.1
+          (cd sdk/java && ./mvnw -B -Pcentral-release -Dmaven.test.skip=true clean verify)
+          python3 scripts/java-central.py build-bundle 0.2.0-rc.1
+          python3 scripts/java-central.py verify 0.2.0-rc.1 | tee "$RUNNER_TEMP/java-central-result.log"
+          grep -F 'JAVA_CENTRAL_BUNDLE_RESULT version=0.2.0-rc.1 artifacts=4 signatures=valid checksums=valid metadata=valid upload=skipped' \
+            "$RUNNER_TEMP/java-central-result.log"
+
   external-java:
     if: github.event_name != 'schedule'
     name: external Java peer (isolated acceptance)

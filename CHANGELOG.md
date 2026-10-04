@@ -16,6 +16,10 @@ workflow fails before publication if the placeholder remains.
 
 ### Added
 
+- Future CLI release tags also publish the matching Java Spring integration as
+  `io.github.weavegate:weavegate-spring:<version>` to Maven Central, with source
+  and Javadoc archives. `docs/reference/external-sut-java.md` shows Maven and
+  Gradle declarations; publication begins only after a tagged release run.
 - A composite GitHub Action at the repository root that gates a job with a
   published weavegate release. It verifies the release archive against that
   release's `checksums.txt`, runs the selected configuration and scenario,
