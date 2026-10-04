@@ -80,3 +80,4 @@ Use these notes when maintaining repository-facing documentation and visuals.
 
 - [README editorial and visual maintenance](maintainers/readme-maintenance.md) — Follow the content, evidence, and visual contracts for focused README updates.
 - [Action release and Marketplace publication](maintainers/action-publication.md) — Prepare exact-tag CLI defaults, prerelease adoption evidence, and manual final-release publication.
+- [Java Spring publication](maintainers/java-publication.md) — Prepare Maven Central credentials, verify signed bundles, and check prerelease dependency resolution.

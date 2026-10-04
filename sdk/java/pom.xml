@@ -18,6 +18,7 @@
   <version>0.0.0-SNAPSHOT</version>
   <name>weavegate Spring instrumentation</name>
   <description>Opt-in Spring Boot peer for the weavegate external SUT protocol v1.</description>
+  <url>https://github.com/weavegate/weavegate</url>
 
   <licenses>
     <license>
@@ -25,6 +26,18 @@
       <url>https://www.apache.org/licenses/LICENSE-2.0</url>
     </license>
   </licenses>
+  <developers>
+    <developer>
+      <id>weavegate</id>
+      <name>weavegate maintainers</name>
+      <url>https://github.com/weavegate</url>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git:https://github.com/weavegate/weavegate.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/weavegate/weavegate.git</developerConnection>
+    <url>https://github.com/weavegate/weavegate</url>
+  </scm>
 
   <properties>
     <java.version>21</java.version>
@@ -112,4 +125,53 @@
       </plugin>
     </plugins>
   </build>
+
+  <!-- Ordinary development and acceptance builds never run the release packaging plugins. -->
+  <profiles>
+    <profile>
+      <id>central-release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <version>3.4.0</version>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals><goal>jar-no-fork</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>3.11.2</version>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <goals><goal>jar</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.8</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals><goal>sign</goal></goals>
+              </execution>
+            </executions>
+            <configuration>
+              <bestPractices>true</bestPractices>
+              <ascDirectory>${project.build.directory}</ascDirectory>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

@@ -2,8 +2,10 @@
 
 [`sdk/java`](../../sdk/java/) implements the Java peer of
 [wire v1](external-sut-v1.md) for an explicitly instrumented Spring Boot test
-application. Its isolated Java acceptance gate passes on the pinned stack. It
-is not published as a package. The CLI can launch a prebuilt application JAR
+application. Its isolated Java acceptance gate passes on the pinned stack.
+The release workflow is configured to publish it to Maven Central from future
+release tags; no Java coordinate is available until that first publication.
+The CLI can launch a prebuilt application JAR
 through [external configuration](config.md#external-jvm); paired live
 Spring/MySQL replay remains under
 [#111](https://github.com/weavegate/weavegate/issues/111).
@@ -49,6 +51,33 @@ parent's dependency management; the build fails on other Java or Maven versions.
 
 Test-only dependencies are Spring Boot's test starter, the JUnit launcher API
 for execution evidence and Testcontainers for a real MySQL 8.4 server.
+
+Once a release tag has completed [Java publication](../maintainers/java-publication.md),
+use the version printed by `weavegate --version` for the same tag in either build
+tool. Maven Central is already in their default repository set; `<release-version>`
+is a placeholder, not an available version:
+
+```xml
+<dependency>
+  <groupId>io.github.weavegate</groupId>
+  <artifactId>weavegate-spring</artifactId>
+  <version>&lt;release-version&gt;</version>
+</dependency>
+```
+
+```kotlin
+dependencies {
+    implementation("io.github.weavegate:weavegate-spring:<release-version>")
+}
+```
+
+The library is compiled for Java 21 and uses the pinned Spring Boot 4.0.8
+dependency baseline above. Its published POM declares the runtime dependencies;
+Maven and Gradle resolve those transitively. The artifact and its sources are
+Apache-2.0 licensed. Dependency licenses are recorded by each dependency's own
+POM and distribution, so an adopting application must include those dependencies
+in its own attribution review. The repository's `NOTICE` inventories Go modules
+linked into the CLI; it is not the Java artifact's dependency inventory.
 
 ## Opting in
 
