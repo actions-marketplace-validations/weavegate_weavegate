@@ -1,0 +1,21 @@
+{
+  "id": "sch_7dcb74b1e506",
+  "steps": [
+    {
+      "worker": "w1",
+      "point": "after_read_request"
+    },
+    {
+      "worker": "w1",
+      "point": "before_insert_assignment"
+    },
+    {
+      "worker": "w2",
+      "point": "after_read_request"
+    },
+    {
+      "worker": "w2",
+      "point": "before_insert_assignment"
+    }
+  ]
+}

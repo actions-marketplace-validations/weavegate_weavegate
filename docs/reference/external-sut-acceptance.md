@@ -3,9 +3,10 @@
 The accounting tool records what the external SUT implementations still need to
 prove. It does not run an adapter, interpret lifecycle events, or certify a
 transaction, deadline or process exit. The checked-in Go, Java and paired
-manifests contain no execution evidence and cannot pass the implementation gate.
+manifests contain no execution evidence and cannot pass the implementation gate;
+CI publishes filled manifests separately.
 This accounting contract was added under [#121](https://github.com/weavegate/weavegate/issues/121).
-The isolated consumers and live paired run report evidence separately.
+The isolated consumers and the live paired run report evidence separately.
 
 ## Reviewed input and ownership
 
@@ -151,5 +152,40 @@ Smoke CI tests rejection paths, checks the fixed
 `EXTERNAL_SUT_ACCOUNTING_TEST_RESULT` marker with `grep -F`, validates the three
 incomplete templates and proves they fail the strict gate. These checks are not
 adapter acceptance. Separate Go and Java smoke jobs record runtime manifests
-and apply `--require-complete`. Live paired acceptance remains under #111;
-paired evidence must link accepted Go and Java manifests at the same pin.
+and apply `--require-complete`. The `external Spring replay (paired
+acceptance)` job runs the live paired test, links the Go and Java manifests
+from the same workflow run, records the paired manifest and applies
+`--require-complete`; see [Recording paired evidence](#recording-paired-evidence).
+
+## Recording paired evidence
+
+Both paired rows have one check, `observe/evidence`. The paired recorder passes
+them only when all of the following hold:
+
+- the log shows `TestSpringMatchingPairedReplay` passed, with no failure or
+  skip, and each fixed result marker appears exactly once with the recorded
+  repetition count;
+- one environment record names the Go, Java, MySQL 8.4, Spring Boot, Spring
+  Framework, `spring-jdbc`, Connector/J, HikariCP and Java integration versions
+  that the run used;
+- the Go and Java isolated manifests are complete at the same vector pin and the
+  same implementation revision as the paired run, and sit inside the paired
+  evidence directory, so the manifest can reference them.
+
+The test and the recorder's rejection paths run from the repository root. The
+live test needs Docker and the built fixture JAR (see the
+[fixture README](../../fixtures/spring-matching/README.md)):
+
+```bash
+WEAVEGATE_SPRING_PAIRED=1 go test ./cmd/weavegate -run '^TestSpringMatchingPairedReplay$' -v -count=1 -timeout 25m
+python3 scripts/test-external-sut-paired-results.py
+python3 scripts/record-external-sut-paired-results.py --log <dir>/paired.log \
+  --go-manifest <dir>/go/go.json --java-manifest <dir>/java/java.json \
+  --output <dir>/paired.json --revision <full-sha> --command '<exact test command>' \
+  --build-tool "$(sdk/java/mvnw -B -v | head -n 1)"
+python3 scripts/check-external-sut-acceptance.py --results <dir>/paired.json --require-complete
+```
+
+The recorder does not re-judge verdicts. The markers come from the test, which
+reads the CLI's exit codes and saved artifacts. The checked-in paired template
+stays incomplete.

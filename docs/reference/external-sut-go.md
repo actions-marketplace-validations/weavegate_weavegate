@@ -130,4 +130,4 @@ review evidence, subject to the review limits in the
 boundary](fixture-connection.md) rejects Reset after a failed Stop or latched
 session fault. CLI launch/budget composition is recorded in
 [ADR 0016](../adr/0016-external-cli-composition.md); live paired MySQL evidence
-remains [#111](https://github.com/weavegate/weavegate/issues/111).
+is recorded in [Spring paired replay](../experiments/spring-replay.md).

@@ -26,10 +26,10 @@ Use these pages when you need the exact CLI, configuration, artifact, or diagnos
 - [Fixture application connection descriptor](reference/fixture-connection.md) — Consume the prepared database's application endpoint without leaking its ephemeral credential.
 - [Report schema](reference/report-schema.md) — Consume run artifacts without guessing their fields or stability guarantees.
 - [Adapter outcomes](reference/adapter-outcomes.md) — Invocation streams, session faults, cancellation boundaries, and reproducible Go evidence.
-- [External SUT wire v1 (proposed)](reference/external-sut-v1.md) — Review the child-process protocol and its enabled CLI boundary.
+- [External SUT wire v1](reference/external-sut-v1.md) — Review the child-process protocol and its enabled CLI boundary.
 - [Go external SUT adapter](reference/external-sut-go.md) — Inspect the Go peer and its isolated acceptance evidence.
-- [Java Spring external SUT peer (in development)](reference/external-sut-java.md) — Opt into Spring instrumentation and inspect the Java peer's evidence and remaining acceptance.
-- [External SUT conformance (proposed)](reference/external-sut-conformance.md) — Share protocol vectors, lifecycle sequences, and implementation acceptance checks.
+- [Java Spring external SUT peer](reference/external-sut-java.md) — Opt into Spring instrumentation on the pinned baseline and inspect the Java peer's evidence.
+- [External SUT conformance](reference/external-sut-conformance.md) — Share protocol vectors, lifecycle sequences, and implementation acceptance checks.
 - [External SUT acceptance accounting](reference/external-sut-acceptance.md) — Pin shared vectors and account for per-target handlers, results, and missing runtime evidence.
 - [WG001](reference/diagnostics/WG001.md) — Understand evidence for an invariant violation under a controlled schedule.
 - [WG090](reference/diagnostics/WG090.md) — Diagnose a determinism check that produced inconsistent normalized evidence.
@@ -73,6 +73,7 @@ Use these experiments for reproduced observations; their measured values are tie
 - [Replay determinism](experiments/determinism.md) — Inspect repeated evidence from the saved matching-slice schedule.
 - [Schedule exploration](experiments/exploration.md) — Review which candidates reproduce the invariant violation and how they were enumerated.
 - [Baseline comparison](experiments/baseline-comparison.md) — Compare uncontrolled baseline detection with controlled schedule replay.
+- [Spring paired replay](experiments/spring-replay.md) — Reproduce the Spring Boot vulnerable and fixed replay against MySQL and its JVM-per-schedule run time.
 
 ## Maintainer notes
 

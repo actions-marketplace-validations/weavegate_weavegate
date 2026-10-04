@@ -1,6 +1,6 @@
 # ADR 0010: External SUT protocol and Spring transaction lifecycle
 
-- Status: Accepted — external CLI selection implemented; paired Spring evidence pending
+- Status: Accepted — external CLI selection implemented; paired Spring/MySQL replay recorded for the pinned baseline
 - Date: 2026-09-08
 - Issue: [#107](https://github.com/weavegate/weavegate/issues/107)
 - Inspected baseline: `078474f94cad6d1c1ffde0d44fada6853f769a97`
@@ -12,8 +12,10 @@ At the proposal date, [`sut.Adapter`](../../internal/sut/sut.go) was a Go interf
 configuration accepted only `gonative`. Spring support required a transport
 boundary without transferring schedule control or verdict logic to the SUT.
 This record selected the boundary; its later implementation adds CLI
-configuration under [ADR 0016](0016-external-cli-composition.md). It does not
-claim completed paired Spring acceptance.
+configuration under [ADR 0016](0016-external-cli-composition.md). Paired
+Spring/MySQL acceptance for one synthetic fixture on the pinned baseline was
+recorded later under [#111](https://github.com/weavegate/weavegate/issues/111);
+see [Spring paired replay](../experiments/spring-replay.md).
 
 ## Decision
 
@@ -44,7 +46,7 @@ transport mode is implemented alongside this one.
 
 ## Spring ownership and completion
 
-Proposed initial support is Java 21, Spring Boot 4.0.x with its managed Spring
+Initial support is Java 21, Spring Boot 4.0.x with its managed Spring
 Framework 7.0.x dependencies, and MySQL 8.4. This is a deliberately narrow test
 matrix, not a claim to cover all compatible JDKs or Boot releases. Boot 4's
 upstream Java minimum is 17; choosing 21 here is a project baseline decision.
@@ -56,8 +58,9 @@ at implementation time, revise this proposal before claiming support.
 Use Boot's JDBC starter for JDBC and pool integration, its managed Connector/J
 for MySQL, and its managed Jackson JSON implementation for the protocol codec.
 An explicit `DataSourceTransactionManager` controls the one fixture DataSource.
-These are proposed Java dependencies with defined purposes; no dependency is
-added by this ADR. Standard Java process streams and Go's standard library
+These Java dependencies have defined purposes; the ADR itself adds none. The
+[Java peer reference](../reference/external-sut-java.md#supported-baseline)
+records the pinned patch versions. Standard Java process streams and Go's standard library
 suffice for transport. No web starter, messaging broker, or instrumentation
 agent is needed.
 
@@ -161,5 +164,8 @@ terminal to finish a schedule.
 
 External CLI selection is implemented. The
 [shared checklist](../reference/external-sut-conformance.md#implementation-checklist)
-still governs complete language and paired acceptance; this ADR alone is not
-evidence that either peer has passed every conformance case.
+governs language and paired acceptance; this ADR alone is not evidence that
+either peer has passed every conformance case. The paired evidence covers one
+synthetic two-worker fixture on the pinned versions. It is release evidence for
+that path, not a claim of general race detection or of other JDK, Boot, driver
+or database versions.

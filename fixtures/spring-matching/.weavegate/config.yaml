@@ -1,0 +1,66 @@
+target:
+  db: mysql:8.4
+  schema:
+    migrations: ../db/migration
+    seed: ../db/seed.sql
+  sut:
+    adapter: external
+    variant: vulnerable
+    external:
+      java: java
+      # Built by `sdk/java/mvnw -f fixtures/spring-matching/app/pom.xml package`;
+      # see ../README.md.
+      jar: ../app/target/spring-matching.jar
+      capacity: 2
+      startup_timeout_ms: 30000
+      cancel_timeout_ms: 5000
+      stop_timeout_ms: 20000
+scenarios:
+  concurrent-assign:
+    workers:
+      - id: w1
+        command: assign
+        args:
+          request_id: "42"
+      - id: w2
+        command: assign
+        args:
+          request_id: "42"
+    sync_points:
+      - after_read_request
+      - before_insert_assignment
+  # Lifecycle probes: the same workflow, then a transaction failure or JVM
+  # death before commit. They are not part of the vulnerable/fixed evidence.
+  assign-then-fail:
+    workers:
+      - id: w1
+        command: assign_then_fail
+        args:
+          request_id: "42"
+    sync_points:
+      - after_read_request
+      - before_insert_assignment
+  assign-then-halt:
+    workers:
+      - id: w1
+        command: assign_then_halt
+        args:
+          request_id: "42"
+    sync_points:
+      - after_read_request
+      - before_insert_assignment
+oracle:
+  assertions:
+    - id: active-assignment-is-unique
+      sql: |
+        SELECT
+            project_request_id,
+            COUNT(*) AS active_assignment_count
+        FROM assignment
+        WHERE status = 'ACTIVE'
+        GROUP BY project_request_id
+        HAVING COUNT(*) > 1
+        ORDER BY project_request_id;
+      expect_rows: 0
+run:
+  arrive_timeout_ms: 1000

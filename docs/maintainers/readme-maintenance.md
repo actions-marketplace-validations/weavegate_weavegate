@@ -59,6 +59,8 @@ them together. Every quantitative table row links directly to its experiment:
   `docs/experiments/exploration.md#reproduction`;
 - fixed-variant replay when needed:
   `docs/experiments/determinism.md#repeated-result`.
+- Spring Boot external JVM replay:
+  `docs/experiments/spring-replay.md#repeated-paired-test`.
 
 Retain an evidence-boundary row in both the SVG and table. Never turn a fixture
 measurement into a general detection rate, benchmark, or performance claim.

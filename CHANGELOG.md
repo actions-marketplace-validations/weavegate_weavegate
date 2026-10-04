@@ -20,6 +20,13 @@ workflow fails before publication if the placeholder remains.
   `io.github.weavegate:weavegate-spring:<version>` to Maven Central, with source
   and Javadoc archives. `docs/reference/external-sut-java.md` shows Maven and
   Gradle declarations; publication begins only after a tagged release run.
+- A synthetic Spring Boot fixture, `fixtures/spring-matching`, replays a saved
+  schedule through the external JVM path against MySQL 8.4. Its vulnerable
+  variant reports `WG001` with exit 2 and its `SELECT ... FOR UPDATE` variant
+  passes with exit 0 in each of 20 repetitions, on Java 21, Spring Boot 4.0.8,
+  Spring Framework 7.0.9 and Connector/J 9.7.0. Each repetition starts a new
+  JVM. `docs/experiments/spring-replay.md` records the commands, versions and
+  measured run time; other applications and versions remain untested.
 - A composite GitHub Action at the repository root that gates a job with a
   published weavegate release. It verifies the release archive against that
   release's `checksums.txt`, runs the selected configuration and scenario,
