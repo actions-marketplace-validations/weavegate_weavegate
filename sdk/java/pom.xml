@@ -167,6 +167,7 @@
             </executions>
             <configuration>
               <bestPractices>true</bestPractices>
+              <ascDirectory>${project.build.directory}</ascDirectory>
             </configuration>
           </plugin>
         </plugins>
