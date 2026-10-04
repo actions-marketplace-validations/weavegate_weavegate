@@ -37,14 +37,15 @@ See [Limitations](docs/limitations.md) for replay and PASS boundaries.
 
 ## Results
 
-![Measured replay, control, and exploration results.](assets/readme/results.svg)
+![Measured replay, control, exploration, and Spring Boot replay results.](assets/readme/results.svg)
 
 | Measurement | Result |
 | --- | --- |
 | **Replay · 20/20 × 3** | Every saved replay violated ([source](docs/experiments/baseline-comparison.md#measured-result)). |
 | **Controls · 0/100 × 3** | Serial and 20/100 ms staggered runs did not ([source](docs/experiments/baseline-comparison.md#measured-result)). |
 | **Explore · 6 candidates** | Index 1 yielded `sch_7dcb74b1e506`; `flaky=false`; **25.5 s** ([source](docs/experiments/exploration.md#reproduction)). |
-| **Boundary · one fixture** | Measured hosts only; not a detection rate. |
+| **Spring · 20/20 + 20/20** | External JVM, same schedule: vulnerable `WG001`, fixed PASS ([source](docs/experiments/spring-replay.md#repeated-paired-test)). |
+| **Boundary · two fixtures** | Measured hosts and pinned versions only; not a detection rate. |
 
 See [Experiments](docs/README.md#measured-results) for methods and reproduction.
 
