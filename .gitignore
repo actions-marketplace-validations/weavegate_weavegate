@@ -11,3 +11,6 @@ baseline*.log
 
 # Java SDK build output
 /sdk/java/target/
+
+# Spring fixture build output
+/fixtures/spring-matching/app/target/
