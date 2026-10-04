@@ -22,6 +22,14 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   `io.github.weavegate:weavegate-spring:<version>` to Maven Central, with source
   and Javadoc archives. `docs/reference/external-sut-java.md` shows Maven and
   Gradle declarations; publication begins only after a tagged release run.
+- Configuration-only CLI selection of an owned external JVM adapter, with
+  launch, registration, and start-frame-size preflight, bounded startup/stop
+  composition, and external JAR provenance in the run manifest. Each JVM
+  launches a verified, self-contained JAR snapshot, and repeated sessions share
+  one wire run ID. Preflight validates and hashes one private JAR image, requires
+  one manifest with unique launch attributes in its main section, and rejects a
+  manifest `Class-Path` dependency; large named manifest sections remain valid.
+  A stalled snapshot copy does not hold the run past its deadline.
 - A synthetic Spring Boot fixture, `fixtures/spring-matching`, replays a saved
   schedule through the external JVM path against MySQL 8.4. Its vulnerable
   variant reports `WG001` with exit 2 and its `SELECT ... FOR UPDATE` variant
@@ -54,14 +62,6 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   lifecycle and wire vector, records observed evidence from repeated tests, and
   requires a complete manifest in smoke CI. The shared vector pin includes Go
   wire matrix cases and corrected startup cleanup observations.
-- Configuration-only CLI selection of an owned external JVM adapter, with
-  launch, registration, and start-frame-size preflight, bounded startup/stop
-  composition, and external JAR provenance in the run manifest. Each JVM
-  launches a verified, self-contained JAR snapshot, and repeated sessions share
-  one wire run ID. Preflight validates and hashes one private JAR image, requires
-  one manifest with unique launch attributes in its main section, and rejects a
-  manifest `Class-Path` dependency; large named manifest sections remain valid.
-  A stalled snapshot copy does not hold the run past its deadline.
 - A completed run whose diagnostic derivation fails now retains its evidence as
   `artifact_version` 3 and exits 5. Ordinary runs remain version 2, preserving
   the released meaning that version 2 `diagnostics: []` means derivation
