@@ -77,9 +77,11 @@ $ ./weavegate run --config fixtures/matching-slice/.weavegate/config.yaml --scen
 - **Replay ·** saved schedule — test vulnerable or fixed code.
 
 See [Installation](docs/install.md) for the archive, source, and go install
-routes, [Quickstart](docs/quickstart.md) for output and replay, and the
+routes, [Quickstart](docs/quickstart.md) for output and replay, the
 [GitHub Actions gate](docs/howto/ci-gate.md) to fail a job on a violation while
-retaining the report, replay schedule, and optional pull request comment.
+retaining the report, replay schedule, and optional pull request comment, and
+[Spring Boot adoption](docs/howto/adopt-spring-boot.md) to gate your own
+application.
 
 ## Contributing / License
 
