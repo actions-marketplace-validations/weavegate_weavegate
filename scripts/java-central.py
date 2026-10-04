@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Set a tag version, assemble and inspect a signed Central artifact set."""
+"""Set a tag version, assemble, verify, and publish a signed Central bundle."""
 
 import argparse
+import base64
 import hashlib
+import io
+import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -16,6 +25,7 @@ GROUP = "io.github.weavegate"
 ARTIFACT = "weavegate-spring"
 NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?")
+CENTRAL_URL = "https://central.sonatype.com"
 
 
 def require(condition, message):
@@ -123,7 +133,52 @@ def verify_bundle(bundle, target):
                             require("index.html" in members, "Javadoc JAR lacks index")
                         else:
                             require(any(item.endswith("/Weavegate.class") for item in members), "binary JAR lacks API")
-    print(f"JAVA_CENTRAL_BUNDLE_RESULT version={target} artifacts=4 signatures=valid checksums=valid metadata=valid upload=skipped")
+
+
+def publish_bundle(bundle, target, username, password, base_url=CENTRAL_URL):
+    # Verify and upload the same in-memory bytes. A second Maven invocation would
+    # rebuild the artifacts and could upload a different, unverified bundle.
+    data = bundle.read_bytes()
+    verify_bundle(io.BytesIO(data), target)
+    token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    boundary = "weavegate-" + uuid.uuid4().hex
+    body = (f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="bundle"; filename="central-bundle.zip"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n").encode("ascii") + data + f"\r\n--{boundary}--\r\n".encode("ascii")
+    headers = {"Authorization": f"Bearer {token}",
+               "Content-Type": f"multipart/form-data; boundary={boundary}"}
+    upload = urllib.request.Request(
+        base_url + "/api/v1/publisher/upload?" + urllib.parse.urlencode({
+            "name": f"{ARTIFACT}-{target}", "publishingType": "AUTOMATIC"}),
+        data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(upload, timeout=60) as response:
+        require(response.status == 201, f"Central upload returned HTTP {response.status}")
+        deployment_id = response.read().decode("ascii").strip()
+    try:
+        uuid.UUID(deployment_id)
+    except ValueError as error:
+        raise ValueError("Central returned an invalid deployment ID") from error
+
+    deadline = time.monotonic() + 1800
+    status_url = base_url + "/api/v1/publisher/status?" + urllib.parse.urlencode({"id": deployment_id})
+    while True:
+        status = urllib.request.Request(status_url, data=b"",
+                                        headers={"Authorization": f"Bearer {token}"}, method="POST")
+        with urllib.request.urlopen(status, timeout=60) as response:
+            require(response.status == 200, f"Central status returned HTTP {response.status}")
+            result = json.load(response)
+        require(isinstance(result, dict), "invalid Central status response")
+        require(result.get("deploymentId") == deployment_id, "Central status returned another deployment")
+        state = result.get("deploymentState")
+        if state == "PUBLISHED":
+            purl = f"pkg:maven/{GROUP}/{ARTIFACT}@{target}"
+            require(purl in (result.get("purls") or []), "published deployment lacks expected coordinate")
+            print(f"JAVA_CENTRAL_PUBLISH_RESULT version={target} deployment={deployment_id} state=published")
+            return
+        require(state in ("PENDING", "VALIDATING", "PUBLISHING"),
+                f"Central deployment did not publish: {state}")
+        require(time.monotonic() < deadline, "timed out waiting for Central publication")
+        time.sleep(min(15, max(0, deadline - time.monotonic())))
 
 
 def main():
@@ -139,15 +194,25 @@ def main():
     verifier = commands.add_parser("verify")
     verifier.add_argument("version")
     verifier.add_argument("--bundle", type=Path, default=Path("sdk/java/target/central-publishing/central-bundle.zip"))
+    publisher = commands.add_parser("publish")
+    publisher.add_argument("version")
+    publisher.add_argument("--bundle", type=Path, default=Path("sdk/java/target/central-publishing/central-bundle.zip"))
     args = parser.parse_args()
     try:
         if args.command == "set-version":
             set_version(args.pom, args.version)
         elif args.command == "build-bundle":
             build_bundle(args.version, args.target, args.bundle)
-        else:
+        elif args.command == "verify":
             verify_bundle(args.bundle, args.version)
-    except (ValueError, OSError, ET.ParseError, zipfile.BadZipFile) as error:
+            print(f"JAVA_CENTRAL_BUNDLE_RESULT version={args.version} artifacts=4 signatures=valid checksums=valid metadata=valid upload=skipped")
+        else:
+            username = os.environ.get("MAVEN_CENTRAL_USERNAME")
+            password = os.environ.get("MAVEN_CENTRAL_PASSWORD")
+            require(bool(username and password), "missing Central token credentials")
+            publish_bundle(args.bundle, args.version, username, password)
+    except (ValueError, OSError, ET.ParseError, zipfile.BadZipFile,
+            urllib.error.URLError, json.JSONDecodeError) as error:
         print(f"java-central: {error}", file=sys.stderr)
         return 1
     return 0

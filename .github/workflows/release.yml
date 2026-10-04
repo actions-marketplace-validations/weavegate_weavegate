@@ -95,24 +95,10 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           python3 scripts/java-central.py set-version "$version"
           export GNUPGHOME="$RUNNER_TEMP/java-central-gnupg"
-          settings="$RUNNER_TEMP/java-central-settings.xml"
-          trap 'rm -f "$settings"; rm -rf "$GNUPGHOME"' EXIT
+          trap 'rm -rf "$GNUPGHOME"' EXIT
           mkdir -m 700 "$GNUPGHOME"
           printf '%s' "$GPG_PRIVATE_KEY_B64" | base64 -d | gpg --batch --import >/dev/null 2>&1
-          cat > "$settings" <<'XML'
-          <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
-            <servers>
-              <server>
-                <id>central</id>
-                <username>${env.MAVEN_CENTRAL_USERNAME}</username>
-                <password>${env.MAVEN_CENTRAL_PASSWORD}</password>
-              </server>
-            </servers>
-          </settings>
-          XML
-          chmod 600 "$settings"
           (cd sdk/java && ./mvnw -B -Pcentral-release -Dmaven.test.skip=true clean verify)
           python3 scripts/java-central.py build-bundle "$version"
           python3 scripts/java-central.py verify "$version"
-          (cd sdk/java && ./mvnw -B -s "$settings" -Pcentral-release \
-            -Dmaven.test.skip=true -Dcentral.skipPublishing=false deploy)
+          python3 scripts/java-central.py publish "$version"

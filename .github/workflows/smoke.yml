@@ -532,6 +532,9 @@ jobs:
           python3 scripts/java-central.py verify 0.2.0-rc.1 | tee "$RUNNER_TEMP/java-central-result.log"
           grep -F 'JAVA_CENTRAL_BUNDLE_RESULT version=0.2.0-rc.1 artifacts=4 signatures=valid checksums=valid metadata=valid upload=skipped' \
             "$RUNNER_TEMP/java-central-result.log"
+          python3 scripts/test-java-central.py | tee "$RUNNER_TEMP/java-central-publish-test.log"
+          grep -F 'JAVA_CENTRAL_PUBLISH_TEST_RESULT uploaded=verified_bytes failed_bundle=blocked failed_status=blocked' \
+            "$RUNNER_TEMP/java-central-publish-test.log"
 
   external-java:
     if: github.event_name != 'schedule'

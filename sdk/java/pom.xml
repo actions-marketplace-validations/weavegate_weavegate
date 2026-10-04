@@ -46,8 +46,6 @@
     <!-- Repetition count for the evidence-producing tests; CI records 20. -->
     <weavegate.repetitions>1</weavegate.repetitions>
     <weavegate.evidence>${project.build.directory}/weavegate-evidence/java.log</weavegate.evidence>
-    <!-- Publishing requires an explicit -Dcentral.skipPublishing=false. -->
-    <central.skipPublishing>true</central.skipPublishing>
   </properties>
 
   <dependencies>
@@ -128,7 +126,7 @@
     </plugins>
   </build>
 
-  <!-- Ordinary development and acceptance builds never run the publishing plugins. -->
+  <!-- Ordinary development and acceptance builds never run the release packaging plugins. -->
   <profiles>
     <profile>
       <id>central-release</id>
@@ -169,18 +167,6 @@
             </executions>
             <configuration>
               <bestPractices>true</bestPractices>
-            </configuration>
-          </plugin>
-          <plugin>
-            <groupId>org.sonatype.central</groupId>
-            <artifactId>central-publishing-maven-plugin</artifactId>
-            <version>0.11.0</version>
-            <extensions>true</extensions>
-            <configuration>
-              <publishingServerId>central</publishingServerId>
-              <skipPublishing>${central.skipPublishing}</skipPublishing>
-              <autoPublish>true</autoPublish>
-              <waitUntil>published</waitUntil>
             </configuration>
           </plugin>
         </plugins>

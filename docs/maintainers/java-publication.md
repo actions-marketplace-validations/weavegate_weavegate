@@ -20,7 +20,7 @@ path; no version is available until a tagged run successfully publishes it.
    repository secrets: `MAVEN_CENTRAL_GPG_PRIVATE_KEY_B64` (base64-encoded
    private-key export), `MAVEN_CENTRAL_GPG_PASSPHRASE`,
    `MAVEN_CENTRAL_USERNAME`, and `MAVEN_CENTRAL_PASSWORD` (the token pair).
-   Never commit or upload the key, token, or generated Maven settings file.
+   Never commit or upload the key or token.
 3. Before the first tag, review the POM metadata, transitive dependencies,
    source and Javadoc JARs, and license attribution. Maven Central versions are
    immutable: a bad release needs a new version.
@@ -54,11 +54,14 @@ non-publishing build makes no portal request and needs no publishing secrets.
 ## After a prerelease tag
 
 The release job first publishes the CLI assets. The dependent Java job imports
-the signing key, creates a temporary Maven settings file from the token secrets,
-builds the complete artifact set without uploading, verifies it, then publishes
-with the same tag version. It waits for Maven Central to report the
-version published. The signing key and credentials stay in workflow secrets and
-temporary runner files; the bundle is not uploaded as a GitHub artifact.
+the signing key, builds the complete artifact set without uploading, and verifies
+the bundle. The publish command verifies the same ZIP bytes again, uploads those
+bytes through the [Central Publisher API](https://central.sonatype.org/publish/publish-portal-api/)
+with automatic publication, and waits for Central to report the expected
+coordinate as published. It does not rerun Maven after verification. The signing
+key is imported into a temporary GPG home, and the token is read from workflow
+secrets into process memory; neither is committed. The bundle is not uploaded
+as a GitHub artifact.
 
 From scratch projects outside this repository, use default Maven and Gradle
 repositories to resolve the published coordinate and compile a class importing
