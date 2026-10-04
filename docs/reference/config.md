@@ -87,6 +87,15 @@ target:
 | `capacity` | Required integer from 1 to 1024, at least the selected scenario's worker count. |
 | `startup_timeout_ms`, `cancel_timeout_ms`, `stop_timeout_ms` | Required positive integers at most 2147483647. Cancellation cannot exceed stop. |
 
+A Spring Boot executable JAR built by `spring-boot-maven-plugin` `repackage`
+meets these rules: its nested `BOOT-INF/lib` dependencies are inside the file
+and its manifest has no `Class-Path`. The
+[`spring-matching` fixture configuration](../../fixtures/spring-matching/.weavegate/config.yaml)
+is a complete external configuration with these keys. Its measured
+vulnerable and fixed replays, versions and run durations are in
+[Spring paired replay](../experiments/spring-replay.md); the external path has
+no measured evidence beyond that fixture and baseline.
+
 There are no configurable shell arguments, environment overrides, credentials,
 or wire-version switches. The fixture's application database account travels
 only in the private start frame. The selected scenario supplies sorted unique

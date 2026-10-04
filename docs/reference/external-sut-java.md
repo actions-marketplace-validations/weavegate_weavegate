@@ -1,4 +1,4 @@
-# Java Spring external SUT peer (in development)
+# Java Spring external SUT peer
 
 [`sdk/java`](../../sdk/java/) implements the Java peer of
 [wire v1](external-sut-v1.md) for an explicitly instrumented Spring Boot test
@@ -6,9 +6,10 @@ application. Its isolated Java acceptance gate passes on the pinned stack.
 The release workflow is configured to publish it to Maven Central from future
 release tags; no Java coordinate is available until that first publication.
 The CLI can launch a prebuilt application JAR
-through [external configuration](config.md#external-jvm); paired live
-Spring/MySQL replay remains under
-[#111](https://github.com/weavegate/weavegate/issues/111).
+through [external configuration](config.md#external-jvm). Paired live
+Spring/MySQL replay of the synthetic
+[`spring-matching` fixture](../../fixtures/spring-matching/README.md) passes on
+the baseline below; see [Spring paired replay](../experiments/spring-replay.md).
 [Issue #141](https://github.com/weavegate/weavegate/issues/141) defines this
 JDBC/SQL/Spring support matrix and its isolated acceptance evidence.
 The support contract below is for a trusted, reviewed fixture application on
@@ -309,7 +310,7 @@ observer executes each history and records its requirement row. The strict
 is isolated peer acceptance under [#109](https://github.com/weavegate/weavegate/issues/109);
 CLI launch and budget composition are recorded in
 [ADR 0016](../adr/0016-external-cli-composition.md); live paired MySQL
-evidence remains [#111](https://github.com/weavegate/weavegate/issues/111).
+evidence is recorded in [Spring paired replay](../experiments/spring-replay.md).
 
 At implementation revision `8a7e0686c93b76f064b8f886320f997ca62fa501`,
 this command ran 2,023 tests with zero failures, errors or skips:

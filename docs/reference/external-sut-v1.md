@@ -1,11 +1,14 @@
-# External SUT wire contract v1 (proposed)
+# External SUT wire contract v1
 
 This is v0.2.0 work from [ADR 0010](../adr/0010-external-sut-protocol.md).
 The CLI can select the external adapter using the
 [configuration reference](config.md#external-jvm). The
-[Go peer](external-sut-go.md) and [Java Spring peer](external-sut-java.md) are in
-development; neither complete acceptance gate has passed. Normative words describe what conforming implementations must
-do. Artifact versions and wire versions are
+[Go peer](external-sut-go.md) and [Java Spring peer](external-sut-java.md) each
+pass their isolated acceptance gate, and one synthetic Spring fixture has paired
+MySQL replay evidence on the pinned baseline; see
+[Spring paired replay](../experiments/spring-replay.md). That evidence does not
+cover other applications or versions. Normative words describe what conforming
+implementations must do. Artifact versions and wire versions are
 independent. [Shared conformance cases](external-sut-conformance.md) accompany
 this contract.
 

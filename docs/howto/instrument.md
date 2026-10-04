@@ -8,8 +8,9 @@ The CLI ships one built-in Go-native entrypoint and can launch an explicitly
 instrumented external JVM from [configuration](../reference/config.md#external-jvm).
 This guide explains the Go-native reference fixture's instrumentation pattern.
 For a Spring application, use the [Java peer's opt-in boundary](../reference/external-sut-java.md#opting-in)
-and the external config keys. The live paired Spring/MySQL replay remains
-[#111](https://github.com/weavegate/weavegate/issues/111).
+and the external config keys. The
+[`spring-matching` fixture](../../fixtures/spring-matching/README.md) applies
+the same two points to a Spring Boot application.
 
 ## Start from the contested decision
 

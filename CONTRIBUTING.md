@@ -318,7 +318,7 @@ Rules:
 
 Before tagging a release, the person creating it must complete this checklist
 manually. The release workflow mechanically verifies the date substitution in
-item 5; the behavioral and content checks remain manual because the release
+item 6; the behavioral and content checks remain manual because the release
 decision requires a human to inspect the complete behavior.
 
 1. Build the CLI from the exact commit to be tagged.
@@ -327,24 +327,43 @@ decision requires a human to inspect the complete behavior.
 3. Replay that same schedule against the `SELECT ... FOR UPDATE` variant and
    confirm PASS with exit 0. This is the required vulnerable → diagnostic → fix
    → PASS inspection.
-4. Regenerate `NOTICE` with `./scripts/gen-notice.sh`, as recorded in its
+4. Build the Java integration and the instrumented
+   [`spring-matching`](fixtures/spring-matching/README.md) fixture JAR from the
+   same commit, then repeat the inspection through the external JVM path with
+   the committed Spring schedule. Confirm `WG001`, the violating row, and exit 2
+   for `vulnerable`, then PASS and exit 0 for `fixed`:
+
+   ```bash
+   (cd sdk/java && ./mvnw -B -Dmaven.test.skip=true install)
+   sdk/java/mvnw -B -f fixtures/spring-matching/app/pom.xml package
+   ./weavegate run --config fixtures/spring-matching/.weavegate/config.yaml \
+     --scenario concurrent-assign --variant vulnerable \
+     --replay fixtures/spring-matching/schedules/concurrent-assign.json
+   ./weavegate run --config fixtures/spring-matching/.weavegate/config.yaml \
+     --scenario concurrent-assign --variant fixed \
+     --replay fixtures/spring-matching/schedules/concurrent-assign.json
+   ```
+
+   Also confirm that the `external Spring replay (paired acceptance)` smoke job
+   passed for the tagged commit.
+5. Regenerate `NOTICE` with `./scripts/gen-notice.sh`, as recorded in its
    header. If the file changes, commit the updated inventory in the same pull
    request; otherwise, continue with the existing inventory.
-5. Replace the `YYYY-MM-DD` placeholder in the matching
+6. Replace the `YYYY-MM-DD` placeholder in the matching
    [`CHANGELOG.md`](CHANGELOG.md) release heading with the actual tag date. The
    release workflow verifies the substitution and fails before publishing
    anything if it is missing. Manually verify that the section contains only
    changes already merged into the tag.
-6. Read the README as it will appear in the tagged archive and confirm that
+7. Read the README as it will appear in the tagged archive and confirm that
    every release-status statement remains true after the tag is published.
-7. Create a dry-run archive with
+8. Create a dry-run archive with
    `goreleaser release --snapshot --clean --skip=publish`, inspect it with
    `tar -tzf`, and extract it. Confirm that extraction creates one top-level
    directory, the [release-archive installation commands](docs/install.md#from-a-release-archive)
    work from inside it, and the bundled
    `fixtures/matching-slice/.weavegate/config.yaml` path matches the
    [Quickstart run example](docs/quickstart.md#2-reproduce-the-violation).
-8. Confirm that the release workflow will use that CHANGELOG section as its
+9. Confirm that the release workflow will use that CHANGELOG section as its
    release notes. Check that the Java Central bundle smoke job passed for the
    tagged commit and that the namespace, signing key, and token prerequisites
    in [`docs/maintainers/java-publication.md`](docs/maintainers/java-publication.md)
@@ -353,13 +372,13 @@ decision requires a human to inspect the complete behavior.
    section as the release body and verifies the remote body before succeeding;
    retries replace the body from CHANGELOG, so manual edits are not the source
    of truth. Do not tag if any earlier item is incomplete.
-9. After the tag and release exist, remove their two temporary entries from
+10. After the tag and release exist, remove their two temporary entries from
    `.lycheeignore` so the compare and release URLs return to external-link
    validation.
-10. After the tag and release artifacts exist, add the release badge and
+11. After the tag and release artifacts exist, add the release badge and
     CHANGELOG link to the README. Never advertise a release that has not been
     published.
-11. After a prerelease tag, compile a scratch Maven project and a scratch
+12. After a prerelease tag, compile a scratch Maven project and a scratch
     Gradle project outside this repository against the published
     `io.github.weavegate:weavegate-spring:<version>` coordinate from their
     default repositories. Compare that version with the CLI release from the

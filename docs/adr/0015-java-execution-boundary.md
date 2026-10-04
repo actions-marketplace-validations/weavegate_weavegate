@@ -1,6 +1,6 @@
 # ADR 0015: Java application execution boundary
 
-- Status: Accepted; isolated Java acceptance passed, CLI and paired replay pending
+- Status: Accepted; isolated Java acceptance and paired Spring/MySQL replay recorded
 - Date: 2026-09-24
 - Issue: [#141](https://github.com/weavegate/weavegate/issues/141)
 
@@ -56,5 +56,6 @@ The isolated Java gate can establish behavior only for the reviewed finite
 cases and pinned MySQL, Spring, driver, and pool versions. Repeating a suite
 cannot fill missing shared wire cases. CLI composition is recorded in
 [ADR 0016](0016-external-cli-composition.md), and fixture quarantine was
-implemented under #120. Paired live replay remains #111; this boundary does
-not claim its evidence.
+implemented under #120. Paired live replay of one reviewed fixture is
+recorded under #111 in [Spring paired replay](../experiments/spring-replay.md);
+it does not widen this boundary.

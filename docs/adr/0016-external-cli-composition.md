@@ -56,5 +56,6 @@ schedule lookup; it has no embedded schedule registry. Wire cancellation and
 session faults remain run errors, and uncertain cleanup quarantines the fixture
 under the existing engine rule. The mini JVM CLI integration test establishes
 configuration-only launch and replay composition. It is not Spring/JDBC
-acceptance; the live paired MySQL evidence is tracked by
-[#111](https://github.com/weavegate/weavegate/issues/111).
+acceptance; the live paired MySQL evidence is recorded by
+[#111](https://github.com/weavegate/weavegate/issues/111) in
+[Spring paired replay](../experiments/spring-replay.md).

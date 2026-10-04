@@ -1,11 +1,13 @@
-# External SUT v1 conformance plan (proposed)
+# External SUT v1 conformance plan
 
 These are constructed design examples for the
 [v1 wire contract](external-sut-v1.md), not captured output or passing tests.
 The [Go peer](external-sut-go.md) has complete isolated acceptance: all 72
 applicable rows pass the strict gate. The [Java Spring peer](external-sut-java.md)
-and live paired targets still have incomplete acceptance. The Go reference
-documents the commands that reproduce the isolated evidence. The shared
+has complete isolated acceptance: all 60 applicable rows pass. Both live paired
+rows pass in CI for one synthetic Spring fixture; see
+[Spring paired replay](../experiments/spring-replay.md). Each reference
+documents the commands that reproduce its evidence. The shared
 [JSON vectors](testdata/external-sut-v1.json) are the common input for both
 implementations; do not fork language-specific copies of the protocol.
 [ADR 0010](../adr/0010-external-sut-protocol.md) lists the engine decisions that
@@ -209,8 +211,8 @@ Implementation prerequisites have explicit owners:
 | G1 fixture connection descriptor (resolved) | [#118](https://github.com/weavegate/weavegate/issues/118) and the [fixture connection contract](fixture-connection.md) | Real database provisioning for the external adapter |
 | G2 session faults, G5 unstarted outcomes, G6 operation cancellation (Go boundary resolved) | [#119](https://github.com/weavegate/weavegate/issues/119) and [adapter outcomes](adapter-outcomes.md) | External Go result mapping must consume the implemented boundary and prove wire conformance |
 | G3 quarantine and recovery after uncertain cleanup (Go boundary resolved) | [#120](https://github.com/weavegate/weavegate/issues/120) and the [fixture connection contract](fixture-connection.md) | External execution/repeat enablement still requires live peer evidence |
-| G4 launch, configuration and budget composition (resolved) | [ADR 0016](../adr/0016-external-cli-composition.md) and [#110](https://github.com/weavegate/weavegate/issues/110) | External CLI selection; live paired evidence remains #111 |
-| Executable assertion dispatch and remaining wire/lifecycle coverage | [#121](https://github.com/weavegate/weavegate/issues/121), implemented by #108/#109 | Language implementation acceptance; live paired evidence remains #111 |
+| G4 launch, configuration and budget composition (resolved) | [ADR 0016](../adr/0016-external-cli-composition.md) and [#110](https://github.com/weavegate/weavegate/issues/110) | External CLI selection; live paired evidence recorded by #111 |
+| Executable assertion dispatch and remaining wire/lifecycle coverage | [#121](https://github.com/weavegate/weavegate/issues/121), implemented by #108/#109 | Language implementation acceptance; live paired evidence recorded by #111 |
 
 The unresolved rows remain implementation gates. Go boundary tests do not prove
 external transport or Java transaction conformance.
