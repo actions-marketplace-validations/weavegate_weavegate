@@ -82,9 +82,11 @@ Connector/J with it:
 </dependency>
 ```
 
-The integration is inactive unless the JVM was started through its bootstrap
-in step 5. In the normal application, sync-points return immediately and
-nothing reads stdin or changes transactions.
+The dependency has compile scope, so the application's own executable JAR
+also contains `weavegate-spring` and its transitive dependencies. It is
+inactive unless the JVM was started through its bootstrap in step 5: in the
+normal application, sync-points return immediately and nothing reads stdin or
+changes transactions.
 
 ## 3. Mark the contested decision with sync-points
 
@@ -165,8 +167,8 @@ nothing unless weavegate started the JVM.
 ## 5. Build a second, instrumented JAR
 
 The CLI launches a self-contained executable JAR whose main class calls the
-bootstrap. Keep your production JAR as it is and build the instrumented one
-beside it. Add an entry point:
+bootstrap. Keep your production JAR's main class and build the instrumented
+JAR beside it. Add an entry point:
 
 ```java
 public final class WeavegateMain {
@@ -208,8 +210,10 @@ class:
 ```
 
 `./mvnw -B package` now writes `target/booking-0.0.1-SNAPSHOT.jar`, the
-unchanged application, and `target/booking-0.0.1-SNAPSHOT-weavegate.jar`, the
-child JVM for weavegate. Inside the child, the bootstrap starts a non-web
+application with its own main class, and
+`target/booking-0.0.1-SNAPSHOT-weavegate.jar`, the child JVM for weavegate.
+Both contain the same classes and dependencies, including `weavegate-spring`;
+only the main class differs. Inside the child, the bootstrap starts a non-web
 context and disables SQL initialization, Flyway and Liquibase, so the
 production datasource settings and migrations are not used.
 
@@ -279,7 +283,7 @@ key and its limits.
 
 ## 7. Reproduce the race locally
 
-Build the JARs, then let weavegate explore release orders of the two
+Build the JARs, then let weavegate explore candidate schedules for the two
 sync-points:
 
 ```bash
@@ -328,7 +332,9 @@ replay: weavegate run --config .weavegate/config.yaml --scenario double-booking 
 .weavegate/runs/run_20261004T132741.228467335Z_1c1a4f9fef11a646849c69865cac9208
 ```
 
-Exploring the fixed code again tries every release order:
+Exploring the fixed code again sweeps every candidate schedule. Exploration
+runs three passes by default, so the 18 below counts six candidates three
+times:
 
 ```text
 ## weavegate: PASS
@@ -337,8 +343,12 @@ flaky: false (repeat=20)
 .weavegate/runs/run_20261004T132922.275660269Z_d0c06ad844300cedc5f2f6925ab62d08
 ```
 
-Both exit 0. Each schedule run starts a new JVM, so an external run takes
-seconds per schedule. Add `.weavegate/runs/` to `.gitignore`.
+Both exit 0. A candidate is coordination intent, not a guaranteed release
+order: with `FOR UPDATE`, the second worker can wait in the database before it
+reaches its first sync-point, so not every candidate runs as written.
+[Limitations](../limitations.md#a-saved-schedule-is-coordination-intent)
+explains what a PASS covers. Each schedule run starts a new JVM, so an external
+run takes seconds per schedule. Add `.weavegate/runs/` to `.gitignore`.
 
 ## 8. Gate pull requests in GitHub Actions
 
@@ -419,20 +429,28 @@ these checks on its three commits:
 | --- | --- | --- | --- |
 | [`563b05d`](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/37206209214) | Vulnerable, exploration only | — | FAIL (WG001), `sch_6f1ffd61cc07` |
 | [`df6e07d`](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/37206482086) | Vulnerable, schedule committed | FAIL (WG001), replayed `sch_6f1ffd61cc07` | FAIL (WG001), `sch_6f1ffd61cc07` |
-| [`8950c8a`](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/37206624620) | `FOR UPDATE` fix | PASS, replayed `sch_6f1ffd61cc07` | PASS, 18 schedules exhausted |
+| [`8950c8a`](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/37206624620) | `FOR UPDATE` fix | PASS, replayed `sch_6f1ffd61cc07` | PASS, 6 candidates × 3 passes exhausted |
 
 ## 9. Replay CI evidence on another machine
 
-The pull request comment's replay section names the exact commands. From a
-fresh clone checked out at the revision the failing run tested, with the CLI
-from step 1 installed and the JARs built:
+The pull request comment's replay section names the exact commands for your
+run. From a fresh clone checked out at the revision the failing run tested,
+with the CLI from step 1 installed and the JARs built, download the artifact,
+import its schedule and run the report's `replay:` line:
 
 ```bash
-gh run download 37206209214 --repo weavegate/spring-boot-adoption-example --name weavegate-evidence --dir weavegate-evidence
+gh run download <run-id> --repo <owner>/<repository> --name weavegate-evidence --dir weavegate-evidence
 mkdir -p .weavegate/schedules
-cp weavegate-evidence/schedule.json .weavegate/schedules/sch_6f1ffd61cc07.json
-weavegate run --config .weavegate/config.yaml --scenario double-booking --variant main --replay sch_6f1ffd61cc07 --repeat 20
+cp weavegate-evidence/schedule.json .weavegate/schedules/<schedule-id>.json
+weavegate run --config .weavegate/config.yaml --scenario double-booking --variant main --replay <schedule-id> --repeat 20
 ```
+
+GitHub keeps workflow artifacts for a limited retention period, 90 days by
+default, so download evidence while it exists and commit a schedule you want to
+keep, as step 8 does. In the example, the run was `37206209214` and the
+schedule `sch_6f1ffd61cc07`; that artifact will expire, but the committed
+`.weavegate/schedules/sch_6f1ffd61cc07.json` replays the same schedule. The
+replay printed:
 
 ```text
 ## weavegate: FAIL (WG001)
