@@ -11,10 +11,13 @@ workflow fails before publication if the placeholder remains. Release-candidate
 and final release sections follow the rule in `CONTRIBUTING.md` under
 "Release-candidate CHANGELOG sections".
 
-[Unreleased]: https://github.com/weavegate/weavegate/compare/v0.1.0-alpha...HEAD
+[Unreleased]: https://github.com/weavegate/weavegate/compare/v0.2.0-rc.1...HEAD
+[0.2.0-rc.1]: https://github.com/weavegate/weavegate/compare/v0.1.0-alpha...v0.2.0-rc.1
 [0.1.0-alpha]: https://github.com/weavegate/weavegate/releases/tag/v0.1.0-alpha
 
 ## [Unreleased]
+
+## [0.2.0-rc.1] - YYYY-MM-DD
 
 ### Added
 
