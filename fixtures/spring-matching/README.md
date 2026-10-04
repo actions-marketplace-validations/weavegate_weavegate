@@ -95,7 +95,7 @@ In the fixed replay, `w1` holds the row lock while `w2`'s locking read waits.
 When `w2` does not reach `after_read_request` within the 1000 ms
 `arrive_timeout_ms`, the orchestrator records a timeout-inferred blocked state.
 That timeout is not proof of a database lock. The paired test separately sees
-the waiting Connector/J session executing the locking read on the server.
+a Connector/J session executing the locking read on the server.
 
 ## Paired evidence test
 
@@ -113,8 +113,10 @@ It explores the vulnerable variant and requires the discovered schedule to equal
 times against each variant and checks the exit codes and saved artifacts: the
 vulnerable variant must produce `WG001` in all 20 runs, and the fixed variant
 must pass with a blocked wait in every run. A single fingerprint must cover all
-20 runs of each replay. The test also runs the two lifecycle probes, and
-cancels a fixed replay while a locking read is executing.
+20 runs of each replay. The lifecycle checks repeat 20 times as well: the
+`assign-then-fail` probe as one 20-repetition replay, and the `assign-then-halt`
+probe and a fixed replay canceled while a locking read is executing as 20
+separate CLI runs each, because both end their run.
 
 A test-only observer wraps the CLI's MySQL fixture. Before every reset and
 before teardown, it requires that no child JVM is still running. It also
@@ -128,9 +130,9 @@ run, no JAR snapshot remains. The test emits these fixed markers, which the
 SPRING_EXPLORE_RESULT variant=vulnerable exit=2 diagnostic=WG001 schedule=sch_7dcb74b1e506 repeat=20 flaky=false saved=byte_identical
 SPRING_REPLAY_RESULT schedule=sch_7dcb74b1e506 variant=vulnerable repeat=20 exit=2 diagnostic=WG001 violation_runs=20 flaky=false
 SPRING_REPLAY_RESULT schedule=sch_7dcb74b1e506 variant=fixed repeat=20 exit=0 verdict=PASS violation_runs=0 blocked_runs=20 flaky=false
-SPRING_ROLLBACK_RESULT exit=0 assignments=0 jvm=reaped connections=closed
-SPRING_DEATH_RESULT exit=5 fault=session assignments=0 jvm=reaped connections=closed
-SPRING_CANCEL_RESULT during=locking_read exit=130 jvm=reaped connections=closed
+SPRING_ROLLBACK_RESULT runs=20 exit=0 assignments=0 jvm=reaped connections=closed
+SPRING_DEATH_RESULT runs=20 exit=5 fault=session assignments=0 jvm=reaped connections=closed
+SPRING_CANCEL_RESULT runs=20 during=locking_read exit=130 jvm=reaped connections=closed
 SPRING_LIFECYCLE_RESULT resets=checked blocked=observed rollback=rolled_back death=rolled_back cancel=cleaned jvm=reaped connections=closed snapshots=removed
 ```
 

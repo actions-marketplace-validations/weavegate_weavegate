@@ -100,18 +100,18 @@ WEAVEGATE_SPRING_PAIRED=1 go test ./cmd/weavegate \
   -run '^TestSpringMatchingPairedReplay$' -v -count=1 -timeout 25m
 ```
 
-Captured markers from one local run (log prefixes removed):
+Captured markers from one local run (log prefixes removed; 838 s in total):
 
 ```text
 SPRING_EXPLORE_RESULT variant=vulnerable exit=2 diagnostic=WG001 schedule=sch_7dcb74b1e506 repeat=20 flaky=false saved=byte_identical
 SPRING_REPLAY_RESULT schedule=sch_7dcb74b1e506 variant=vulnerable repeat=20 exit=2 diagnostic=WG001 violation_runs=20 flaky=false
-SPRING_REPLAY_DURATION variant=vulnerable repeat=20 elapsed_ms=84495 resets_observed=20
+SPRING_REPLAY_DURATION variant=vulnerable repeat=20 elapsed_ms=71146 resets_observed=20
 SPRING_REPLAY_RESULT schedule=sch_7dcb74b1e506 variant=fixed repeat=20 exit=0 verdict=PASS violation_runs=0 blocked_runs=20 flaky=false
-SPRING_REPLAY_DURATION variant=fixed repeat=20 elapsed_ms=96710 resets_observed=20
-SPRING_ROLLBACK_RESULT exit=0 assignments=0 jvm=reaped connections=closed
-SPRING_DEATH_RESULT exit=5 fault=session assignments=0 jvm=reaped connections=closed
-SPRING_CANCEL_STATE state="statistics"
-SPRING_CANCEL_RESULT during=locking_read exit=130 jvm=reaped connections=closed
+SPRING_REPLAY_DURATION variant=fixed repeat=20 elapsed_ms=94939 resets_observed=20
+SPRING_ROLLBACK_RESULT runs=20 exit=0 assignments=0 jvm=reaped connections=closed
+SPRING_DEATH_RESULT runs=20 exit=5 fault=session assignments=0 jvm=reaped connections=closed
+SPRING_CANCEL_STATES map[Opening tables:1 statistics:19]
+SPRING_CANCEL_RESULT runs=20 during=locking_read exit=130 jvm=reaped connections=closed
 SPRING_ENVIRONMENT go=go1.25.0 java=21.0.8+9-LTS mysql=8.4.10 spring_boot=4.0.8 spring=7.0.9 transaction_manager=spring-jdbc-7.0.9 jdbc_driver=9.7.0 pool=7.0.2 weavegate_spring=0.0.0-SNAPSHOT
 SPRING_LIFECYCLE_RESULT resets=checked blocked=observed rollback=rolled_back death=rolled_back cancel=cleaned jvm=reaped connections=closed snapshots=removed
 ```
@@ -119,9 +119,13 @@ SPRING_LIFECYCLE_RESULT resets=checked blocked=observed rollback=rolled_back dea
 Exploration, the vulnerable replay and the fixed replay together make 61
 schedule executions (one exploration candidate plus a 20-run replay inside
 exploration, then two 20-run replays). Every one produced the expected
-verdict. The cancellation probe interrupted the fixed replay while a
-Connector/J session was executing the locking read; the server reported its
-state as `statistics`.
+verdict. Each lifecycle check also ran 20 times: one 20-repetition rollback
+replay, 20 application-death runs and 20 canceled fixed replays. Every
+cancellation landed while a Connector/J session was executing the locking read.
+The server reported that session's state as `statistics` in 19 runs and
+`Opening tables` in one. This page does not interpret those states as proof of
+a row-lock wait.
+The cleanup checks passed in all of these runs.
 
 ## Run time
 
@@ -154,7 +158,9 @@ fixed repetition on this host. This is a derived estimate, not a separate
 measurement. The fixed variant also waits out the 1000 ms block-inference
 timeout once per repetition. Expect a 20-repetition Spring replay to take
 minutes, not seconds, and size CI timeouts accordingly. The paired smoke job
-allows 30 minutes for exploration, both replays and the lifecycle probes.
+allows 50 minutes for exploration, both replays and the 20-run lifecycle
+probes; the 20 application-death and 20 cancellation runs each provision their
+own database container.
 
 ## Schedule portability
 
@@ -170,7 +176,8 @@ is not a general property of schedules across applications.
 - One synthetic two-worker, two-point workflow, on the versions above. Other
   JDKs, Boot lines, drivers, pools and databases are untested.
 - `timeout_inferred` is not proof of a database lock. The cancellation probe
-  shows a real server-side locking read at that moment, but only for that run.
+  shows a server-side locking read in progress in each of its runs, but not
+  for the replays it did not interrupt.
 - The cleanup observer polls for retired server sessions within a 10-second
   bound. It shows absence at check time; it does not inspect InnoDB
   internals, which the application account cannot read.

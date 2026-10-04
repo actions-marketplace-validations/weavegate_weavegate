@@ -26,7 +26,11 @@ ENVIRONMENT_KEYS = ('go', 'java', 'mysql', 'spring_boot', 'spring', 'transaction
 
 
 def markers(repetitions):
-    """Every fixed phrase the live test must emit exactly once."""
+    """Every fixed phrase the live test must emit exactly once.
+
+    Replays and lifecycle probes all carry the same repetition count, so the
+    recorded `repetitions` covers every paired requirement, not only replay.
+    """
     n = str(repetitions)
     return (
         'SPRING_EXPLORE_RESULT variant=vulnerable exit=2 diagnostic=WG001 schedule=' + SCHEDULE
@@ -35,9 +39,9 @@ def markers(repetitions):
         + ' exit=2 diagnostic=WG001 violation_runs=' + n + ' flaky=false',
         'SPRING_REPLAY_RESULT schedule=' + SCHEDULE + ' variant=fixed repeat=' + n
         + ' exit=0 verdict=PASS violation_runs=0 blocked_runs=' + n + ' flaky=false',
-        'SPRING_ROLLBACK_RESULT exit=0 assignments=0 jvm=reaped connections=closed',
-        'SPRING_DEATH_RESULT exit=5 fault=session assignments=0 jvm=reaped connections=closed',
-        'SPRING_CANCEL_RESULT during=locking_read exit=130 jvm=reaped connections=closed',
+        'SPRING_ROLLBACK_RESULT runs=' + n + ' exit=0 assignments=0 jvm=reaped connections=closed',
+        'SPRING_DEATH_RESULT runs=' + n + ' exit=5 fault=session assignments=0 jvm=reaped connections=closed',
+        'SPRING_CANCEL_RESULT runs=' + n + ' during=locking_read exit=130 jvm=reaped connections=closed',
         'SPRING_LIFECYCLE_RESULT resets=checked blocked=observed rollback=rolled_back death=rolled_back'
         ' cancel=cleaned jvm=reaped connections=closed snapshots=removed',
     )
@@ -120,8 +124,9 @@ def record(log, go_manifest, java_manifest, revision, command, repetitions, buil
             'observe/evidence': {'status': 'pass', 'handler': HANDLER, 'evidence': ids}}}
     result['run'] = {
         'revision': revision, 'command': command, 'repetitions': repetitions,
-        'repetition_method': 'Each CLI replay uses --repeat N; every repetition resets the fixture and launches '
-                             'a fresh child JVM, and one fingerprint must cover all N runs.',
+        'repetition_method': 'Vulnerable, fixed and rollback replays each use --repeat N, with a fixture reset, '
+                             'a fresh child JVM and one fingerprint across all N runs. Application death and '
+                             'cancellation end their run, so each repeats as N separate CLI runs.',
         'versions': {
             'go': versions['go'], 'java': versions['java'], 'mysql': versions['mysql'],
             'spring': 'Spring Boot ' + versions['spring_boot'] + ' / Spring Framework ' + versions['spring'],

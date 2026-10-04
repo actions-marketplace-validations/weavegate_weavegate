@@ -92,6 +92,15 @@ class PairedRecordingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.record(repetitions=19)
 
+    def test_one_off_lifecycle_probes_are_rejected(self):
+        for marker in RECORDER['markers'](20):
+            if ' runs=20 ' not in marker:
+                continue
+            with self.subTest(marker=marker.split(' ', 1)[0]):
+                self.write(drop=marker, repeat=marker.replace(' runs=20 ', ' runs=1 '))
+                with self.assertRaises(ValueError):
+                    self.record()
+
     def test_failed_skipped_or_truncated_logs(self):
         for lines in (['--- FAIL: TestSpringMatchingPairedReplay (1.00s)\n', 'FAIL\n'],
                       ['--- SKIP: TestSpringMatchingPairedReplay (0.00s)\n', 'PASS\n',

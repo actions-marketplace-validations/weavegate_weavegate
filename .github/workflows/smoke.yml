@@ -599,7 +599,7 @@ jobs:
     # Paired evidence links the complete isolated manifests from this run.
     needs: [external-adapter, external-java]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     permissions:
       contents: read
       actions: read
@@ -633,15 +633,15 @@ jobs:
         run: |
           evidence=paired-evidence
           mkdir -p "$evidence"
-          command="WEAVEGATE_SPRING_PAIRED=1 go test ./cmd/weavegate -run '^TestSpringMatchingPairedReplay\$' -v -count=1 -timeout 25m"
+          command="WEAVEGATE_SPRING_PAIRED=1 go test ./cmd/weavegate -run '^TestSpringMatchingPairedReplay\$' -v -count=1 -timeout 45m"
           printf '%s' "$command" > "$evidence/command.txt"
-          WEAVEGATE_SPRING_PAIRED=1 go test ./cmd/weavegate -run '^TestSpringMatchingPairedReplay$' -v -count=1 -timeout 25m | tee "$evidence/paired.log"
+          WEAVEGATE_SPRING_PAIRED=1 go test ./cmd/weavegate -run '^TestSpringMatchingPairedReplay$' -v -count=1 -timeout 45m | tee "$evidence/paired.log"
           grep -F 'SPRING_EXPLORE_RESULT variant=vulnerable exit=2 diagnostic=WG001 schedule=sch_7dcb74b1e506 repeat=20 flaky=false saved=byte_identical' "$evidence/paired.log"
           grep -F 'SPRING_REPLAY_RESULT schedule=sch_7dcb74b1e506 variant=vulnerable repeat=20 exit=2 diagnostic=WG001 violation_runs=20 flaky=false' "$evidence/paired.log"
           grep -F 'SPRING_REPLAY_RESULT schedule=sch_7dcb74b1e506 variant=fixed repeat=20 exit=0 verdict=PASS violation_runs=0 blocked_runs=20 flaky=false' "$evidence/paired.log"
-          grep -F 'SPRING_ROLLBACK_RESULT exit=0 assignments=0 jvm=reaped connections=closed' "$evidence/paired.log"
-          grep -F 'SPRING_DEATH_RESULT exit=5 fault=session assignments=0 jvm=reaped connections=closed' "$evidence/paired.log"
-          grep -F 'SPRING_CANCEL_RESULT during=locking_read exit=130 jvm=reaped connections=closed' "$evidence/paired.log"
+          grep -F 'SPRING_ROLLBACK_RESULT runs=20 exit=0 assignments=0 jvm=reaped connections=closed' "$evidence/paired.log"
+          grep -F 'SPRING_DEATH_RESULT runs=20 exit=5 fault=session assignments=0 jvm=reaped connections=closed' "$evidence/paired.log"
+          grep -F 'SPRING_CANCEL_RESULT runs=20 during=locking_read exit=130 jvm=reaped connections=closed' "$evidence/paired.log"
           grep -F 'SPRING_LIFECYCLE_RESULT resets=checked blocked=observed rollback=rolled_back death=rolled_back cancel=cleaned jvm=reaped connections=closed snapshots=removed' "$evidence/paired.log"
 
       - name: Download the isolated Go and Java acceptance from this run

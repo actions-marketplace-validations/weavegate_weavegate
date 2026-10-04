@@ -23,6 +23,7 @@ import (
 
 	"github.com/weavegate/weavegate/internal/fixture"
 	"github.com/weavegate/weavegate/internal/report"
+	"github.com/weavegate/weavegate/internal/scenario"
 )
 
 // springPairedEnv opts into the paired Spring/MySQL evidence. The JAR is a
@@ -153,77 +154,78 @@ func TestSpringMatchingPairedReplay(t *testing.T) {
 		})
 	}
 
-	// A failure after the insert rolls back through Spring; the run itself
-	// completes, and the observer sees no committed assignment.
+	// The lifecycle probes run one worker through both points. Each probe is
+	// repeated springRepeat times, like the vulnerable and fixed replays.
+	single, err := scenario.NewSchedule([]scenario.CoordinationStep{
+		{Worker: "w1", Point: "after_read_request"}, {Worker: "w1", Point: "before_insert_assignment"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	singlePath := filepath.Join(t.TempDir(), "single-worker.json")
+	if err := scenario.WriteScheduleFile(singlePath, single); err != nil {
+		t.Fatal(err)
+	}
+
+	// A failure after the insert rolls back through Spring. The run completes,
+	// so one CLI replay covers every repetition with a reset and a fresh JVM
+	// each; the observer sees no committed assignment at any reset.
 	t.Run("rollback", func(t *testing.T) {
 		obs := newSpringObserver(snapshots)
 		var stdout, stderr bytes.Buffer
+		out := t.TempDir()
 		err := runScenario(context.Background(), &stdout, &stderr, runFlags{
-			config: config, scenario: "assign-then-fail", repeat: 1, repeatSet: true, out: t.TempDir(),
+			config: config, scenario: "assign-then-fail", replay: singlePath, replaySet: true,
+			repeat: springRepeat, repeatSet: true, out: out,
 		}, obs.factory)
 		if code := exitCodeFromError(err); code != 0 {
 			t.Fatalf("rollback exit = %d (%v)\nstderr=%s", code, err, stderr.String())
 		}
 		obs.require(t)
-		if obs.maxAssignments != 0 {
-			t.Fatalf("rolled-back command left %d assignments", obs.maxAssignments)
+		observation := readObservation(t, latestRunDir(t, out))
+		if obs.resets != springRepeat || obs.maxAssignments != 0 || observation.Flaky || len(observation.Fingerprints) != 1 {
+			t.Fatalf("rollback: resets=%d assignments=%d flaky=%v fingerprints=%v",
+				obs.resets, obs.maxAssignments, observation.Flaky, observation.Fingerprints)
 		}
-		t.Log("SPRING_ROLLBACK_RESULT exit=0 assignments=0 jvm=reaped connections=closed")
+		t.Logf("SPRING_ROLLBACK_RESULT runs=%d exit=0 assignments=0 jvm=reaped connections=closed", springRepeat)
 	})
 
 	// The JVM halts with its transaction open. The engine reports a session
-	// fault; the server must roll the orphaned transaction back.
+	// fault and ends the run, so each repetition is a separate CLI run; the
+	// server must roll every orphaned transaction back.
 	t.Run("application-death", func(t *testing.T) {
-		obs := newSpringObserver(snapshots)
-		var stdout, stderr bytes.Buffer
-		err := runScenario(context.Background(), &stdout, &stderr, runFlags{
-			config: config, scenario: "assign-then-halt", repeat: 1, repeatSet: true, out: t.TempDir(),
-		}, obs.factory)
-		if code := exitCodeFromError(err); code != 5 || !strings.Contains(stderr.String(), "SUT session fault") {
-			t.Fatalf("application death exit = %d (%v)\nstderr=%s", code, err, stderr.String())
+		for run := 1; run <= springRepeat; run++ {
+			obs := newSpringObserver(snapshots)
+			var stdout, stderr bytes.Buffer
+			err := runScenario(context.Background(), &stdout, &stderr, runFlags{
+				config: config, scenario: "assign-then-halt", replay: singlePath, replaySet: true,
+				repeat: 1, repeatSet: true, out: t.TempDir(),
+			}, obs.factory)
+			if code := exitCodeFromError(err); code != 5 || !strings.Contains(stderr.String(), "SUT session fault") {
+				t.Fatalf("run %d: application death exit = %d (%v)\nstderr=%s", run, code, err, stderr.String())
+			}
+			obs.require(t)
+			if obs.maxAssignments != 0 {
+				t.Fatalf("run %d: %d assignments survived application death", run, obs.maxAssignments)
+			}
 		}
-		obs.require(t)
-		if obs.teardowns != 1 || obs.maxAssignments != 0 {
-			t.Fatalf("after death: teardowns=%d assignments=%d", obs.teardowns, obs.maxAssignments)
-		}
-		t.Log("SPRING_DEATH_RESULT exit=5 fault=session assignments=0 jvm=reaped connections=closed")
+		t.Logf("SPRING_DEATH_RESULT runs=%d exit=5 fault=session assignments=0 jvm=reaped connections=closed", springRepeat)
 	})
 
 	// Cancel the operation while a Connector/J session is executing the
 	// locking read, then require the same cleanup as a completed run.
 	t.Run("cancellation", func(t *testing.T) {
-		obs := newSpringObserver(snapshots)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		type sighting struct {
-			state string
-			seen  bool
+		states := map[string]int{}
+		for run := 1; run <= springRepeat; run++ {
+			state := cancelDuringLockingRead(t, snapshots, runFlags{
+				config: config, scenario: "concurrent-assign", variant: "fixed", variantSet: true,
+				replay: filepath.Join(root, springSchedule), replaySet: true, repeat: springRepeat, repeatSet: true,
+				out: t.TempDir(),
+			}, run)
+			states[state]++
 		}
-		watched := make(chan sighting, 1)
-		go func() {
-			state, err := obs.awaitLockingRead(ctx)
-			if err == nil {
-				cancel()
-			}
-			watched <- sighting{state, err == nil}
-		}()
-		var stdout, stderr bytes.Buffer
-		err := runScenario(ctx, &stdout, &stderr, runFlags{
-			config: config, scenario: "concurrent-assign", variant: "fixed", variantSet: true,
-			replay: filepath.Join(root, springSchedule), replaySet: true, repeat: springRepeat, repeatSet: true,
-			out: t.TempDir(),
-		}, obs.factory)
-		cancel()
-		sight := <-watched
-		if !sight.seen {
-			t.Fatalf("no locking read observed before the run ended: %v\nstderr=%s", err, stderr.String())
-		}
-		if code := exitCodeFromError(err); code != 130 {
-			t.Fatalf("canceled run exit = %d (%v)\nstderr=%s", code, err, stderr.String())
-		}
-		obs.require(t)
-		t.Logf("SPRING_CANCEL_STATE state=%q", sight.state)
-		t.Log("SPRING_CANCEL_RESULT during=locking_read exit=130 jvm=reaped connections=closed")
+		t.Logf("SPRING_CANCEL_STATES %v", states)
+		t.Logf("SPRING_CANCEL_RESULT runs=%d during=locking_read exit=130 jvm=reaped connections=closed", springRepeat)
 	})
 
 	if entries, err := filepath.Glob(filepath.Join(snapshots, "weavegate-jar-*")); err != nil || len(entries) != 0 {
@@ -233,6 +235,40 @@ func TestSpringMatchingPairedReplay(t *testing.T) {
 		runtime.Version(), env.java, env.mysql, env.libs["spring-boot"], env.libs["spring-core"],
 		"spring-jdbc-"+env.libs["spring-jdbc"], env.libs["mysql-connector-j"], env.libs["HikariCP"], env.libs["weavegate-spring"])
 	t.Log("SPRING_LIFECYCLE_RESULT resets=checked blocked=observed rollback=rolled_back death=rolled_back cancel=cleaned jvm=reaped connections=closed snapshots=removed")
+}
+
+// cancelDuringLockingRead runs one replay and cancels it as soon as the server
+// shows a Connector/J session executing the locking read. It returns the
+// server-reported state of that session.
+func cancelDuringLockingRead(t *testing.T, snapshots string, flags runFlags, run int) string {
+	t.Helper()
+	obs := newSpringObserver(snapshots)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type sighting struct {
+		state string
+		seen  bool
+	}
+	watched := make(chan sighting, 1)
+	go func() {
+		state, err := obs.awaitLockingRead(ctx)
+		if err == nil {
+			cancel()
+		}
+		watched <- sighting{state, err == nil}
+	}()
+	var stdout, stderr bytes.Buffer
+	err := runScenario(ctx, &stdout, &stderr, flags, obs.factory)
+	cancel()
+	sight := <-watched
+	if !sight.seen {
+		t.Fatalf("run %d: no locking read observed before the run ended: %v\nstderr=%s", run, err, stderr.String())
+	}
+	if code := exitCodeFromError(err); code != 130 {
+		t.Fatalf("run %d: canceled run exit = %d (%v)\nstderr=%s", run, code, err, stderr.String())
+	}
+	obs.require(t)
+	return sight.state
 }
 
 type springEnv struct {
