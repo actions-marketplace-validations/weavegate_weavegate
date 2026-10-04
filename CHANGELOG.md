@@ -17,7 +17,7 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ## [Unreleased]
 
-## [0.2.0-rc.1] - YYYY-MM-DD
+## [0.2.0-rc.1] - 2026-10-04
 
 ### Added
 
