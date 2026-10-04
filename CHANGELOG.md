@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 `YYYY-MM-DD` in a release heading marks a section that has not been tagged yet.
 Replacing it with the tag date is part of the release process, and the release
-workflow fails before publication if the placeholder remains.
+workflow fails before publication if the placeholder remains. Release-candidate
+and final release sections follow the rule in `CONTRIBUTING.md` under
+"Release-candidate CHANGELOG sections".
 
 [Unreleased]: https://github.com/weavegate/weavegate/compare/v0.1.0-alpha...HEAD
 [0.1.0-alpha]: https://github.com/weavegate/weavegate/releases/tag/v0.1.0-alpha

@@ -53,7 +53,13 @@ non-publishing build makes no portal request and needs no publishing secrets.
 
 ## After a prerelease tag
 
-The release job first publishes the CLI assets. The dependent Java job imports
+The tag run first checks that the four publication secrets from the one-time
+prerequisites are present. If any is missing, it names the missing secret
+without printing any value and stops before any job publishes the CLI release
+or the Java artifact; only the pushed tag exists. A present but invalid key or token,
+or an unverified namespace, is not detected by this check and still fails only
+in the Java job, after the CLI release exists. The release job then publishes
+the CLI assets. The dependent Java job imports
 the signing key, builds the complete artifact set without uploading, and verifies
 the bundle. The publish command verifies the same ZIP bytes again, uploads those
 bytes through the [Central Publisher API](https://central.sonatype.org/publish/publish-portal-api/)
@@ -80,4 +86,6 @@ repositories to resolve the published coordinate and compile a class importing
 Compare the resolved dependency version to the CLI release version from the same
 tag. Save the two build commands and their output with the release evidence.
 Do this after each prerelease candidate before treating the publication path as
-accepted; the local bundle check alone cannot prove public resolution.
+accepted; the local bundle check alone cannot prove public resolution. Each
+candidate's CHANGELOG section follows the
+[release-candidate rule](../../CONTRIBUTING.md#release-candidate-changelog-sections).

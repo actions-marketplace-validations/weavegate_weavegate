@@ -352,8 +352,10 @@ decision requires a human to inspect the complete behavior.
 6. Replace the `YYYY-MM-DD` placeholder in the matching
    [`CHANGELOG.md`](CHANGELOG.md) release heading with the actual tag date. The
    release workflow verifies the substitution and fails before publishing
-   anything if it is missing. Manually verify that the section contains only
-   changes already merged into the tag.
+   anything if it is missing. Lay the section and its comparison link out
+   under the [release-candidate rule](#release-candidate-changelog-sections),
+   and manually verify that the section contains only changes already merged
+   into the tag.
 7. Read the README as it will appear in the tagged archive and confirm that
    every release-status statement remains true after the tag is published.
 8. Create a dry-run archive with
@@ -367,14 +369,17 @@ decision requires a human to inspect the complete behavior.
    release notes. Check that the Java Central bundle smoke job passed for the
    tagged commit and that the namespace, signing key, and token prerequisites
    in [`docs/maintainers/java-publication.md`](docs/maintainers/java-publication.md)
-   are ready; the tag also triggers immutable Java publication. Then create
-   the tag manually. The workflow publishes that
+   are ready; the tag also triggers immutable Java publication. The tag run's
+   first job checks that the four publication secrets are present and, if any
+   is missing, names it and stops before any job publishes; it cannot tell
+   whether a present key or token is valid or the namespace is verified. Then
+   create the tag manually. The workflow publishes that
    section as the release body and verifies the remote body before succeeding;
    retries replace the body from CHANGELOG, so manual edits are not the source
    of truth. Do not tag if any earlier item is incomplete.
-10. After the tag and release exist, remove their two temporary entries from
-   `.lycheeignore` so the compare and release URLs return to external-link
-   validation.
+10. After the tag and release exist, remove any temporary `.lycheeignore`
+   entries added for that tag's comparison and release URLs so they return to
+   external-link validation.
 11. After the tag and release artifacts exist, add the release badge and
     CHANGELOG link to the README. Never advertise a release that has not been
     published.
@@ -390,6 +395,44 @@ For the planned `v0.2.0` action listing, also follow the
 Prerelease tags support adoption checks without Marketplace publication;
 the final listing, agreement, and two-factor-authenticated UI steps remain
 manual maintainer work after release artifacts are available.
+
+### Release-candidate CHANGELOG sections
+
+A release candidate is a version `X.Y.Z-rc.N`, tagged `vX.Y.Z-rc.N`. Every
+candidate and final release gets its own dated `## [<version>]` section,
+because the release workflow publishes exactly that section as the tag's
+release body. The previous final release is the most recent tag that is not a
+release candidate (currently `v0.1.0-alpha`).
+
+| Section | Content | Comparison link |
+| --- | --- | --- |
+| `X.Y.Z-rc.1` | Every change since the previous final release | previous final release tag `...vX.Y.Z-rc.1` |
+| `X.Y.Z-rc.N`, N > 1 | Only changes merged since `X.Y.Z-rc.(N-1)` | `vX.Y.Z-rc.(N-1)...vX.Y.Z-rc.N` |
+| `X.Y.Z` | Every change since the previous final release, consolidated | previous final release tag `...vX.Y.Z` |
+| `Unreleased` | Changes not yet in any tag | newest tag, candidate or final, `...HEAD` |
+
+- When a candidate is prepared, the `Unreleased` entries move into its new
+  section, which sits directly below `Unreleased`.
+- A later candidate describes a change to something an earlier candidate of
+  the same version introduced as a change relative to that candidate, under the
+  heading that fits it (usually `Changed` or `Fixed`).
+- The final section is written for a user upgrading from the previous final
+  release, who never saw the candidates: it merges the candidate sections and
+  any remaining `Unreleased` entries into one set of entries, folding a
+  candidate's correction into the entry it corrects. It sits above the
+  candidate sections.
+- A section is not edited after its tag is published; only `Unreleased` and the
+  section being prepared change.
+
+For example, after `v0.2.0` the link definitions read:
+
+```markdown
+[Unreleased]: https://github.com/weavegate/weavegate/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/weavegate/weavegate/compare/v0.1.0-alpha...v0.2.0
+[0.2.0-rc.2]: https://github.com/weavegate/weavegate/compare/v0.2.0-rc.1...v0.2.0-rc.2
+[0.2.0-rc.1]: https://github.com/weavegate/weavegate/compare/v0.1.0-alpha...v0.2.0-rc.1
+[0.1.0-alpha]: https://github.com/weavegate/weavegate/releases/tag/v0.1.0-alpha
+```
 
 ## License
 

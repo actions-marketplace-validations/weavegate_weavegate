@@ -373,7 +373,38 @@ jobs:
           ./scripts/release-notes.sh "$work_dir/dated.md" 0.1.0-alpha > "$work_dir/actual.md"
           cmp "$work_dir/actual.md" "$work_dir/expected.md"
 
-          echo "RELEASE_NOTES_GUARD_RESULT placeholder=rejected dateless=rejected missing_section=rejected dated=accepted body=exact heading_scope=only"
+          # Candidate and final sections laid out under the CONTRIBUTING.md
+          # release-candidate rule each produce only their own body.
+          cat > "$work_dir/candidates.md" <<'CHANGELOG'
+          ## [Unreleased]
+
+          ## [0.2.0] - 2026-10-20
+
+          Final body: every change since 0.1.0-alpha.
+
+          ## [0.2.0-rc.2] - 2026-10-12
+
+          Candidate 2 body: changes since 0.2.0-rc.1.
+
+          ## [0.2.0-rc.1] - 2026-10-05
+
+          Candidate 1 body: changes since 0.1.0-alpha.
+
+          ## [0.1.0-alpha] - 2026-09-02
+
+          Release body.
+          CHANGELOG
+          printf '\nCandidate 1 body: changes since 0.1.0-alpha.\n\n' > "$work_dir/expected-rc1.md"
+          printf '\nCandidate 2 body: changes since 0.2.0-rc.1.\n\n' > "$work_dir/expected-rc2.md"
+          printf '\nFinal body: every change since 0.1.0-alpha.\n\n' > "$work_dir/expected-final.md"
+          ./scripts/release-notes.sh "$work_dir/candidates.md" 0.2.0-rc.1 > "$work_dir/actual-rc1.md"
+          ./scripts/release-notes.sh "$work_dir/candidates.md" 0.2.0-rc.2 > "$work_dir/actual-rc2.md"
+          ./scripts/release-notes.sh "$work_dir/candidates.md" 0.2.0 > "$work_dir/actual-final.md"
+          cmp "$work_dir/actual-rc1.md" "$work_dir/expected-rc1.md"
+          cmp "$work_dir/actual-rc2.md" "$work_dir/expected-rc2.md"
+          cmp "$work_dir/actual-final.md" "$work_dir/expected-final.md"
+
+          echo "RELEASE_NOTES_GUARD_RESULT placeholder=rejected dateless=rejected missing_section=rejected dated=accepted body=exact heading_scope=only candidate=exact final=exact"
 
       - name: Check the published release body contract
         run: |
