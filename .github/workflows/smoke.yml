@@ -373,7 +373,38 @@ jobs:
           ./scripts/release-notes.sh "$work_dir/dated.md" 0.1.0-alpha > "$work_dir/actual.md"
           cmp "$work_dir/actual.md" "$work_dir/expected.md"
 
-          echo "RELEASE_NOTES_GUARD_RESULT placeholder=rejected dateless=rejected missing_section=rejected dated=accepted body=exact heading_scope=only"
+          # Candidate and final sections laid out under the CONTRIBUTING.md
+          # release-candidate rule each produce only their own body.
+          cat > "$work_dir/candidates.md" <<'CHANGELOG'
+          ## [Unreleased]
+
+          ## [0.2.0] - 2026-10-20
+
+          Final body: every change since 0.1.0-alpha.
+
+          ## [0.2.0-rc.2] - 2026-10-12
+
+          Candidate 2 body: changes since 0.2.0-rc.1.
+
+          ## [0.2.0-rc.1] - 2026-10-05
+
+          Candidate 1 body: changes since 0.1.0-alpha.
+
+          ## [0.1.0-alpha] - 2026-09-02
+
+          Release body.
+          CHANGELOG
+          printf '\nCandidate 1 body: changes since 0.1.0-alpha.\n\n' > "$work_dir/expected-rc1.md"
+          printf '\nCandidate 2 body: changes since 0.2.0-rc.1.\n\n' > "$work_dir/expected-rc2.md"
+          printf '\nFinal body: every change since 0.1.0-alpha.\n\n' > "$work_dir/expected-final.md"
+          ./scripts/release-notes.sh "$work_dir/candidates.md" 0.2.0-rc.1 > "$work_dir/actual-rc1.md"
+          ./scripts/release-notes.sh "$work_dir/candidates.md" 0.2.0-rc.2 > "$work_dir/actual-rc2.md"
+          ./scripts/release-notes.sh "$work_dir/candidates.md" 0.2.0 > "$work_dir/actual-final.md"
+          cmp "$work_dir/actual-rc1.md" "$work_dir/expected-rc1.md"
+          cmp "$work_dir/actual-rc2.md" "$work_dir/expected-rc2.md"
+          cmp "$work_dir/actual-final.md" "$work_dir/expected-final.md"
+
+          echo "RELEASE_NOTES_GUARD_RESULT placeholder=rejected dateless=rejected missing_section=rejected dated=accepted body=exact heading_scope=only candidate=exact final=exact"
 
       - name: Check the published release body contract
         run: |
@@ -385,6 +416,28 @@ jobs:
           grep -qF \
             'RELEASE_BODY_RESULT exact=accepted trailing_newlines=normalized expected_empty=rejected actual_empty=rejected mismatch=rejected' \
             /tmp/release-body-selftest.out
+
+      - name: Check release prerequisites gate
+        run: |
+          bash scripts/release-prerequisites.sh --self-test | tee /tmp/release-prerequisites-selftest.out
+          for marker in COMPLETE_SECRETS_ACCEPTED EACH_MISSING_SECRET_CAUGHT \
+            SECRET_VALUES_HIDDEN ALL_MISSING_SECRETS_NAMED GATED_WORKFLOW_ACCEPTED \
+            UNGATED_JOB_CAUGHT MISSING_GATE_CAUGHT; do
+            grep -qF "$marker" /tmp/release-prerequisites-selftest.out
+          done
+          grep -qF \
+            'RELEASE_PREREQUISITES_RESULT complete=accepted each_missing=rejected all_missing=named values=hidden ungated_job=rejected missing_gate=rejected' \
+            /tmp/release-prerequisites-selftest.out
+          bash scripts/release-prerequisites.sh gated .github/workflows/release.yml
+          if env -u MAVEN_CENTRAL_GPG_PRIVATE_KEY_B64 -u MAVEN_CENTRAL_GPG_PASSPHRASE \
+            -u MAVEN_CENTRAL_USERNAME -u MAVEN_CENTRAL_PASSWORD \
+            bash scripts/release-prerequisites.sh check 2> /tmp/release-prerequisites-check.err; then
+            echo "release prerequisites check accepted a run without secrets" >&2
+            exit 1
+          fi
+          grep -qxF 'release prerequisites: stopping before publication; nothing was published' \
+            /tmp/release-prerequisites-check.err
+          echo "RELEASE_GATE_RESULT workflow=gated secrets_absent=stopped"
 
       - name: Check proposed external SUT vectors
         run: |

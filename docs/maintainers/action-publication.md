@@ -27,7 +27,9 @@ name availability cannot be established by the local tests.
 
 ## Prerelease adoption check
 
-1. Prepare a dated CHANGELOG section for the exact candidate version and
+1. Prepare a dated CHANGELOG section for the exact candidate version, laid
+   out under the
+   [release-candidate rule](../../CONTRIBUTING.md#release-candidate-changelog-sections), and
    create its `v0.2.0-rc.N` tag manually. Do not select Marketplace publication
    for a prerelease.
 2. Wait for the release workflow to publish the Linux archives and
@@ -48,7 +50,8 @@ Do not describe Spring adoption as complete without its separate evidence.
 ## Final release and Marketplace publication
 
 After the adoption check passes and its fixes are included, complete the
-release checklist for `v0.2.0` and create the final tag manually. Wait for the
+release checklist for `v0.2.0`, including its consolidated final CHANGELOG
+section under the same rule, and create the final tag manually. Wait for the
 release workflow to finish before updating its release in the GitHub UI.
 
 Follow GitHub's
