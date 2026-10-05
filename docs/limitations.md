@@ -45,7 +45,8 @@ Spring Boot 4.0.8, Connector/J 9.7.0 and MySQL 8.4 only; see
 application on the same versions reproduces and fixes a race through the
 published release in [Spring Boot adoption](howto/adopt-spring-boot.md). Other
 applications, versions and databases are untested. Each schedule run starts a new JVM, so an
-external replay costs seconds per repetition rather than milliseconds. See the
+external replay costs seconds per repetition rather than milliseconds; see
+[Gate run time](experiments/gate-run-time.md). See the
 [configuration reference](reference/config.md#external-jvm).
 
 ## Worker arguments are scenario-wide

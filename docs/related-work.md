@@ -96,9 +96,10 @@ and can be replayed bit-for-bit.
   result.** That is why a violating schedule is a saved, re-runnable file, not a
   log line.
 - **How weavegate differs:** those systems are *built* for full-world
-  simulation from day one. weavegate's current Go-native reference SUT applies
-  deterministic replay at a handful of sync-points; a Spring Boot adapter is
-  planned for the next release. This is narrower than full-world simulation.
+  simulation from day one. weavegate applies deterministic replay at a handful of sync-points, in its
+  Go-native reference SUT and, through the external JVM adapter, in an
+  instrumented Spring Boot application. This is narrower than full-world
+  simulation.
 
 ## Infrastructure we run on
 

@@ -5,8 +5,10 @@ The root [action metadata](../../action.yml) and
 release tags. The source action defaults its CLI version from its own
 `github.action_ref`; it needs a published CLI archive and `checksums.txt` for
 that tag. Tag creation and Marketplace publication are manual maintainer
-steps. This page describes the planned publication path; it does not claim
-that the action is listed or that `v0.2.0` is available.
+steps. `v0.2.0` was the first final release published this way and is listed
+as [weavegate gate](https://github.com/marketplace/actions/weavegate-gate). The steps
+below use `vX.Y.Z` for the release being prepared and `vX.Y.Z-rc.N` for its
+candidates; the issue links name where `v0.2.0` recorded its evidence.
 
 ## Before tagging
 
@@ -30,7 +32,7 @@ name availability cannot be established by the local tests.
 1. Prepare a dated CHANGELOG section for the exact candidate version, laid
    out under the
    [release-candidate rule](../../CONTRIBUTING.md#release-candidate-changelog-sections), and
-   create its `v0.2.0-rc.N` tag manually. Do not select Marketplace publication
+   create its `vX.Y.Z-rc.N` tag manually. Do not select Marketplace publication
    for a prerelease.
 2. Wait for the release workflow to publish the Linux archives and
    `checksums.txt` and verify the CHANGELOG-derived release body. A tag alone
@@ -41,7 +43,7 @@ name availability cannot be established by the local tests.
    against the fixed variant. Check exit 2/failure and exit 0/success,
    respectively, together with the report, schedule, and artifact URL.
 
-This is the release-based adoption check tracked by
+For `v0.2.0`, this release-based adoption check was tracked by
 [#114](https://github.com/weavegate/weavegate/issues/114). The action's local
 Python tests and smoke workflow's explicit `v0.1.0-alpha` checks verify their
 own boundaries; they do not replace this check of the published tag default.
@@ -50,7 +52,7 @@ Do not describe Spring adoption as complete without its separate evidence.
 ## Final release and Marketplace publication
 
 After the adoption check passes and its fixes are included, complete the
-release checklist for `v0.2.0`, including its consolidated final CHANGELOG
+release checklist for the final `vX.Y.Z`, including its consolidated final CHANGELOG
 section under the same rule, and create the final tag manually. Wait for the
 release workflow to finish before updating its release in the GitHub UI.
 
@@ -73,11 +75,11 @@ Follow GitHub's
    caller repository. Supply `config` and `scenario`, omit `version`, and
    repeat the vulnerable/fixed evidence check above. Confirm the retained
    `install.txt` names the same final CLI tag as the action reference.
-5. Record the listing URL and reproducible workflow evidence in
-   [#116](https://github.com/weavegate/weavegate/issues/116). Update the
-   user guide's planned fragment only after the referenced release exists.
+5. Record the listing URL and reproducible workflow evidence in the release's
+   tracking issue ([#116](https://github.com/weavegate/weavegate/issues/116)
+   for `v0.2.0`). Point user guides at the release only after it exists.
 
 The release workflow publishes CLI assets and notes; it does not accept the
 Marketplace agreement or publish the listing. If metadata or repository
-validation blocks listing, record the concrete blocker in #116 and keep
+validation blocks listing, record the concrete blocker in that tracking issue and keep
 exact-tag action use available while deciding the publication follow-up.

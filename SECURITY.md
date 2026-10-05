@@ -3,13 +3,13 @@
 ## Supported versions
 
 Security fixes are developed on `main` and applied to the latest tagged
-pre-release. Older pre-1.0 tags are not supported after a newer pre-release is
-published.
+release. Older pre-1.0 tags, including release candidates, are not supported
+after a newer release is published.
 
 | Version | Supported |
 | --- | --- |
 | `main` | Yes |
-| `v0.1.0-alpha` | Yes |
+| `v0.2.0` | Yes |
 | Older tagged releases | No |
 
 ## Reporting a vulnerability

@@ -390,7 +390,7 @@ decision requires a human to inspect the complete behavior.
     same tag and retain the commands and output. See the
     [Java publication procedure](docs/maintainers/java-publication.md).
 
-For the planned `v0.2.0` action listing, also follow the
+For the action's Marketplace listing, also follow the
 [action publication procedure](docs/maintainers/action-publication.md).
 Prerelease tags support adoption checks without Marketplace publication;
 the final listing, agreement, and two-factor-authenticated UI steps remain
@@ -402,7 +402,7 @@ A release candidate is a version `X.Y.Z-rc.N`, tagged `vX.Y.Z-rc.N`. Every
 candidate and final release gets its own dated `## [<version>]` section,
 because the release workflow publishes exactly that section as the tag's
 release body. The previous final release is the most recent tag that is not a
-release candidate (currently `v0.1.0-alpha`).
+release candidate (currently `v0.2.0`).
 
 | Section | Content | Comparison link |
 | --- | --- | --- |

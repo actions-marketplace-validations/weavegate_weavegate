@@ -1,5 +1,2 @@
 ^https://dev\.mysql\.com/doc/refman/8\.0/en/innodb-locking-reads\.html$
 ^https://dev\.mysql\.com/doc/refman/8\.0/en/innodb-transaction-isolation-levels\.html$
-# These destinations exist only after v0.2.0 is tagged and published.
-^https://github\.com/weavegate/weavegate/compare/v0\.2\.0\.\.\.HEAD$
-^https://github\.com/weavegate/weavegate/compare/v0\.1\.0-alpha\.\.\.v0\.2\.0$

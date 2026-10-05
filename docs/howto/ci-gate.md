@@ -1,7 +1,9 @@
 # Gate a GitHub Actions job with weavegate
 
 The repository root contains a [composite action](../../action.yml) that runs a
-published weavegate CLI release on a Linux runner with Docker. It verifies the
+published weavegate CLI release on a Linux runner with Docker. It is listed in
+GitHub Marketplace as [weavegate gate](https://github.com/marketplace/actions/weavegate-gate),
+whose usage line is `uses: weavegate/weavegate@v0.2.0`. It verifies the
 release archive against that release's `checksums.txt`, runs the selected
 configuration and scenario, uploads the available evidence, writes a job
 summary, and only then decides whether the step passes. The gate needs no
@@ -12,11 +14,9 @@ Use an ordinary `pull_request` workflow; this example does not use
 
 The following workflow is runnable in this repository. It uses the committed
 [matching-slice configuration](../../fixtures/matching-slice/.weavegate/config.yaml)
-and its `concurrent-assign` scenario. The action is pinned to a reviewed commit
-that includes the comment and complete job summary; the CLI release is selected
-separately. This action commit belongs to this change, so merge this pull
-request with a merge commit to keep the pinned SHA in `main`'s history. If the
-action is later changed, pin a reviewed commit containing that change.
+and its `concurrent-assign` scenario. Referencing the action by the exact
+release tag `v0.2.0` also selects CLI `v0.2.0`, so the workflow needs no
+`version` input.
 
 ```yaml
 name: weavegate gate
@@ -31,9 +31,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: weavegate
-        uses: weavegate/weavegate@a022acaa909579f4ee5eb43dfa3329a16c2cef6e
+        uses: weavegate/weavegate@v0.2.0
         with:
-          version: v0.1.0-alpha
           config: fixtures/matching-slice/.weavegate/config.yaml
           scenario: concurrent-assign
           variant: vulnerable
@@ -53,36 +52,15 @@ This example deliberately gates on the vulnerable variant: a reproduced
 Change `variant` to `fixed` to replay the same schedule and get exit 0 and a
 passing job. The smoke workflow's `reusable-gate` job runs both cases. A runner
 must provide a working Docker daemon so Testcontainers can start MySQL 8.4.
-The `v0.1.0-alpha` binary pinned here has only the built-in `matching-slice` Go
-adapter. From `v0.2.0-rc.1`, the CLI can also launch an instrumented Spring Boot
-JVM; [Adopt weavegate in a Spring Boot project](adopt-spring-boot.md) gates an
-application repository that way.
+Besides the built-in `matching-slice` Go adapter, the CLI can launch an
+instrumented Spring Boot JVM; [Adopt weavegate in a Spring Boot project](adopt-spring-boot.md)
+gates an application repository that way.
 
 ## Inputs, outputs, and gate policy
 
-The action also supports an omitted `version` when referenced by an exact
-release tag. `v0.2.0-rc.1` is the first release that contains it;
-`v0.1.0-alpha` predates the action, so the examples above and below that
-select it pin a commit and set `version`.
-
-The following is a **planned workflow fragment** for the final `v0.2.0`
-release, which has not been published. Use it only after that release and
-its CLI archives exist:
-
-```yaml
-- id: weavegate
-  uses: weavegate/weavegate@v0.2.0
-  with:
-    config: fixtures/matching-slice/.weavegate/config.yaml
-    scenario: concurrent-assign
-    variant: fixed
-    replay: sch_ba00582f9632
-```
-
-Here the CLI version defaults to `v0.2.0`. An exact prerelease reference,
-such as `@v0.2.0-rc.1`, similarly selects that CLI prerelease; the
-[Spring Boot adoption guide](adopt-spring-boot.md#8-gate-pull-requests-in-github-actions)
-uses it.
+When the action is referenced by an exact release tag, such as `@v0.2.0`, the
+CLI version defaults to that tag. An exact prerelease reference, such as
+`@v0.2.0-rc.1`, similarly selects that CLI prerelease.
 A nonempty `version` overrides the action ref, so callers may choose a
 different published CLI while keeping their action code fixed. SHA pins,
 branch refs, local `uses: ./`, and moving major/minor refs such as `@v0` or
@@ -99,7 +77,7 @@ available evidence is uploaded.
 
 | Input | Use |
 | --- | --- |
-| `version` | Optional published CLI release tag, such as `v0.1.0-alpha`; defaults to the action's exact `vX.Y.Z[-prerelease]` ref. Required for SHA, branch, local, or moving major/minor refs. The Linux archive is SHA-256 verified against `checksums.txt`. |
+| `version` | Optional published CLI release tag, such as `v0.2.0`; defaults to the action's exact `vX.Y.Z[-prerelease]` ref. Required for SHA, branch, local, or moving major/minor refs. The Linux archive is SHA-256 verified against `checksums.txt`. |
 | `config`, `scenario` | Required CLI configuration path and scenario name. Relative paths are resolved in the caller's checkout. |
 | `variant` | Optional `--variant` override. |
 | `replay` | Optional literal schedule ID or file path for `--replay`. Omit to explore. |
@@ -167,15 +145,15 @@ the reader opens:
    and run the report's `replay:` line from the repository root.
 4. One closing line saying that `comment: 'false'` turns the comment off.
 
-This is a comment the `reusable-gate` job posted on the pull request that
-introduced the step, with the workflow run ID and artifact ID replaced by
-placeholders:
+This is a comment the first workflow above posted from `v0.2.0` on a pull
+request in a caller repository, with the workflow run ID and artifact ID
+replaced by placeholders:
 
 `````markdown
 <!-- weavegate-gate-comment v1 -->
 ### weavegate gate: process exit code 2
 
-Report verdict **FAIL** · schedule `sch_ba00582f9632` · [evidence artifact](https://github.com/weavegate/weavegate/actions/runs/<run-id>/artifacts/<artifact-id>) · [workflow run <run-id>](https://github.com/weavegate/weavegate/actions/runs/<run-id>)
+Report verdict **FAIL** · schedule `sch_ba00582f9632` · [evidence artifact](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/<run-id>/artifacts/<artifact-id>) · [workflow run <run-id>](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/<run-id>)
 
 <details>
 <summary>Stored <code>report.md</code>, unchanged and shown as literal text</summary>
@@ -205,11 +183,11 @@ error[WG001]: invariant violated under a controlled schedule
 <details>
 <summary>Replay schedule <code>sch_ba00582f9632</code></summary>
 
-1. Check out the revision this workflow run tested and install weavegate `v0.1.0-alpha`.
+1. Check out the revision this workflow run tested and install weavegate `v0.2.0`.
 2. Download the artifact and import its schedule from the repository root:
 
    ```sh
-   gh run download <run-id> --repo weavegate/weavegate --name weavegate-gate-vulnerable --dir weavegate-evidence
+   gh run download <run-id> --repo weavegate/spring-boot-adoption-example --name weavegate-evidence --dir weavegate-evidence
    mkdir -p .weavegate/schedules
    cp weavegate-evidence/schedule.json .weavegate/schedules/sch_ba00582f9632.json
    ```
@@ -265,9 +243,8 @@ the environment, so no report content becomes shell source:
 
 ```yaml
 - id: weavegate
-  uses: weavegate/weavegate@a022acaa909579f4ee5eb43dfa3329a16c2cef6e
+  uses: weavegate/weavegate@v0.2.0
   with:
-    version: v0.1.0-alpha
     config: fixtures/matching-slice/.weavegate/config.yaml
     scenario: concurrent-assign
     comment: 'false'
@@ -331,9 +308,8 @@ steps:
       mkdir -p .weavegate/schedules
       cp imported/schedule.json .weavegate/schedules/producer.json
   - id: replay
-    uses: weavegate/weavegate@a022acaa909579f4ee5eb43dfa3329a16c2cef6e
+    uses: weavegate/weavegate@v0.2.0
     with:
-      version: v0.1.0-alpha
       config: fixtures/matching-slice/.weavegate/config.yaml
       scenario: concurrent-assign
       variant: fixed
