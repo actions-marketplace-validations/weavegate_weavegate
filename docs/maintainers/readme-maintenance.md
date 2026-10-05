@@ -61,6 +61,8 @@ them together. Every quantitative table row links directly to its experiment:
   `docs/experiments/determinism.md#repeated-result`.
 - Spring Boot external JVM replay:
   `docs/experiments/spring-replay.md#repeated-paired-test`.
+- Spring Boot gate run time:
+  `docs/experiments/gate-run-time.md#ci-gate-on-a-github-hosted-runner`.
 
 Retain an evidence-boundary row in both the SVG and table. Never turn a fixture
 measurement into a general detection rate, benchmark, or performance claim.

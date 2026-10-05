@@ -75,6 +75,7 @@ Use these experiments for reproduced observations; their measured values are tie
 - [Schedule exploration](experiments/exploration.md) — Review which candidates reproduce the invariant violation and how they were enumerated.
 - [Baseline comparison](experiments/baseline-comparison.md) — Compare uncontrolled baseline detection with controlled schedule replay.
 - [Spring paired replay](experiments/spring-replay.md) — Reproduce the Spring Boot vulnerable and fixed replay against MySQL and its JVM-per-schedule run time.
+- [Gate run time](experiments/gate-run-time.md) — See how long a Spring Boot gate takes in CI and locally, and where the time goes.
 
 ## Maintainer notes
 

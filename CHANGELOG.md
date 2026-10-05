@@ -18,6 +18,14 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ## [Unreleased]
 
+### Added
+
+- `docs/experiments/gate-run-time.md` measures a `v0.2.0` Spring Boot gate on a
+  GitHub-hosted runner and a local host: 85–129 s per gate job in CI, about
+  2.7–3.8 s per external schedule run against 0.1–0.35 s for Go-native, and
+  8–14 s of MySQL preparation, with reproduction commands. The README results
+  include the gate run time.
+
 ## [0.2.0] - 2026-10-05
 
 ### Added

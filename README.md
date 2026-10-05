@@ -37,7 +37,7 @@ See [Limitations](docs/limitations.md) for replay and PASS boundaries.
 
 ## Results
 
-![Measured replay, control, exploration, and Spring Boot replay results.](assets/readme/results.svg)
+![Measured replay, control, exploration, Spring Boot replay, and gate run-time results.](assets/readme/results.svg)
 
 | Measurement | Result |
 | --- | --- |
@@ -45,7 +45,8 @@ See [Limitations](docs/limitations.md) for replay and PASS boundaries.
 | **Controls · 0/100 × 3** | Serial and 20/100 ms staggered runs did not ([source](docs/experiments/baseline-comparison.md#measured-result)). |
 | **Explore · 6 candidates** | Index 1 yielded `sch_7dcb74b1e506`; `flaky=false`; **25.5 s** ([source](docs/experiments/exploration.md#reproduction)). |
 | **Spring · 20/20 + 20/20** | External JVM, same schedule: vulnerable `WG001`, fixed PASS ([source](docs/experiments/spring-replay.md#repeated-paired-test)). |
-| **Boundary · two fixtures** | Measured hosts and pinned versions only; not a detection rate. |
+| **CI gate · 85–129 s** | `v0.2.0` Spring Boot gate job on `ubuntu-latest`; ≈ 2.7–3.8 s per schedule run ([source](docs/experiments/gate-run-time.md#ci-gate-on-a-github-hosted-runner)). |
+| **Boundary · two fixtures + example** | Measured hosts and pinned versions only; not a detection rate or benchmark. |
 
 See [Experiments](docs/README.md#measured-results) for methods and reproduction.
 
