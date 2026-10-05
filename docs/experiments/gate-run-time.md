@@ -94,24 +94,26 @@ revision with the `v0.2.0` CLI on `PATH` and the JARs built:
 
 ```bash
 measure() {
+  label=$1; shift
   for i in 1 2 3; do
     t0=$(date +%s.%N)
-    weavegate run "$@" > "run.$i.out" 2> "run.$i.err"
+    weavegate run "$@" > "$label.$i.out" 2> "$label.$i.err"
     rc=$?
-    printf 'exit=%d seconds=%.1f\n' "$rc" "$(echo "$(date +%s.%N) - $t0" | bc)"
+    printf '%s exit=%d seconds=%.1f\n' "$label" "$rc" "$(echo "$(date +%s.%N) - $t0" | bc)"
   done
 }
-measure --config .weavegate/config.yaml --scenario double-booking \
+measure regression --config .weavegate/config.yaml --scenario double-booking \
   --replay .weavegate/schedules/sch_6f1ffd61cc07.json
-measure --config .weavegate/config.yaml --scenario double-booking
+measure explore --config .weavegate/config.yaml --scenario double-booking
 ```
 
-For Go-native, run the same loop from a weavegate checkout with
+Give each workload its own label, such as `fixed-regression`, so its logs are
+kept. For Go-native, run the same function from a weavegate checkout with
 `--config fixtures/matching-slice/.weavegate/config.yaml --scenario concurrent-assign`,
 `--variant fixed` or `--variant vulnerable`, and
 `--replay fixtures/matching-slice/schedules/concurrent-assign.json` for the
 replay. The prepare and schedule split comes from the testcontainers lines on
-`run.<i>.err`: the first timestamp, the MySQL `Container is ready` line and the
+`<label>.<i>.err`: the first timestamp, the MySQL `Container is ready` line and the
 `Stopping container` line.
 
 CI timings, for each attempt of a workflow run:
