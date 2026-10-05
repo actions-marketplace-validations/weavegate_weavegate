@@ -3,8 +3,9 @@
 The Go contracts in [`internal/sut`](../../internal/sut/sut.go) and
 [ADR 0014](../adr/0014-adapter-outcome-boundaries.md) distinguish invocation facts
 from session failure and operation cancellation. These contracts are implemented
-for the Go-native adapter and orchestrator. The external wire adapter and Java
-implementation remain planned.
+for the Go-native adapter, the external wire adapter and the orchestrator; the
+[Java Spring peer](external-sut-java.md) is the child side of the external
+adapter.
 
 ## Invocation lifecycle
 

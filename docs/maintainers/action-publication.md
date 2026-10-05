@@ -5,8 +5,8 @@ The root [action metadata](../../action.yml) and
 release tags. The source action defaults its CLI version from its own
 `github.action_ref`; it needs a published CLI archive and `checksums.txt` for
 that tag. Tag creation and Marketplace publication are manual maintainer
-steps. This page describes the planned publication path; it does not claim
-that the action is listed or that `v0.2.0` is available.
+steps. `v0.2.0` is the first final release published this way; this page
+records the procedure each release follows.
 
 ## Before tagging
 
