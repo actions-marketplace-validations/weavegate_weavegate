@@ -5,7 +5,8 @@ The root [action metadata](../../action.yml) and
 release tags. The source action defaults its CLI version from its own
 `github.action_ref`; it needs a published CLI archive and `checksums.txt` for
 that tag. Tag creation and Marketplace publication are manual maintainer
-steps. `v0.2.0` was the first final release published this way. The steps
+steps. `v0.2.0` was the first final release published this way and is listed
+as [weavegate gate](https://github.com/marketplace/actions/weavegate-gate). The steps
 below use `vX.Y.Z` for the release being prepared and `vX.Y.Z-rc.N` for its
 candidates; the issue links name where `v0.2.0` recorded its evidence.
 

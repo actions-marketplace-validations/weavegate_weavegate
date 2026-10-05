@@ -357,7 +357,9 @@ run takes seconds per schedule. Add `.weavegate/runs/` to `.gitignore`.
 Start with exploration. The workflow builds the instrumented JAR with Java 21,
 then runs the weavegate action. Referencing the action by the exact tag
 `v0.2.0` installs CLI `v0.2.0`; the CLI starts the child with the
-`java` on `PATH`, which `actions/setup-java` provides:
+`java` on `PATH`, which `actions/setup-java` provides. The `uses:` line is the
+usage line of the [weavegate gate](https://github.com/marketplace/actions/weavegate-gate)
+Marketplace listing:
 
 ```yaml
 name: weavegate

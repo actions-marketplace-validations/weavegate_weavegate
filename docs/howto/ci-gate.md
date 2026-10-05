@@ -1,7 +1,9 @@
 # Gate a GitHub Actions job with weavegate
 
 The repository root contains a [composite action](../../action.yml) that runs a
-published weavegate CLI release on a Linux runner with Docker. It verifies the
+published weavegate CLI release on a Linux runner with Docker. It is listed in
+GitHub Marketplace as [weavegate gate](https://github.com/marketplace/actions/weavegate-gate),
+whose usage line is `uses: weavegate/weavegate@v0.2.0`. It verifies the
 release archive against that release's `checksums.txt`, runs the selected
 configuration and scenario, uploads the available evidence, writes a job
 summary, and only then decides whether the step passes. The gate needs no
