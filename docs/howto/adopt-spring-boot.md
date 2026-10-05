@@ -5,14 +5,15 @@ This guide adds a weavegate gate to an existing Spring Boot service. It takes a
 with sync-points, declares the invariant as SQL, reproduces a race locally and
 then fails a pull request check until the race is fixed.
 
-The steps use `v0.2.0-rc.1`, the first prerelease that publishes both the Java
-integration and a CLI that launches an instrumented JVM. The
+The steps use `v0.2.0`. The
 [spring-boot-adoption-example](https://github.com/weavegate/spring-boot-adoption-example)
 repository followed them in
 [pull request #1](https://github.com/weavegate/spring-boot-adoption-example/pull/1),
-starting from a plain seat-reservation service. Every output block below is
-captured from that repository; run directories and workflow run IDs are
-volatile.
+starting from a plain seat-reservation service on the `v0.2.0-rc.1` candidate,
+and moved to `v0.2.0` in
+[pull request #5](https://github.com/weavegate/spring-boot-adoption-example/pull/5).
+Every output block below is captured from that repository with `v0.2.0`; run
+directories and workflow run IDs are volatile.
 
 ## Before you start
 
@@ -37,30 +38,29 @@ Spring and several JDBC features. The
 [Java peer reference](../reference/external-sut-java.md#opting-in) lists every
 rule.
 
-Use the same version for the CLI and the Java integration: `v0.2.0-rc.1` for
-the CLI and `0.2.0-rc.1` for the Java dependency, which is published on Maven
-Central. A release tag publishes the CLI before the Java artifact, so for a
+Use the same version for the CLI and the Java integration: `v0.2.0` for the
+CLI and `0.2.0` for the Java dependency, which is published on Maven Central. A release tag publishes the CLI before the Java artifact, so for a
 later version, check that the Java coordinate exists before upgrading.
 
 ## 1. Install the CLI
 
 Download the Linux archive and its checksums from the
-[`v0.2.0-rc.1` release](https://github.com/weavegate/weavegate/releases/tag/v0.2.0-rc.1),
+[`v0.2.0` release](https://github.com/weavegate/weavegate/releases/tag/v0.2.0),
 verify the archive, and put the binary on `PATH`:
 
 ```bash
-base=https://github.com/weavegate/weavegate/releases/download/v0.2.0-rc.1
-curl -fsSLO "$base/weavegate_0.2.0-rc.1_linux_amd64.tar.gz"
+base=https://github.com/weavegate/weavegate/releases/download/v0.2.0
+curl -fsSLO "$base/weavegate_0.2.0_linux_amd64.tar.gz"
 curl -fsSLO "$base/checksums.txt"
 sha256sum -c --ignore-missing checksums.txt
-tar -xzf weavegate_0.2.0-rc.1_linux_amd64.tar.gz
-export PATH="$PWD/weavegate_0.2.0-rc.1_linux_amd64:$PATH"
+tar -xzf weavegate_0.2.0_linux_amd64.tar.gz
+export PATH="$PWD/weavegate_0.2.0_linux_amd64:$PATH"
 weavegate --version
 ```
 
 ```text
-weavegate_0.2.0-rc.1_linux_amd64.tar.gz: OK
-0.2.0-rc.1
+weavegate_0.2.0_linux_amd64.tar.gz: OK
+0.2.0
 ```
 
 [Install weavegate](../install.md) describes the other routes. The CI gate in
@@ -74,7 +74,7 @@ Connector/J with it:
 ```xml
 <properties>
   <java.version>21</java.version>
-  <weavegate.version>0.2.0-rc.1</weavegate.version>
+  <weavegate.version>0.2.0</weavegate.version>
 </properties>
 
 <dependency>
@@ -309,7 +309,7 @@ error[WG001]: invariant violated under a controlled schedule
              take a pessimistic lock (SELECT ... FOR UPDATE) before insert
              use an idempotency key on the write
   evidence:  schedule sch_6f1ffd61cc07 · trace.json · observation.json · 1 violating row
-.weavegate/runs/run_20261004T132602.997186514Z_aa1b1dc58f521f1cfc517b9ec694b9dc
+.weavegate/runs/run_20261005T043419.888813581Z_6ecd305568da12ab67669248ff8180d2
 ```
 
 The process exits 2. Both workers read the open seat, found no active
@@ -331,7 +331,7 @@ against the fixed code:
 scenario: double-booking | schedules explored: 0 | replayed: sch_6f1ffd61cc07
 flaky: false (repeat=20)
 replay: weavegate run --config .weavegate/config.yaml --scenario double-booking --variant main --replay sch_6f1ffd61cc07 --repeat 20
-.weavegate/runs/run_20261004T132741.228467335Z_1c1a4f9fef11a646849c69865cac9208
+.weavegate/runs/run_20261005T042238.954338413Z_7668d4a1ffe9a4e46e6ba91e14e2d00b
 ```
 
 Exploring the fixed code again sweeps every candidate schedule. Exploration
@@ -342,7 +342,7 @@ times:
 ## weavegate: PASS
 scenario: double-booking | schedules explored: 18 (exhausted) | violating: none
 flaky: false (repeat=20)
-.weavegate/runs/run_20261004T132922.275660269Z_d0c06ad844300cedc5f2f6925ab62d08
+.weavegate/runs/run_20261005T042704.368796840Z_452d2396027814730d3a91613befd817
 ```
 
 Both exit 0. A candidate is coordination intent, not a guaranteed release
@@ -356,7 +356,7 @@ run takes seconds per schedule. Add `.weavegate/runs/` to `.gitignore`.
 
 Start with exploration. The workflow builds the instrumented JAR with Java 21,
 then runs the weavegate action. Referencing the action by the exact tag
-`v0.2.0-rc.1` installs CLI `v0.2.0-rc.1`; the CLI starts the child with the
+`v0.2.0` installs CLI `v0.2.0`; the CLI starts the child with the
 `java` on `PATH`, which `actions/setup-java` provides:
 
 ```yaml
@@ -382,7 +382,7 @@ jobs:
       - name: Build the weavegate test JAR
         run: ./mvnw -B package
       - id: weavegate
-        uses: weavegate/weavegate@v0.2.0-rc.1
+        uses: weavegate/weavegate@v0.2.0
         with:
           config: .weavegate/config.yaml
           scenario: double-booking
@@ -416,7 +416,7 @@ jobs:
     steps:
       # checkout, setup-java and the build step as above
       - id: weavegate
-        uses: weavegate/weavegate@v0.2.0-rc.1
+        uses: weavegate/weavegate@v0.2.0
         with:
           config: .weavegate/config.yaml
           scenario: double-booking
@@ -424,14 +424,17 @@ jobs:
           artifact-name: weavegate-evidence-${{ matrix.mode }}
 ```
 
-Each invocation needs its own `artifact-name`. The example's pull request ran
-these checks on its three commits:
+Each invocation needs its own `artifact-name`. With `v0.2.0`, these checks ran
+on the example's fixed code and on a pull request that removes the fix:
 
-| Commit | Code | `regression` | `explore` |
+| Pull request | Code | `regression` | `explore` |
 | --- | --- | --- | --- |
-| [`563b05d`](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/37206209214) | Vulnerable, exploration only | — | FAIL (WG001), `sch_6f1ffd61cc07` |
-| [`df6e07d`](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/37206482086) | Vulnerable, schedule committed | FAIL (WG001), replayed `sch_6f1ffd61cc07` | FAIL (WG001), `sch_6f1ffd61cc07` |
-| [`8950c8a`](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/37206624620) | `FOR UPDATE` fix | PASS, replayed `sch_6f1ffd61cc07` | PASS, 6 candidates × 3 passes exhausted |
+| [#6](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/37263151356) | Vulnerable, `FOR UPDATE` removed | FAIL (WG001), replayed `sch_6f1ffd61cc07` | FAIL (WG001), `sch_6f1ffd61cc07` |
+| [#5](https://github.com/weavegate/spring-boot-adoption-example/actions/runs/37263131854) | `FOR UPDATE` fix | PASS, replayed `sch_6f1ffd61cc07` | PASS, 6 candidates × 3 passes exhausted |
+
+Each job took about two minutes on `ubuntu-latest`;
+[Gate run time](../experiments/gate-run-time.md) breaks the time down and
+explains how it grows with schedule runs.
 
 ## 9. Replay CI evidence on another machine
 
@@ -449,8 +452,9 @@ weavegate run --config .weavegate/config.yaml --scenario double-booking --varian
 
 GitHub keeps workflow artifacts for a limited retention period, 90 days by
 default, so download evidence while it exists and commit a schedule you want to
-keep, as step 8 does. In the example, the run was `37206209214` and the
-schedule `sch_6f1ffd61cc07`; that artifact will expire, but the committed
+keep, as step 8 does. In the example, the run was `37263151356`, the artifact
+`weavegate-evidence-explore` and the schedule `sch_6f1ffd61cc07`; that artifact
+will expire, but the committed
 `.weavegate/schedules/sch_6f1ffd61cc07.json` replays the same schedule. The
 replay printed:
 

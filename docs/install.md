@@ -61,8 +61,8 @@ commands there.
 
 A Spring Boot application under test also needs the Java integration,
 `io.github.weavegate:weavegate-spring`, from Maven Central. Use the version that
-matches the CLI: `0.2.0-rc.1` with CLI `v0.2.0-rc.1`, the first release that
-publishes it. It requires Java 21 and Spring Boot 4.0.8; the
+matches the CLI, such as `0.2.0` with CLI `v0.2.0`; `0.2.0-rc.1` was the first
+published version. It requires Java 21 and Spring Boot 4.0.8; the
 [Java peer reference](reference/external-sut-java.md#supported-baseline) lists
 the full baseline, and
 [Adopt weavegate in a Spring Boot project](howto/adopt-spring-boot.md) uses it
