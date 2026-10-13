@@ -28,6 +28,7 @@ import (
 	"github.com/weavegate/weavegate/internal/sut"
 	"github.com/weavegate/weavegate/internal/sut/external"
 	"github.com/weavegate/weavegate/internal/syncpoint"
+	"github.com/weavegate/weavegate/internal/timing"
 )
 
 // bindExternal performs all launch and registration checks that do not need a
@@ -276,9 +277,11 @@ func (a *snapshotAdapter) Start(ctx context.Context, cfg sut.SUTConfig, db *fixt
 	if a.adapter != nil {
 		return nil, fmt.Errorf("external SUT adapter already started")
 	}
+	_, finishSnapshot := timing.Start(ctx, "jar_snapshot")
 	snapshot, err := boundedSnapshot(ctx, func() (string, error) {
 		return snapshotJAR(ctx, a.jar, a.digest)
 	})
+	finishSnapshot()
 	if err != nil {
 		return nil, err
 	}

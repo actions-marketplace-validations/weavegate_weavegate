@@ -20,6 +20,11 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Added
 
+- Completed CLI runs retain stage timings in `manifest.json` and `report.json`,
+  including every explored candidate and replay repetition, database preparation,
+  external JAR/startup, execution, Oracle and cleanup. Timings stop before artifact
+  writing and preserve deterministic evidence and verdicts; see
+  `docs/reference/report-schema.md`.
 - `docs/experiments/gate-run-time.md` measures a `v0.2.0` Spring Boot gate on a
   GitHub-hosted runner and a local host: 85–129 s per gate job in CI, about
   2.7–3.8 s per external schedule run against 0.1–0.35 s for Go-native, and

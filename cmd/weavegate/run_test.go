@@ -261,6 +261,7 @@ func TestRun(t *testing.T) {
 		if len(entries) != 7 {
 			t.Fatalf("run directory has %d files, want 7", len(entries))
 		}
+		requireRunTimings(t, dir)
 		obs := readObservation(t, dir)
 		if obs.Repeat != 20 || obs.ViolationRuns != 20 || obs.Flaky {
 			t.Fatalf("vulnerable observation = %+v, want repeat=20 violation_runs=20 flaky=false", obs)
@@ -304,6 +305,7 @@ func TestRun(t *testing.T) {
 		if len(entries) != 6 {
 			t.Fatalf("run directory has %d files, want 6", len(entries))
 		}
+		requireRunTimings(t, dir)
 		obs := readObservation(t, dir)
 		if obs.SchedulesExplored != 18 || obs.ExplorePasses != 3 || obs.Flaky || obs.ViolationRuns != 0 {
 			t.Fatalf("fixed observation = %+v, want evaluated=18 passes=3 flaky=false violation_runs=0", obs)
@@ -343,6 +345,7 @@ func TestRun(t *testing.T) {
 		}
 		dir := latestRunDir(t, outDir)
 		entries := listRunFiles(t, dir)
+		requireRunTimings(t, dir)
 		obs := readObservation(t, dir)
 		doc := readScenario(t, dir)
 		if doc.Schedule == nil || doc.Schedule.ID != "sch_ba00582f9632" {

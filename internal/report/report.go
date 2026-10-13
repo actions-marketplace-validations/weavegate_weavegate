@@ -40,6 +40,8 @@ type Manifest struct {
 	// SUTSHA256 identifies the configured external JAR checked at preflight
 	// and against each child launch snapshot. It is absent for gonative.
 	SUTSHA256 string `json:"sut_sha256,omitempty"`
+	// Timings never enters deterministic artifacts or execution fingerprints.
+	Timings *Timings `json:"timings,omitempty"`
 
 	// CleanupFailed is true when fixture teardown failed after this run
 	// completed (A-18): a leaked container or database. It belongs here,

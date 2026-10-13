@@ -22,6 +22,7 @@ import (
 	"github.com/weavegate/weavegate/internal/fixture"
 	"github.com/weavegate/weavegate/internal/sut"
 	"github.com/weavegate/weavegate/internal/syncpoint"
+	"github.com/weavegate/weavegate/internal/timing"
 )
 
 // Options describes a prebuilt child and its declared registration. The child
@@ -195,6 +196,8 @@ func (a *adapter) start(ctx context.Context, body map[string]any) (sut.Handle, e
 		return nil, a.startFailure(err)
 	}
 	a.mu.Unlock()
+	_, finishReady := timing.Start(ctx, "process_start_to_ready")
+	defer finishReady()
 	p, err := a.launch(a.opts.Java, a.opts.JAR)
 	a.mu.Lock()
 	a.proc = p

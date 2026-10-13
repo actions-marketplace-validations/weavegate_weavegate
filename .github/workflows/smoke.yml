@@ -64,7 +64,7 @@ jobs:
         run: >-
           go test ./internal/trace/... ./internal/oracle/...
           ./internal/fixture/... ./internal/scenario/... ./internal/orchestrator/...
-          ./internal/syncpoint/... ./internal/sut/...
+          ./internal/syncpoint/... ./internal/timing/... ./internal/sut/...
           ./fixtures/matching-slice/...
           ./cmd/weavegate/... ./internal/config/... ./internal/ci/...
           ./internal/diagnostic/... ./internal/report/...
@@ -120,6 +120,8 @@ jobs:
 
       - name: Assert the saved replay invariants
         run: |
+          grep -F 'RUN_TIMING_RESULT repeat=20 fingerprints=unchanged evidence=unchanged stages=complete' fixture.log
+          grep -F 'CLI_TIMING_RESULT scope=before_artifact_write executions=complete hierarchy=valid' fixture.log
           grep -F 'EXHAUSTIVE_STRATEGY_RESULT workers=2 points=2 candidates=6 total_known=true order=canonical per_worker_order=preserved unique_ids=6 saved_schedule_index=2 cap_exceeded=error invalid_scenario=error' fixture.log
           grep -F 'SCHEDULE_WRITE_RESULT id=sch_ba00582f9632 source=committed_fixture bytes=identical trailing_newline=true mode=0644 roundtrip=stable overwrite=ok nil_writer=error tamper=error' fixture.log
           grep -F 'EXPLORE_ENGINE_RESULT candidates=6 total_known=true evaluated=2 violating_index=2 stop_at_first=true resets=2 cleanup=ok run_error=propagated partial_summaries=2 nil_evaluator=error zero_oracles=error empty_sequence=error' fixture.log
@@ -775,7 +777,7 @@ jobs:
           go test \
             ./internal/ci/... ./internal/config/... ./internal/diagnostic/... ./internal/oracle \
             ./internal/orchestrator/... ./internal/report/... ./internal/scenario/... \
-            ./internal/sut ./internal/sut/external ./internal/syncpoint/... ./internal/trace/... ./rules/... -count=1
+            ./internal/sut ./internal/sut/external ./internal/syncpoint/... ./internal/timing/... ./internal/trace/... ./rules/... -count=1
           printf 'TOOLCHAIN_RESULT go=%s scope=non-container build=ok\n' "$(go env GOVERSION)"
 
   reusable-gate:

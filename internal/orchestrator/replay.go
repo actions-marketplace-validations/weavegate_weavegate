@@ -10,6 +10,7 @@ import (
 
 	"github.com/weavegate/weavegate/internal/oracle"
 	"github.com/weavegate/weavegate/internal/scenario"
+	"github.com/weavegate/weavegate/internal/timing"
 	"github.com/weavegate/weavegate/internal/trace"
 )
 
@@ -40,6 +41,8 @@ func (o *Orchestrator) Replay(
 	repeat int,
 	evaluator oracle.Evaluator,
 ) (result ReplayResult, returnErr error) {
+	ctx, finish := timing.Start(ctx, "replay")
+	defer finish()
 	startedAt := time.Now()
 	result = ReplayResult{
 		ScheduleID:   schedule.ID,
