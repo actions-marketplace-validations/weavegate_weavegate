@@ -217,6 +217,28 @@ def analyze(root, output):
     lines = ['# Campaign analysis', '', 'Campaign: `%s` (%s / %s).' %
              (m['campaign_id'], m['experiment'], m['phase']), '',
              'Decision: **%s**.' % decision['status'], '']
+    def display(number):
+        return 'N/A' if number is None else '%.9g' % number
+    def interval_display(value, key):
+        bounds = (value.get('interval') or {}).get(key)
+        return '[%s, %s]' % tuple(map(display, bounds)) if bounds else 'N/A'
+    def interval_reason(value):
+        if not value.get('interval'):
+            return value.get('interval_reason', 'no_valid_pairs' if not value['n'] else 'interval_unavailable')
+        if value['interval'].get('ratio') is None:
+            return 'undefined_ratio'
+        return ''
+    if 'threshold' in decision:
+        lines += ['Primary endpoint: `%s` / `%s`.' % (primary, metric), '',
+                  'Primary ratio: %s; 95%% bootstrap interval: %s.' %
+                  (display(endpoint['ratio']), interval_display(endpoint, 'ratio')), '',
+                  'Confirmatory timing rule: ratio <= %s and upper 95%% interval bound < 1; '
+                  'all planned quality/resource evidence must be complete.' % display(threshold), '']
+        reason = interval_reason(endpoint)
+        if reason:
+            lines += ['Primary interval unavailable: `%s`.' % reason, '']
+        lines += ['Decision reasons: %s.' % (', '.join('`%s`' % reason for reason in decision['reasons'])
+                                           or 'none'), '']
     if decision['higher_resource_cost']:
         if decision['status'] == 'improvement_demonstrated':
             qualification = ('faster with higher measured resource cost' if m['experiment'] == 'E1'
@@ -227,14 +249,14 @@ def analyze(root, output):
     if decision['undefined_resource_ratios']:
         lines += ['Undefined resource ratios: %s; no resource-efficiency claim follows.' %
                   ', '.join('`%s`' % name for name in decision['undefined_resource_ratios']), '']
-    lines += ['| Workload | Metric | Pairs | Geometric ratio | Mean difference |',
-              '| --- | --- | ---: | ---: | ---: |']
+    lines += ['| Workload | Metric | Pairs | Geometric ratio | Ratio 95% interval | Mean difference | Difference 95% interval | Interval limitation |',
+              '| --- | --- | ---: | ---: | --- | ---: | --- | --- |']
     for workload, metrics in results.items():
         for metric, value in metrics.items():
-            def display(number):
-                return 'N/A' if number is None else '%.9g' % number
-            lines.append('| %s | %s | %d | %s | %s |' %
-                         (workload, metric, value['n'], display(value['ratio']), display(value['difference'])))
+            lines.append('| %s | %s | %d | %s | %s | %s | %s | %s |' %
+                         (workload, metric, value['n'], display(value['ratio']),
+                          interval_display(value, 'ratio'), display(value['difference']),
+                          interval_display(value, 'difference'), interval_reason(value)))
     lines += ['', 'Full intervals, per-date estimates, arm summaries, all failure counts and',
               'pair reasons are in `results.json`; every planned slot is in `trials.csv`.',
               '', 'Secondary endpoints are descriptive. Results are conditional on the',

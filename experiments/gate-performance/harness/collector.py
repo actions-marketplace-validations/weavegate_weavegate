@@ -29,6 +29,11 @@ def validate_manifest(m):
             raise ValueError('missing inventory: ' + name)
     if not m.get('pins') or not m.get('protocols') or not m.get('execution_pins'):
         raise ValueError('protocol and artifact pins required')
+    metrics = m.get('analysis_metrics', [])
+    if (not isinstance(metrics, list) or
+            any(not isinstance(name, str) or not name.strip() for name in metrics) or
+            len(set(metrics)) != len(metrics)):
+        raise ValueError('analysis_metrics must be unique nonempty string names')
     if m['experiment'] in ('E1', 'E2'):
         if m['protocol_revision'] != 1 or m['seed'] != SEED:
             raise ValueError('E1/E2 revision 1 uses the published seed')
@@ -69,6 +74,9 @@ def validate_manifest(m):
         for arm, commands in arms.items():
             if set(commands) != set(STEPS):
                 raise ValueError('prepare/run/observe/check/cleanup commands required')
+            exits = m['expected_exit'][workload][arm]
+            if not isinstance(exits, list) or not exits or any(type(code) is not int for code in exits):
+                raise ValueError('expected exits must be a nonempty list of integers')
             for step, spec in commands.items():
                 if (not spec.get('argv') or not all(isinstance(a, str) for a in spec['argv'])
                         or not isinstance(spec.get('cwd'), str) or not spec['cwd']
@@ -192,17 +200,21 @@ def execute(spec, context, directory, step, secrets):
             process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err,
                                        start_new_session=True)
             try:
-                result['exit'] = process.wait(timeout=spec['timeout_seconds'])
-            except subprocess.TimeoutExpired:
-                result['timeout'] = True
-                os.killpg(process.pid, signal.SIGTERM)
                 try:
-                    result['exit'] = process.wait(timeout=spec.get('cancel_grace_seconds', 25))
+                    result['exit'] = process.wait(timeout=spec['timeout_seconds'])
                 except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    result['exit'] = process.wait()
+                    result['timeout'] = True
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        result['exit'] = process.wait(timeout=spec.get('cancel_grace_seconds', 25))
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        result['exit'] = process.wait()
             except BaseException:
-                os.killpg(process.pid, signal.SIGKILL)
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # Already exited; still reap before propagating interruption.
                 process.wait()
                 raise
     except OSError as error:
@@ -425,8 +437,10 @@ def inventory(root, m):
             path = directory / 'receipt.json'
             if path.exists():
                 try:
-                    environments.append({'block': slot['block'], 'arm': arm,
-                                         'observed': read_json(path).get('environment')})
+                    receipt = read_json(path)
+                    if isinstance(receipt, dict):
+                        environments.append({'block': slot['block'], 'arm': arm,
+                                             'observed': receipt.get('environment')})
                 except ValueError:
                     pass
     write_csv(root / 'trials.csv', rows, ['block', 'workload', 'date_slot', 'arm', 'attempt',

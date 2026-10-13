@@ -97,10 +97,10 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 | `sources` | Collector/analyzer source commits and dependency locks, protocol commit, registration provenance. The collector also archives its actual Python sources. |
 | `arms`, `inputs`, `runtime`, `environment`, `observation` | Nonempty inventories from the shared protocol's required campaign manifest. Include all identities, build commands, settings, resource boundaries, cache policy, expected evidence and redaction policy. Their experiment-specific completeness is a checker/auditor obligation. |
 | `commands` | Workload → `baseline`/`candidate` → `prepare`, `run`, `observe`, `check`, `cleanup` command specifications. |
-| `expected_exit`, `expected_facts` | Workload → arm → allowed existing exit codes / exact expected receipt facts. Fact equality preserves JSON types recursively: booleans cannot substitute for numbers, while equal integer/float spellings are both JSON numbers. E1 enforces exit 0 for fixed workloads and exit 2 for vulnerable workloads, plus the registered `schedule_runs` and `flaky: false` expectations. E2 enforces wrapper exit 0 after existing probe assertions succeed. |
+| `expected_exit`, `expected_facts` | Workload → arm → nonempty lists of integer exit codes / exact expected receipt facts. Booleans and floating-point exit codes fail before freeze. Fact equality preserves JSON types recursively: booleans cannot substitute for numbers, while equal integer/float spellings are both JSON numbers. E1 enforces exit 0 for fixed workloads and exit 2 for vulnerable workloads, plus the registered `schedule_runs` and `flaky: false` expectations. E2 enforces wrapper exit 0 after existing probe assertions succeed. |
 | `compare_facts` | Receipt fact keys that must match within every pair, such as normalized evidence hashes, schedule inventory, workload counts, image/cache/resource class and allocation identity. Do not compare volatile IDs or treatment-specific identities. |
 | `quality_checks` | Required receipt checks. E1/E2 require `outcome`, `assertions`, `schedules`, `repetitions`, `normalized_evidence`, `isolation`, `lifecycle`, `resources`, `environment`; add the full campaign inventory, including acceptance-completeness checks. |
-| `resource_metrics`, `analysis_metrics` | Required resources and optional descriptive numeric endpoints, with units/provenance declared in the observation inventory. Missing values remain unknown; zero is retained and its ratio is undefined. |
+| `resource_metrics`, `analysis_metrics` | Required resources and optional descriptive numeric endpoints, with units/provenance declared in the observation inventory. `analysis_metrics`, when present, must be a list of unique nonempty string names, validated before freeze; an empty list is allowed. Missing values remain unknown; zero is retained and its ratio is undefined. |
 | `redact_env` | Environment variable names whose required values are passed to hooks and removed from retained bytes and command receipts. Values are never in the manifest. |
 | `ci` | E2 `owner/repo`, full lowercase 40-hex common `execution_sha`, and required `tasks` mappings for both arms (below), validated before freeze; workflow/action/ruleset pins belong in the inventories. |
 | `deviations` | Disclosed departures from the registered design; prevents favorable confirmatory claims. |
@@ -132,6 +132,8 @@ On expiration the process group receives TERM, followed by KILL if it has not
 exited after the registered `cancel_grace_seconds` (default 25); cleanup still
 runs, and the attempt is incomplete. Grace/teardown beyond the cap remains in
 the command/event receipts. A process exit does not establish resource cleanup.
+An interruption during the termination grace wait also kills and reaps the
+command's process group before control reaches cleanup.
 
 ## Hook evidence
 
@@ -163,6 +165,9 @@ checks evidence hashes. The analyzer rechecks receipts, original evidence,
 commands and cleanup rather than trusting the derived trial classification.
 The quality interface composes campaign checkers; a boolean alone does not
 establish the underlying Oracle, isolation or telemetry semantics.
+Non-object observation JSON remains retained as failed evidence. It supplies
+no environment inventory entry, but cleanup, sealing, analysis and subsequent
+preassigned blocks still proceed when cleanup is proven.
 
 `cleanup` always runs, including after prepare/run/observe/check failures. It
 writes `cleanup.json` with `proven: true` and `evidence` path/hash entries for
@@ -245,6 +250,10 @@ bootstrap intervals. `trials.json`/`trials.csv` retain every planned slot and
 failed attempt's elapsed duration/exit. `report.md` is a concise derived table.
 Output also retains the analyzer source, exact command and input inventory hash.
 Moving the input bundle does not change the numeric tables.
+`report.md` shows ratio and absolute-difference 95% bootstrap intervals with
+each estimate, including reasons for unavailable intervals. E1/E2 confirmation
+reports also show the primary ratio/interval, fixed threshold, upper-bound rule
+and decision reasons. Pilot estimates remain descriptive.
 
 No missing duration is zero, no attempt is replaced, and phases/workloads are
 never pooled. Fewer than two valid pairs in any planned date suppresses the

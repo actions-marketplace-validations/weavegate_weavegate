@@ -6,6 +6,7 @@ import json
 import math
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from contextlib import redirect_stderr
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from analysis import analyze, estimate, quantile
 from ci import TASKS, endpoint, snapshot
@@ -176,6 +177,8 @@ if step=='cleanup':
         total = one['accounting']['example-fixed-explore']
         self.assertEqual(total['baseline']['planned'], 8)
         self.assertIn('commands.jsonl', read_json(bundle / 'SHA256SUMS'))
+        self.assertIn('fewer_than_two_valid_blocks_in_planned_date',
+                      (self.root / 'one/report.md').read_text())
 
     def test_freeze_rejects_noncanonical_dates_before_creating_bundle(self):
         for date in ('2099-1-1', '2099-01-1', '2099-1-01', '2099-02-30'):
@@ -210,6 +213,78 @@ if step=='cleanup':
         self.assertFalse((self.root / 'uppercase').exists())
         m['ci']['execution_sha'] = 'a' * 40
         self.frozen(m)
+
+    def test_freeze_validates_optional_analysis_metric_names(self):
+        for index, metrics in enumerate((None, 'cpu', {}, [1], [''], [' '], ['cpu', 'cpu'])):
+            m = copy.deepcopy(self.manifest)
+            m['analysis_metrics'] = metrics
+            source = self.source / 'metrics-manifest.json'
+            write_json(source, m)
+            destination = self.root / ('metrics-%d' % index)
+            with self.subTest(metrics=metrics):
+                with self.assertRaises(ValueError):
+                    freeze(source, destination)
+                self.assertFalse(destination.exists())
+        m['analysis_metrics'] = []
+        validate_manifest(m)
+        m['analysis_metrics'] = ['custom_seconds']
+        bundle, _ = self.frozen(m)
+        result = analyze(bundle, self.root / 'optional-metrics')
+        self.assertIn('custom_seconds', result['estimates']['example-fixed-replay'])
+
+    def test_freeze_requires_integer_expected_exit_codes(self):
+        for experiment in ('E1', 'E2'):
+            m = self.e2_manifest() if experiment == 'E2' else copy.deepcopy(self.manifest)
+            workload = 'external-acceptance' if experiment == 'E2' else 'example-fixed-replay'
+            for index, exits in enumerate(([False], [0.0], [True], ['0'], 0, [], None)):
+                m['expected_exit'][workload]['baseline'] = exits
+                source = self.source / 'exits-manifest.json'
+                write_json(source, m)
+                destination = self.root / ('exits-%s-%d' % (experiment, index))
+                with self.subTest(experiment=experiment, exits=exits):
+                    with self.assertRaises(ValueError):
+                        freeze(source, destination)
+                    self.assertFalse(destination.exists())
+            m['expected_exit'][workload]['baseline'] = [0]
+            validate_manifest(m)
+
+    def test_nonobject_receipts_remain_sealed_failed_evidence(self):
+        original_hook = self.hook.read_text()
+        for index, value in enumerate(([], None, 'receipt', 1, True)):
+            with self.subTest(value=value):
+                self.hook.write_text(original_hook + '''
+if step=='observe':
+ (p/'receipt.json').write_text(os.environ['MALFORMED_RECEIPT'])
+''')
+                m = copy.deepcopy(self.manifest)
+                checksum = digest(self.hook)
+                m['pins'][0]['sha256'] = checksum
+                m['execution_pins'][0]['sha256'] = checksum
+                for arms in m['commands'].values():
+                    for specs in arms.values():
+                        specs['observe']['env']['MALFORMED_RECEIPT'] = json.dumps(value)
+                source = self.source / 'receipt-manifest.json'
+                write_json(source, m)
+                bundle = self.root / ('receipts-%d' % index)
+                freeze(source, bundle)
+                registration = self.root / ('registration-%d.json' % index)
+                write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                         'order_sha256': digest(bundle / 'order.json'),
+                                         'registered_at': '2020-01-01T00:00:00Z',
+                                         'revision': 'constructed', 'public_url': 'https://example.invalid'})
+                self.assertTrue(collect(bundle, self.block(bundle), registration))
+                verify(bundle)
+                for arm in ('baseline', 'candidate'):
+                    directory = bundle / 'blocks' / self.block(bundle) / arm
+                    self.assertEqual(read_json(directory / 'receipt.json'), value)
+                    row = read_json(directory / 'trial.json')
+                    self.assertEqual(row['classification'], 'quality_failure')
+                    self.assertTrue(row['cleanup_proven'])
+                result = analyze(bundle, self.root / ('receipt-analysis-%d' % index))
+                self.assertTrue(result['paired_missingness'][self.block(bundle)])
+                # Bad first receipts must not prevent the next preassigned block.
+                self.assertTrue(collect(bundle, order(m)[1]['block'], registration))
+                verify(bundle)
 
     def test_expected_facts_distinguish_booleans_from_numbers_recursively(self):
         m = copy.deepcopy(self.manifest)
@@ -497,11 +572,65 @@ if step=='cleanup':
         self.assertTrue(result['timeout'])
         self.assertLess(result['exit'], 0)
 
+    def test_interrupted_timeout_grace_kills_and_reaps_before_propagating(self):
+        process = Mock(pid=123456)
+        process.wait.side_effect = [subprocess.TimeoutExpired(['hook'], 1), KeyboardInterrupt(), -9]
+        events = []
+        def kill(pid, sig):
+            events.append(('signal', pid, sig))
+        def wait(*args, **kwargs):
+            events.append(('wait', kwargs))
+            value = next(responses)
+            if isinstance(value, BaseException):
+                raise value
+            return value
+        responses = iter(process.wait.side_effect)
+        process.wait.side_effect = wait
+        spec = {'argv': ['hook'], 'cwd': str(self.root), 'env': {},
+                'timeout_seconds': 1, 'cancel_grace_seconds': 25}
+        with patch('collector.subprocess.Popen', return_value=process), \
+                patch('collector.os.killpg', side_effect=kill), self.assertRaises(KeyboardInterrupt):
+            execute(spec, {'redact_env': []}, self.root, 'interrupt', [])
+        self.assertEqual(events, [('wait', {'timeout': 1}), ('signal', process.pid, signal.SIGTERM),
+                                  ('wait', {'timeout': 25}), ('signal', process.pid, signal.SIGKILL),
+                                  ('wait', {})])
+
     def test_missing_confirmation_cannot_claim_improvement(self):
         bundle, _ = self.frozen(self.make_manifest(phase='confirmation'))
         result = analyze(bundle, self.root / 'incomplete')
         self.assertEqual(result['decision']['status'], 'no_positive_claim')
         self.assertIsNone(result['estimates']['example-fixed-replay']['gate_seconds']['ratio'])
+        report = (self.root / 'incomplete/report.md').read_text()
+        self.assertIn('ratio <= 0.85', report)
+        self.assertIn('95% bootstrap interval: N/A', report)
+        self.assertIn('incomplete_or_invalid_planned_pairs', report)
+        self.assertIn('Primary interval unavailable: `no_valid_pairs`', report)
+
+    def test_report_renders_calculated_uncertainty_for_pilot_metrics(self):
+        m = self.e2_manifest()
+        bundle, registration = self.frozen(m)
+        shutil.copyfile(registration, bundle / 'registration.json')
+        seal(bundle)
+        def constructed_row(root, manifest, slot, arm):
+            value = 2 if arm == 'baseline' else 1
+            return dict(slot, arm=arm, attempt=1, started=True, cleanup_proven=True,
+                        classification='complete', reason='', exit=0, elapsed_seconds=1,
+                        metrics={'validation_seconds': value, 'runner_minutes': value,
+                                 'peak_runner_concurrency': value},
+                        facts={'schedule': 'sch_constructed', 'host': 'test',
+                               'ci_created_at': '2026-10-13T00:00:00Z',
+                               'ci_completed_at': '2026-10-13T00:00:00Z'})
+        with patch('analysis.trial', side_effect=constructed_row):
+            result = analyze(bundle, self.root / 'pilot-intervals')
+        self.assertEqual(result['decision']['status'], 'descriptive')
+        report = (self.root / 'pilot-intervals/report.md').read_text()
+        self.assertIn('Ratio 95% interval', report)
+        self.assertIn('Difference 95% interval', report)
+        for metric in ('validation_seconds', 'runner_minutes', 'peak_runner_concurrency'):
+            self.assertEqual(result['estimates']['external-acceptance'][metric]['interval'],
+                             {'ratio': [.5, .5], 'difference': [-1, -1], 'improvement': [.5, .5]})
+            self.assertIn('| %s | 6 | 0.5 | [0.5, 0.5] | -1 | [-1, -1] |' % metric, report)
+        self.assertNotIn('Confirmatory timing rule', report)
 
 
     def test_decision_requires_secondary_pairs_and_discloses_cost(self):
@@ -529,6 +658,9 @@ if step=='cleanup':
             self.assertEqual(result['decision']['status'], 'improvement_demonstrated')
             self.assertNotIn('faster with higher measured resource cost',
                              (self.root / 'good-decision/report.md').read_text())
+            report = (self.root / 'good-decision/report.md').read_text()
+            self.assertIn('95% bootstrap interval: [0.7, 0.7]', report)
+            self.assertIn('ratio <= 0.85', report)
             state['missing'] = True
             result = analyze(bundle, self.root / 'missing-secondary')
             self.assertEqual(result['decision']['status'], 'no_positive_claim')
@@ -579,6 +711,8 @@ if step=='cleanup':
             report = (self.root / 'e2-higher-cost/report.md').read_text()
             self.assertIn('faster feedback with higher runner cost', report)
             self.assertIn('`runner_minutes`', report)
+            self.assertIn('ratio <= 0.8', report)
+            self.assertIn('95% bootstrap interval: [0.7, 0.7]', report)
             state['cost'] = 1.10
             result = analyze(bundle, self.root / 'e2-boundary-cost')
             self.assertEqual(result['decision']['higher_resource_cost'], [])

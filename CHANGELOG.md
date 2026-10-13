@@ -31,6 +31,11 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   before freeze. Human-facing reports qualify faster results with higher measured
   resource costs and name the affected metrics. See
   `experiments/gate-performance/harness/README.md`.
+- Experiment collection rejects malformed optional metric names and non-integer
+  exit contracts before freeze, kills and reaps commands interrupted during
+  termination grace, and preserves non-object receipts as sealed failed evidence.
+  Reports include bootstrap intervals, missing-interval reasons and fixed
+  confirmation thresholds. See `experiments/gate-performance/harness/README.md`.
 
 ### Added
 
