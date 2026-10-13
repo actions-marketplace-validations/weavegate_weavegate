@@ -527,6 +527,9 @@ if step=='observe':
                 self.assertNotIn(json.dumps(secret)[1:-1].encode(), path.read_bytes())
         self.assertIn(b'[REDACTED]', (bundle / 'blocks' / self.block(bundle) /
                                     'baseline/run.stdout').read_bytes())
+        command = read_json(bundle / 'blocks' / self.block(bundle) / 'baseline/run.command.json')
+        self.assertEqual(command['redacted_env_names'], ['TEST_REDACTION_SECRET'])
+        self.assertNotIn('TEST_REDACTION_SECRET', command['env'])
 
     def test_changed_live_checker_or_bundle_rejected(self):
         bundle, registration = self.frozen()

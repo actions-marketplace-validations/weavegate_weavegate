@@ -314,10 +314,11 @@ def collect_locked(root, block, registration):
         raise ValueError('block must execute on its registered UTC date')
     if timestamp(reg['registered_at']).date().isoformat() > slot['date']:
         raise ValueError('registration postdates block')
-    secret_names = m['redact_env']
-    if any(not os.environ.get(name) for name in secret_names):
+    # Public audit identifiers; credential values are read separately below.
+    redaction_env_names = m['redact_env']
+    if any(not os.environ.get(name) for name in redaction_env_names):
         raise ValueError('missing required redaction environment variable')
-    secrets = [os.environ[name].encode() for name in secret_names]
+    secrets = [os.environ[name].encode() for name in redaction_env_names]
     pair_dir = root / 'blocks' / block
     pair_dir.parent.mkdir(exist_ok=True)
     pair_dir.mkdir(mode=0o700)  # Existing or interrupted blocks cannot be rerun.
@@ -340,7 +341,7 @@ def collect_locked(root, block, registration):
             if not safe:
                 continue
             context = {'campaign_dir': root, 'trial_dir': directory,
-                       'block_id': block, 'arm': arm, 'redact_env': secret_names}
+                       'block_id': block, 'arm': arm, 'redact_env': redaction_env_names}
             commands = m['commands'][slot['workload']][arm]
             row['classification'] = 'operational_failure'
             row['reason'] = 'interrupted_collection'
