@@ -41,8 +41,9 @@ def validate_manifest(m):
         resources = E1_RESOURCES if m['experiment'] == 'E1' else E2_RESOURCES
         if not set(resources) <= set(m['resource_metrics']):
             raise ValueError('incomplete resource inventory')
-        if m['experiment'] == 'E2' and not m.get('ci'):
-            raise ValueError('CI workflow/task/ruleset inventory required')
+        if m['experiment'] == 'E2':
+            from ci import validate_inventory
+            validate_inventory(m.get('ci'))
     else:
         if not m.get('seed') or not m.get('quality_checks'):
             raise ValueError('future protocol must supply its seed and quality inventory')
@@ -55,7 +56,9 @@ def validate_manifest(m):
     if len(set(dates)) != len(dates) or dates != sorted(dates):
         raise ValueError('date slots must be distinct and increasing')
     for date in dates:
-        datetime.strptime(date, '%Y-%m-%d')
+        if (not isinstance(date, str) or
+                datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d') != date):
+            raise ValueError('date slots must use canonical UTC YYYY-MM-DD')
     if max(map(len, m['strata'].values())) != len(dates):
         raise ValueError('date count differs from strata')
     if set(m['commands']) != set(m['strata']) or set(m['expected_facts']) != set(m['strata']):

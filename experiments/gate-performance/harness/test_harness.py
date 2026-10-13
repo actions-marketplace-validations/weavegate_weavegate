@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Constructed evidence tests; these are not E1/E2 measurements."""
 import copy
+import io
 import json
 import math
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -101,6 +104,17 @@ if step=='cleanup':
                                  'public_url': 'https://example.invalid/constructed'})
         return bundle, registration
 
+    def e2_manifest(self):
+        m = self.make_manifest('E2')
+        m['ci'] = {'repository': 'owner/repo', 'execution_sha': 'a' * 40,
+                   'tasks': {arm: {task: {'job': 'acceptance', 'step': 'check'}
+                                   for task in TASKS} for arm in ('baseline', 'candidate')}}
+        for workload, arms in m['commands'].items():
+            for arm, specs in arms.items():
+                specs['run']['timeout_seconds'] = 5400
+                m['expected_exit'][workload][arm] = [0]
+        return m
+
     def block(self, bundle):
         return read_json(bundle / 'order.json')[0]['block']
 
@@ -162,6 +176,77 @@ if step=='cleanup':
         total = one['accounting']['example-fixed-explore']
         self.assertEqual(total['baseline']['planned'], 8)
         self.assertIn('commands.jsonl', read_json(bundle / 'SHA256SUMS'))
+
+    def test_freeze_rejects_noncanonical_dates_before_creating_bundle(self):
+        for date in ('2099-1-1', '2099-01-1', '2099-1-01', '2099-02-30'):
+            m = copy.deepcopy(self.manifest)
+            m['dates'][1] = date
+            with self.subTest(date=date), self.assertRaises(ValueError):
+                self.frozen(m)
+            self.assertFalse((self.root / 'bundle').exists())
+        self.frozen()  # Canonical dates still freeze.
+
+    def test_freeze_rejects_malformed_e2_inventory_before_creating_bundle(self):
+        valid = self.e2_manifest()
+        malformed = [True, ['ci'], {}, {'repository': 'owner/repo'}]
+        for key in ('repository', 'execution_sha', 'tasks'):
+            ci = copy.deepcopy(valid['ci'])
+            ci.pop(key)
+            malformed.append(ci)
+        for repository in (None, 1, 'repo', 'owner/ repo'):
+            malformed.append(dict(valid['ci'], repository=repository))
+        for revision in (None, 1, 'main', 'g' * 40):
+            malformed.append(dict(valid['ci'], execution_sha=revision))
+        for arm in ('baseline', 'candidate'):
+            for bad_tasks in (None, [], {}, {task: {'job': 'a', 'step': 'b'}
+                                            for task in TASKS if task != 'upload'}):
+                ci = copy.deepcopy(valid['ci'])
+                ci['tasks'][arm] = bad_tasks
+                malformed.append(ci)
+            for mapping in (None, [], {}, {'job': 'a'}, {'job': '', 'step': 'b'},
+                            {'job': 'a', 'step': ' '}, {'job': 1, 'step': 'b'}):
+                ci = copy.deepcopy(valid['ci'])
+                ci['tasks'][arm]['upload'] = mapping
+                malformed.append(ci)
+        for ci in malformed:
+            m = copy.deepcopy(valid)
+            m['ci'] = ci
+            with self.subTest(ci=ci), self.assertRaises(ValueError):
+                self.frozen(m)
+            self.assertFalse((self.root / 'bundle').exists())
+        valid['ci']['tasks']['candidate']['extra'] = {'job': 'more', 'step': 'check'}
+        self.frozen(valid)  # Additional required tasks remain supported.
+
+    def test_malformed_ci_pairing_timestamps_retain_all_slots(self):
+        m = self.e2_manifest()
+        bundle, registration = self.frozen(m)
+        shutil.copyfile(registration, bundle / 'registration.json')
+        seal(bundle)
+        slot = order(m)[0]
+        state = {'key': 'ci_created_at', 'value': None}
+        def constructed_row(root, manifest, assigned, arm):
+            facts = {'schedule': 'sch_constructed', 'host': 'test',
+                     'ci_created_at': '2026-10-13T00:00:00Z',
+                     'ci_completed_at': '2026-10-13T00:00:00Z'}
+            if ((state['key'] == 'ci_created_at' and arm == slot['arms'][1]) or
+                    (state['key'] == 'ci_completed_at' and arm == slot['arms'][0])):
+                facts[state['key']] = state['value']
+            return dict(assigned, arm=arm, attempt=1, started=True,
+                        classification='complete', reason='', exit=0, elapsed_seconds=1,
+                        metrics={'validation_seconds': 1, 'runner_minutes': 1,
+                                 'peak_runner_concurrency': 1}, facts=facts)
+        # Exercise pairing/accounting independently of receipt revalidation.
+        for key in ('ci_created_at', 'ci_completed_at'):
+            for index, value in enumerate((None, 42, [], {}, 'bad timestamp')):
+                state.update(key=key, value=value)
+                output = self.root / ('pair-%s-%d' % (key, index))
+                with self.subTest(key=key, value=value), \
+                        patch('analysis.trial', side_effect=constructed_row):
+                    result = analyze(bundle, output)
+                    self.assertEqual(result['paired_missingness'][slot['block']],
+                                     ['pairing_window_missing'])
+                    self.assertEqual(len(read_json(output / 'trials.json')), 12)
+                    self.assertEqual(result['accounting']['external-acceptance']['baseline']['planned'], 6)
 
     def test_all_exits_retained_and_second_arm_runs_after_failure(self):
         m = copy.deepcopy(self.manifest)
@@ -397,7 +482,7 @@ class StatisticsTests(unittest.TestCase):
 class CITests(unittest.TestCase):
     def data(self):
         run = {'id': 1, 'status': 'completed', 'run_attempt': 1, 'head_sha': 'a' * 40,
-               'created_at': '2026-10-13T00:00:00Z'}
+               'created_at': '2026-10-13T00:00:00Z', 'updated_at': '2026-10-13T00:00:35Z'}
         def job(i, start, end, name, conclusion='success'):
             return {'id': i, 'run_id': 1, 'run_attempt': 1, 'head_sha': 'a' * 40,
                     'name': name, 'conclusion': conclusion, 'runner_id': i if conclusion != 'skipped' else 0,
@@ -449,6 +534,38 @@ class CITests(unittest.TestCase):
     def test_diagnostic_rerun_not_primary(self):
         with self.assertRaises(ValueError):
             snapshot('owner/repo', 1, 2, Path('/unused'))
+
+    def test_outer_cap_includes_workflow_and_nonrequired_job_completion(self):
+        for late in ('workflow', 'job'):
+            data, inventory = self.data()
+            data['run']['updated_at'] = '2026-10-13T01:30:00Z'
+            data['pages'][0]['jobs'][3]['completed_at'] = '2026-10-13T01:30:00Z'
+            metrics = endpoint(data, inventory)
+            self.assertEqual(metrics['validation_seconds'], 25)
+            self.assertEqual(metrics['queue_inclusive_seconds'], 30)
+            if late == 'workflow':
+                data['run']['updated_at'] = '2026-10-13T01:30:01Z'
+            else:
+                data['pages'][0]['jobs'][3]['completed_at'] = '2026-10-13T01:30:01Z'
+            with self.subTest(late=late), self.assertRaisesRegex(ValueError, 'capped'):
+                endpoint(data, inventory)
+
+    def test_snapshot_provider_errors_use_controlled_cli_diagnostic(self):
+        from tool import main
+        for failing_call in (0, 1):
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / 'ci.json'
+                error = subprocess.CalledProcessError(1, ['gh', 'api'], stderr='provider error')
+                responses = [subprocess.CompletedProcess(['gh'], 0, stdout='{}')] * failing_call + [error]
+                stderr = io.StringIO()
+                argv = ['tool.py', 'ci-snapshot', '--repository', 'owner/repo',
+                        '--run-id', '1', '--output', str(output)]
+                with self.subTest(failing_call=failing_call), patch.object(sys, 'argv', argv), \
+                        patch('ci.subprocess.run', side_effect=responses), redirect_stderr(stderr):
+                    self.assertEqual(main(), 1)
+                    self.assertIn('campaign tooling: gh api failed', stderr.getvalue())
+                    self.assertNotIn('Traceback', stderr.getvalue())
+                    self.assertFalse(output.exists())
 
 
 if __name__ == '__main__':

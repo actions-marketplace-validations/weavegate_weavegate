@@ -18,6 +18,14 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ## [Unreleased]
 
+### Fixed
+
+- Experiment campaigns reject unpadded UTC dates and malformed E2 CI inventories
+  before freeze, apply the 90-minute cap to the whole workflow attempt, retain
+  malformed pairing timestamps as missing evidence, and report provider request
+  failures with a controlled diagnostic. See
+  `experiments/gate-performance/harness/README.md`.
+
 ### Added
 
 - Standalone experiment tools freeze campaign inputs and arm order, retain failed

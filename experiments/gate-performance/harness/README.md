@@ -102,13 +102,16 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 | `quality_checks` | Required receipt checks. E1/E2 require `outcome`, `assertions`, `schedules`, `repetitions`, `normalized_evidence`, `isolation`, `lifecycle`, `resources`, `environment`; add the full campaign inventory, including acceptance-completeness checks. |
 | `resource_metrics`, `analysis_metrics` | Required resources and optional descriptive numeric endpoints, with units/provenance declared in the observation inventory. Missing values remain unknown; zero is retained and its ratio is undefined. |
 | `redact_env` | Environment variable names whose required values are passed to hooks and removed from retained bytes and command receipts. Values are never in the manifest. |
-| `ci` | E2 repository, common `execution_sha`, and `tasks` mapping for each arm (below), plus workflow/action/ruleset pins in the inventories. |
+| `ci` | E2 `owner/repo`, full 40-hex common `execution_sha`, and required `tasks` mappings for both arms (below), validated before freeze; workflow/action/ruleset pins belong in the inventories. |
 | `deviations` | Disclosed departures from the registered design; prevents favorable confirmatory claims. |
 
 A command specification contains exact `argv` (array), `cwd`, `env` (explicit
 allowlisted values) and `timeout_seconds`. No shell is introduced by the
 collector. Tokens `{trial_dir}`, `{campaign_dir}`, `{block_id}`, `{arm}` expand
 at execution. Use absolute executable paths or explicitly supply `PATH`.
+Date slots must use canonical UTC `YYYY-MM-DD` strings; unpadded dates fail
+before a campaign directory is created.
+
 Parent environment values are not inherited except names in `redact_env`.
 Secrets must be supplied only by those environment variables, never argv,
 ordinary `env` values, pins, inventories or registration fields. Declare any
@@ -183,21 +186,33 @@ python3 -B experiments/gate-performance/harness/tool.py ci-snapshot \
 and every jobs/steps JSON page in one snapshot. The observer separately retains
 logs, XML, workflow files, cache/resource receipts and same-run acceptance
 manifests; API success cannot substitute for `--require-complete` or upload.
+Provider request failures return exit 1 with a concise `campaign tooling:`
+diagnostic and leave no partial snapshot.
 
 `ci.tasks.baseline` and `.candidate` map logical task names `go`, `java`,
 `explore`, `replay`, `rollback`, `death`, `cancellation`, `accounting`, `upload`
 to exact `{job, step}` names in the frozen workflow. Additional required logical
-tasks are allowed. Provider calculation rejects incomplete/duplicated pages,
+tasks are allowed. Every mapping must contain nonempty string `job` and `step`
+names; malformed or incomplete inventories fail before freeze.
+Provider calculation rejects incomplete/duplicated pages,
 wrong attempt/run/revision, failed/skipped required jobs or steps and missing
 runner end times. It derives `validation_seconds`, `queue_inclusive_seconds`,
 `initial_queue_seconds`, `runner_minutes`, `peak_runner_concurrency` from UTC
 provider timestamps. Failed and matrix jobs contribute runner cost; skipped
 jobs do not. Concurrency uses half-open intervals and does not sum parallel
 jobs as wall time. It validates all derived receipt values exactly.
+The 90-minute outer cap starts at run creation and covers the latest started-job
+completion and the completed run's `updated_at` metadata, as well as the
+acceptance bundle. GitHub exposes no workflow `completed_at`; `updated_at` is
+used conservatively for the outer bound. Exceeding the cap invalidates the
+observation even when the acceptance bundle finished earlier. The primary and
+queue-inclusive endpoints still end at acceptance-bundle completion.
 
 Receipt facts `ci_created_at` and `ci_completed_at` identify each workflow's
 provider boundaries; the analyzer requires the second run's creation to follow
-the first run's completion by at most 300 seconds. Register required image,
+the first run's completion by at most 300 seconds. Missing, malformed or
+non-string pairing timestamps retain the pair as `pairing_window_missing`
+without aborting campaign analysis. Register required image,
 cache and resource-class facts for paired equality and validate workflow hashes
 and run IDs in the campaign checker. Merge-ready and evidence-ready timings
 need their separate frozen ruleset/step mappings in the observer; the tool does

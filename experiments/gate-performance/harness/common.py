@@ -49,6 +49,8 @@ def utc():
 
 
 def timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError('timestamp must be a UTC string')
     parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
         raise ValueError('timestamp must use UTC: ' + value)

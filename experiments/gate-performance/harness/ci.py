@@ -1,4 +1,5 @@
 """GitHub Actions attempt-specific provider evidence and interval arithmetic."""
+import re
 import subprocess
 
 from common import read_json, timestamp, write_json
@@ -7,11 +8,36 @@ TASKS = ('go', 'java', 'explore', 'replay', 'rollback', 'death', 'cancellation',
          'accounting', 'upload')
 
 
+def validate_inventory(inventory):
+    if not isinstance(inventory, dict):
+        raise ValueError('CI workflow/task/ruleset inventory required')
+    repository, revision = inventory.get('repository'), inventory.get('execution_sha')
+    if (not isinstance(repository, str) or
+            not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository)):
+        raise ValueError('CI repository must use owner/repo')
+    if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-fA-F]{40}', revision):
+        raise ValueError('CI execution_sha must be a full commit SHA')
+    tasks = inventory.get('tasks')
+    if not isinstance(tasks, dict) or set(tasks) != {'baseline', 'candidate'}:
+        raise ValueError('CI task mappings required for both arms')
+    for arm, mappings in tasks.items():
+        if not isinstance(mappings, dict) or not set(TASKS) <= set(mappings):
+            raise ValueError('incomplete frozen logical acceptance bundle: ' + arm)
+        for task, mapping in mappings.items():
+            if (not isinstance(task, str) or not task.strip() or not isinstance(mapping, dict) or
+                    any(not isinstance(mapping.get(key), str) or not mapping[key].strip()
+                        for key in ('job', 'step'))):
+                raise ValueError('CI tasks require nonempty job/step names: ' + arm)
+
+
 def snapshot(repository, run_id, attempt, output):
     if attempt != 1:
         raise ValueError('primary collection accepts original attempt 1 only')
     def api(path):
-        result = subprocess.run(['gh', 'api', path], check=True, capture_output=True, text=True)
+        try:
+            result = subprocess.run(['gh', 'api', path], check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as error:
+            raise ValueError('gh api failed for %s (exit %s)' % (path, error.returncode)) from None
         import json
         return json.loads(result.stdout)
     prefix = 'repos/%s/actions/runs/%s/attempts/%s' % (repository, run_id, attempt)
@@ -71,7 +97,10 @@ def endpoint(snapshot, inventory):
     if not intervals:
         raise ValueError('no started jobs')
     first, bundle, created = min(a for a, _ in intervals), max(completed), timestamp(run['created_at'])
-    if created > first or bundle < first or (bundle - created).total_seconds() > 5400:
+    # Completed Actions runs expose updated_at rather than a workflow completed_at.
+    # Retain the acceptance endpoint, but censor using the whole attempt's boundary.
+    finished = max(timestamp(run['updated_at']), bundle, max(b for _, b in intervals))
+    if created > first or bundle < first or (finished - created).total_seconds() > 5400:
         raise ValueError('invalid/capped workflow boundaries')
     events = [(a, 1) for a, b in intervals if b > a] + [(b, -1) for a, b in intervals if b > a]
     active = peak = 0
