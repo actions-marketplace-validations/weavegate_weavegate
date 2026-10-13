@@ -12,6 +12,7 @@ import (
 
 	"github.com/weavegate/weavegate/internal/ci"
 	"github.com/weavegate/weavegate/internal/scenario"
+	"github.com/weavegate/weavegate/internal/timing"
 )
 
 func sampleSchedule(t *testing.T) Schedule {
@@ -548,6 +549,8 @@ func testRerunIdentical(t *testing.T, base string) string {
 
 	first := sampleRun(t, "run_20260816T130000.000Z_cccccccc")
 	second := sampleRun(t, "run_20260816T130001.000Z_dddddddd")
+	first.Manifest.Timings = NewTimings([]timing.Span{{ID: 1, Name: "command", DurationNS: 100}})
+	second.Manifest.Timings = NewTimings([]timing.Span{{ID: 1, Name: "command", DurationNS: 999}})
 
 	firstDir, err := WriteRun(base, first)
 	if err != nil {

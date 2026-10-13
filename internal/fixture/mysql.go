@@ -15,6 +15,7 @@ import (
 
 	mysqldriver "github.com/go-sql-driver/mysql"
 	mysqlcontainer "github.com/testcontainers/testcontainers-go/modules/mysql"
+	"github.com/weavegate/weavegate/internal/timing"
 )
 
 const (
@@ -89,13 +90,15 @@ func (f *mysqlFixture) Provision(
 		}
 	}()
 
+	containerCtx, finishContainer := timing.Start(ctx, "database_start")
 	container, err := mysqlcontainer.Run(
-		ctx,
+		containerCtx,
 		prepared.image,
 		mysqlcontainer.WithDatabase(fixtureDatabase),
 		mysqlcontainer.WithUsername(rootUsername),
 		mysqlcontainer.WithPassword(adminPassword),
 	)
+	finishContainer()
 	if err != nil {
 		if container != nil {
 			return nil, errors.Join(

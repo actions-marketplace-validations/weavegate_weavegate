@@ -52,6 +52,10 @@ bump; additive fields remain compatible under the same tolerance rule.
   logic instead of increasing for routine additions.
 - The existing reader continues to accept version 1 `violating_schedule` while
   newly written version 2 and 3 artifacts use the neutral `schedule` field.
+- Optional `manifest.timings` adds volatile performance intervals under the
+  same v2/v3 policy. Older artifacts may omit it, and no existing field's
+  meaning changes. Its addition does not change deterministic artifacts or
+  fingerprint inputs; see [run timings](../reference/report-schema.md#run-timings).
 
 ## What didn't work
 
