@@ -20,6 +20,11 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Added
 
+- Standalone experiment tools freeze campaign inputs and arm order, retain failed
+  and missing attempts with cleanup evidence, and reproduce E1/E2 paired tables
+  and uncertainty from hashed raw bundles. See
+  `experiments/gate-performance/harness/README.md`; the demo is constructed
+  evidence, not a performance result.
 - Completed CLI runs retain stage timings in `manifest.json` and `report.json`,
   including every explored candidate and replay repetition, database preparation,
   external JAR/startup, execution, Oracle and cleanup. Timings stop before artifact
