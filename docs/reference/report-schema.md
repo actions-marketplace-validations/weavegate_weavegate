@@ -139,9 +139,11 @@ candidates over 3 passes and recorded 262 spans, so `manifest.json` grew to
 about 43 KB. Nearly all of it was timing, roughly 2.3 KB per execution, and
 `report.json` was about 48 KB. Larger candidate sets, more passes, or higher
 `--repeat` values scale both files accordingly. To reproduce these figures,
-run the following from the repository root and choose a fresh output directory:
+run the following from the repository root. It writes to a fresh temporary
+output directory:
 
 ```bash
+OUT=$(mktemp -d)
 weavegate run --config fixtures/matching-slice/.weavegate/config.yaml \
   --scenario concurrent-assign --variant fixed --out "$OUT"
 wc -c "$OUT"/runs/*/manifest.json "$OUT"/runs/*/report.json
