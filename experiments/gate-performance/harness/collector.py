@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,13 @@ from common import (E1_RESOURCES, E2_RESOURCES, INVENTORIES, PROTOCOLS, QUALITY,
 STEPS = ('prepare', 'run', 'observe', 'check', 'cleanup')
 
 
+def string_inventory(value, name, allow_empty=False):
+    if (not isinstance(value, list) or (not value and not allow_empty) or
+            any(not isinstance(item, str) or not item.strip() for item in value) or
+            len(set(value)) != len(value)):
+        raise ValueError(name + ' must be a list of unique nonempty strings')
+
+
 def validate_manifest(m):
     if m.get('schema') != 1 or m.get('experiment') not in ('E1', 'E2', 'E3', 'E4'):
         raise ValueError('expected schema 1 and E1/E2/E3/E4')
@@ -29,11 +37,9 @@ def validate_manifest(m):
             raise ValueError('missing inventory: ' + name)
     if not m.get('pins') or not m.get('protocols') or not m.get('execution_pins'):
         raise ValueError('protocol and artifact pins required')
-    metrics = m.get('analysis_metrics', [])
-    if (not isinstance(metrics, list) or
-            any(not isinstance(name, str) or not name.strip() for name in metrics) or
-            len(set(metrics)) != len(metrics)):
-        raise ValueError('analysis_metrics must be unique nonempty string names')
+    for name in ('quality_checks', 'resource_metrics', 'compare_facts', 'redact_env'):
+        string_inventory(m.get(name), name, allow_empty=name == 'redact_env')
+    string_inventory(m.get('analysis_metrics', []), 'analysis_metrics', allow_empty=True)
     if m['experiment'] in ('E1', 'E2'):
         if m['protocol_revision'] != 1 or m['seed'] != SEED:
             raise ValueError('E1/E2 revision 1 uses the published seed')
@@ -77,6 +83,9 @@ def validate_manifest(m):
             exits = m['expected_exit'][workload][arm]
             if not isinstance(exits, list) or not exits or any(type(code) is not int for code in exits):
                 raise ValueError('expected exits must be a nonempty list of integers')
+            expected = m['expected_facts'][workload][arm]
+            if not isinstance(expected, dict) or not expected:
+                raise ValueError('expected facts must be nonempty objects')
             for step, spec in commands.items():
                 if (not spec.get('argv') or not all(isinstance(a, str) for a in spec['argv'])
                         or not isinstance(spec.get('cwd'), str) or not spec['cwd']
@@ -101,14 +110,6 @@ def validate_manifest(m):
                     raise ValueError('schedule-run count/flakiness expectation differs from protocol')
             elif m['experiment'] == 'E2' and m['expected_exit'][workload][arm] != [0]:
                 raise ValueError('completed workflow wrapper must exit 0')
-            expected = m['expected_facts'][workload][arm]
-            if not expected or not m['expected_exit'][workload][arm]:
-                raise ValueError('expected facts and exits cannot be empty')
-    if not isinstance(m.get('compare_facts'), list) or not m['compare_facts']:
-        raise ValueError('paired evidence/environment comparison fields required')
-    for name in ('quality_checks', 'resource_metrics', 'redact_env'):
-        if len(set(m[name])) != len(m[name]):
-            raise ValueError('duplicate inventory field: ' + name)
 
 
 def freeze(source, destination):
@@ -176,6 +177,39 @@ def sanitize(root, secrets):
     return removed
 
 
+def group_running(group):
+    """Linux group liveness excludes exited zombies, which parents must reap."""
+    for path in Path('/proc').glob('[0-9]*/stat'):
+        try:
+            fields = path.read_text().rsplit(')', 1)[1].split()
+        except FileNotFoundError:
+            continue  # A process exited during the kernel inventory read.
+        if int(fields[2]) == group and fields[0] not in ('Z', 'X'):
+            return True
+    return False
+
+
+def wait_group(group, deadline):
+    # Poll only termination state; this does not coordinate measured workloads.
+    wake = threading.Event()
+    while group_running(group):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        wake.wait(min(.01, remaining))
+    return True
+
+
+def kill_group(process, grace):
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+    if not wait_group(process.pid, time.monotonic() + grace):
+        raise OSError('command process group remains alive after SIGKILL')
+
+
 def execute(spec, context, directory, step, secrets):
     def expand(value):
         for key, replacement in context.items():
@@ -204,18 +238,18 @@ def execute(spec, context, directory, step, secrets):
                     result['exit'] = process.wait(timeout=spec['timeout_seconds'])
                 except subprocess.TimeoutExpired:
                     result['timeout'] = True
+                    grace = spec.get('cancel_grace_seconds', 25)
+                    deadline = time.monotonic() + grace
                     os.killpg(process.pid, signal.SIGTERM)
                     try:
-                        result['exit'] = process.wait(timeout=spec.get('cancel_grace_seconds', 25))
+                        result['exit'] = process.wait(timeout=grace)
                     except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        result['exit'] = process.wait()
+                        pass
+                    if not wait_group(process.pid, deadline):
+                        kill_group(process, grace)
+                    result['exit'] = process.wait()
             except BaseException:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass  # Already exited; still reap before propagating interruption.
-                process.wait()
+                kill_group(process, spec.get('cancel_grace_seconds', 25))
                 raise
     except OSError as error:
         result['error'] = str(error)
@@ -281,6 +315,7 @@ def collect(root, block, registration):
 def collect_locked(root, block, registration):
     root = Path(root).resolve()
     verify(root)
+    entry_hashes = read_json(root / 'SHA256SUMS')
     if (root / 'stopped.json').exists():
         raise ValueError('campaign stopped; register a new campaign')
     m = read_json(root / 'campaign.json')
@@ -328,6 +363,26 @@ def collect_locked(root, block, registration):
                '--registration', str(receipt_path)]})
     write_json(pair_dir / 'slot.json', slot)
     seal(root)  # A crash leaves a visible started block, never a replacement slot.
+    aggregates = {'trials.csv', 'commands.jsonl', 'events.jsonl', 'environments.jsonl'}
+    protected = {name: checksum for name, checksum in entry_hashes.items() if name not in aggregates}
+    protected['registration.json'] = digest(receipt_path)
+    checksum_inventory = digest(root / 'SHA256SUMS')
+    allowed = set(protected) | aggregates | {'SHA256SUMS', 'stopped.json'}
+    def protect():
+        if digest(root / 'SHA256SUMS') != checksum_inventory:
+            raise ValueError('sealed checksum inventory changed during collection')
+        for name, checksum in protected.items():
+            path = child(root, name)
+            if not path.is_file() or digest(path) != checksum:
+                raise ValueError('protected evidence changed during collection: ' + name)
+        for path in files(root):
+            name = str(path.relative_to(root))
+            if name not in allowed and pair_dir not in path.parents:
+                raise ValueError('unregistered evidence added during collection: ' + name)
+    def command(spec, context, directory, step):
+        result = execute(spec, context, directory, step, secrets)
+        protect()
+        return result
     safe = True
     try:
         for arm in slot['arms']:
@@ -340,6 +395,10 @@ def collect_locked(root, block, registration):
             write_json(directory / 'trial.json', row)
             if not safe:
                 continue
+            if slot['date'] != datetime.now(timezone.utc).strftime('%Y-%m-%d'):
+                row['reason'] = 'registered_date_expired'
+                write_json(directory / 'trial.json', row)
+                continue
             context = {'campaign_dir': root, 'trial_dir': directory,
                        'block_id': block, 'arm': arm, 'redact_env': redaction_env_names}
             commands = m['commands'][slot['workload']][arm]
@@ -347,19 +406,22 @@ def collect_locked(root, block, registration):
             row['reason'] = 'interrupted_collection'
             write_json(directory / 'trial.json', row)
             try:
-                prepare = execute(commands['prepare'], context, directory, 'prepare', secrets)
+                prepare = command(commands['prepare'], context, directory, 'prepare')
                 row['reason'] = 'prepare_failed'
                 if succeeded(prepare):
+                    verify_execution_pins(m)
+                    if slot['date'] != datetime.now(timezone.utc).strftime('%Y-%m-%d'):
+                        row.update(classification='not_started', reason='registered_date_expired')
+                        continue  # Preparation still receives its normal cleanup below.
                     row['started'] = True
                     write_json(directory / 'trial.json', row)
-                    verify_execution_pins(m)
-                    run = execute(commands['run'], context, directory, 'run', secrets)
+                    run = command(commands['run'], context, directory, 'run')
                     row.update(started=run['error'] is None, exit=run['exit'], elapsed_seconds=run['seconds'],
                                reason='unexpected_exit')
-                    observed = execute(commands['observe'], context, directory, 'observe', secrets)
+                    observed = command(commands['observe'], context, directory, 'observe')
                     redactions = sanitize(directory, secrets)
                     write_json(directory / 'redactions.json', {'replacements': redactions})
-                    checked = execute(commands['check'], context, directory, 'check', secrets)
+                    checked = command(commands['check'], context, directory, 'check')
                     evidence = None
                     try:
                         evidence = read_json(directory / 'receipt.json')
@@ -391,7 +453,7 @@ def collect_locked(root, block, registration):
                 safe = False
                 try:
                     verify_execution_pins(m)
-                    cleanup = execute(commands['cleanup'], context, directory, 'cleanup', secrets)
+                    cleanup = command(commands['cleanup'], context, directory, 'cleanup')
                     sanitize(directory, secrets)
                     proof = read_json(directory / 'cleanup.json')
                     safe = succeeded(cleanup) and proof.get('proven') is True
@@ -411,6 +473,12 @@ def collect_locked(root, block, registration):
     finally:
         if not safe:
             write_json(root / 'stopped.json', {'reason': 'cleanup_unproven', 'block': block})
+        try:
+            protect()
+        except (OSError, ValueError) as error:
+            # Preserve the old inventory and the damaged evidence for audit.
+            write_json(pair_dir / 'integrity-error.json', {'reason': str(error)})
+            raise ValueError('protected campaign evidence changed; refusing to reseal') from error
         inventory(root, m)
         seal(root)
     return safe

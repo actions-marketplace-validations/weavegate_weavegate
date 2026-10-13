@@ -248,6 +248,128 @@ if step=='cleanup':
             m['expected_exit'][workload]['baseline'] = [0]
             validate_manifest(m)
 
+    def test_freeze_requires_expected_fact_objects_for_every_arm(self):
+        for experiment in ('E1', 'E2', 'E3', 'E4'):
+            base = self.e2_manifest() if experiment == 'E2' else copy.deepcopy(self.manifest)
+            base['experiment'] = experiment
+            workload = next(iter(base['strata']))
+            for arm in ('baseline', 'candidate'):
+                for index, value in enumerate((1, True, 'facts', ['facts'], {}, None)):
+                    m = copy.deepcopy(base)
+                    m['expected_facts'][workload][arm] = value
+                    source = self.source / 'fact-manifest.json'
+                    write_json(source, m)
+                    destination = self.root / ('facts-%s-%s-%d' % (experiment, arm, index))
+                    with self.subTest(experiment=experiment, arm=arm, facts=value):
+                        with self.assertRaises(ValueError):
+                            freeze(source, destination)
+                        self.assertFalse(destination.exists())
+
+    def test_freeze_requires_unique_string_inventory_lists(self):
+        for name in ('quality_checks', 'resource_metrics', 'compare_facts', 'redact_env'):
+            for index, value in enumerate((None, 'field', {'field': True}, [1], [''], [' '],
+                                           ['field', 'field'], [['field']])):
+                m = copy.deepcopy(self.manifest)
+                m[name] = value if name in ('compare_facts', 'redact_env') or not isinstance(value, list) else m[name] + value
+                source = self.source / 'inventory-manifest.json'
+                write_json(source, m)
+                destination = self.root / ('inventory-%s-%d' % (name, index))
+                with self.subTest(name=name, value=value):
+                    with self.assertRaises(ValueError):
+                        freeze(source, destination)
+                    self.assertFalse(destination.exists())
+        validate_manifest(self.manifest)  # Empty redact_env is allowed.
+
+    def test_date_boundary_prevents_starting_the_mate_arm(self):
+        from collector import execute as real_execute
+        from common import timestamp
+        m = copy.deepcopy(self.manifest)
+        frozen_day = timestamp(m['dates'][0] + 'T23:59:59Z')
+        clock = {'now': frozen_day}
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        calls = []
+        def command(spec, context, directory, step, secrets):
+            calls.append((context['arm'], step))
+            result = real_execute(spec, context, directory, step, secrets)
+            if step == 'cleanup':
+                clock['now'] = frozen_day + timedelta(days=1)
+            return result
+        with patch('collector.datetime') as date_clock, patch('collector.execute', side_effect=command):
+            date_clock.strptime = datetime.strptime
+            date_clock.now.side_effect = lambda tz: clock['now']
+            self.assertTrue(collect(bundle, slot['block'], registration))
+        self.assertEqual({arm for arm, _ in calls}, {slot['arms'][0]})
+        mate = read_json(bundle / 'blocks' / slot['block'] / slot['arms'][1] / 'trial.json')
+        self.assertFalse(mate['started'])
+        self.assertEqual(mate['reason'], 'registered_date_expired')
+        verify(bundle)
+        result = analyze(bundle, self.root / 'date-boundary')
+        self.assertIn('registered_date_expired', result['paired_missingness'][slot['block']])
+
+    def test_date_boundary_during_prepare_cleans_up_without_running(self):
+        from collector import execute as real_execute
+        from common import timestamp
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        clock = {'now': timestamp(slot['date'] + 'T23:59:59Z')}
+        calls = []
+        def command(spec, context, directory, step, secrets):
+            calls.append((context['arm'], step))
+            result = real_execute(spec, context, directory, step, secrets)
+            if step == 'prepare':
+                clock['now'] += timedelta(days=1)
+            return result
+        with patch('collector.datetime') as date_clock, patch('collector.execute', side_effect=command):
+            date_clock.strptime = datetime.strptime
+            date_clock.now.side_effect = lambda tz: clock['now']
+            self.assertTrue(collect(bundle, slot['block'], registration))
+        self.assertEqual(calls, [(slot['arms'][0], 'prepare'), (slot['arms'][0], 'cleanup')])
+        verify(bundle)
+        for arm in slot['arms']:
+            row = read_json(bundle / 'blocks' / slot['block'] / arm / 'trial.json')
+            self.assertFalse(row['started'])
+            self.assertEqual(row['reason'], 'registered_date_expired')
+
+    def test_later_hooks_cannot_reseal_changed_prior_evidence(self):
+        from collector import execute as real_execute
+        for index, mutation in enumerate(('overwrite', 'delete', 'frozen', 'added', 'inventory')):
+            with self.subTest(mutation=mutation):
+                source = self.source / 'protected-manifest.json'
+                write_json(source, self.manifest)
+                bundle = self.root / ('protected-%d' % index)
+                freeze(source, bundle)
+                registration = self.root / ('protected-registration-%d.json' % index)
+                write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                         'order_sha256': digest(bundle / 'order.json'),
+                                         'registered_at': '2020-01-01T00:00:00Z',
+                                         'revision': 'constructed', 'public_url': 'https://example.invalid'})
+                slots = order(self.manifest)
+                collect(bundle, slots[0]['block'], registration)
+                target = bundle / 'blocks' / slots[0]['block'] / 'baseline/evidence.log'
+                calls = []
+                def command(spec, context, directory, step, secrets):
+                    calls.append((context['arm'], step))
+                    result = real_execute(spec, context, directory, step, secrets)
+                    if step == 'prepare':
+                        if mutation == 'delete':
+                            target.unlink()
+                        elif mutation == 'frozen':
+                            (bundle / 'pins/hook.py').write_text('replaced frozen evidence')
+                        elif mutation == 'added':
+                            (target.parent / 'replacement.log').write_text('invented prior evidence')
+                        elif mutation == 'inventory':
+                            write_json(bundle / 'SHA256SUMS', {})
+                        else:
+                            target.write_text('replacement observation')
+                    return result
+                with patch('collector.execute', side_effect=command), self.assertRaises(ValueError):
+                    collect(bundle, slots[1]['block'], registration)
+                with self.assertRaises(ValueError):
+                    verify(bundle)
+                self.assertNotIn((slots[1]['arms'][1], 'run'), calls)
+                self.assertIn((slots[1]['arms'][0], 'cleanup'), calls)
+
     def test_nonobject_receipts_remain_sealed_failed_evidence(self):
         original_hook = self.hook.read_text()
         for index, value in enumerate(([], None, 'receipt', 1, True)):
@@ -497,9 +619,17 @@ if step=='observe':
             self.assertTrue(row['cleanup_proven'])
             self.assertEqual(row['metrics']['cpu_seconds'], 2)
             self.assertGreater(row['elapsed_seconds'], 0)
+        result = analyze(bundle, self.root / 'failed-report')
+        report = (self.root / 'failed-report/report.md').read_text()
+        workload = order(m)[0]['workload']
+        self.assertIn('| %s | baseline | 8 | 1 | 0 | 1 | 0 | 7 |' % workload, report)
+        self.assertIn('unexpected_exit', report)
+        self.assertIn(block, report)
+        self.assertEqual(result['accounting'][workload]['baseline']['operational_failure'], 1)
 
     def test_unproven_cleanup_blocks_mate(self):
         m = copy.deepcopy(self.manifest)
+        m['deviations'] = ['constructed cleanup|deviation']
         for arms in m['commands'].values():
             for specs in arms.values():
                 specs['cleanup']['env'] = {'UNSAFE': '1'}
@@ -513,6 +643,11 @@ if step=='observe':
         self.assertFalse(row['started'])
         self.assertIsNone(row['elapsed_seconds'])
         verify(bundle)
+        analyze(bundle, self.root / 'stopped-report')
+        report = (self.root / 'stopped-report/report.md').read_text()
+        self.assertIn('Collection status: stopped', report)
+        self.assertIn('cleanup_unproven', report)
+        self.assertIn('constructed cleanup&#124;deviation', report)
 
     def test_redaction_before_hashing_and_retention(self):
         m = copy.deepcopy(self.manifest)
@@ -598,6 +733,58 @@ if step=='observe':
                                   ('wait', {'timeout': 25}), ('signal', process.pid, signal.SIGKILL),
                                   ('wait', {})])
 
+    def test_timeout_kills_descendants_after_leader_exits(self):
+        import ctypes
+        # Linux child-subreaper lets this test reap the orphaned grandchild.
+        libc = ctypes.CDLL(None, use_errno=True)
+        old = ctypes.c_int()
+        self.assertEqual(libc.prctl(37, ctypes.byref(old), 0, 0, 0), 0)
+        self.assertEqual(libc.prctl(36, 1, 0, 0, 0), 0)
+        spec = {'argv': [sys.executable, '-c', '''
+import os, signal, sys, threading
+from pathlib import Path
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+read_end, write_end = os.pipe()
+pid = os.fork()
+if pid == 0:
+ signal.signal(signal.SIGTERM, signal.SIG_IGN)
+ os.close(read_end)
+ os.write(write_end, b'ready')
+ os.close(write_end)
+ threading.Event().wait()
+else:
+ os.close(write_end)
+ os.read(read_end, 5)
+ os.close(read_end)
+ Path('descendant.pid').write_text(str(pid))
+ with Path('ready.fifo').open('wb', buffering=0) as stream:
+  stream.write(b'ready')
+ threading.Event().wait()
+'''], 'cwd': str(self.root), 'env': {}, 'timeout_seconds': .02, 'cancel_grace_seconds': .05}
+        descendant = None
+        ready = self.root / 'ready.fifo'
+        os.mkfifo(ready)
+        original_popen = subprocess.Popen
+        def ready_process(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            with ready.open('rb', buffering=0) as stream:
+                self.assertEqual(stream.read(5), b'ready')
+            return process
+        try:
+            with patch('collector.subprocess.Popen', side_effect=ready_process):
+                result = execute(spec, {'redact_env': []}, self.root, 'descendant', [])
+            descendant = int((self.root / 'descendant.pid').read_text())
+            self.assertTrue(result['timeout'])
+            pid, status = os.waitpid(descendant, os.WNOHANG)
+            self.assertEqual(pid, descendant, 'descendant survived return from execute')
+            self.assertEqual(os.waitstatus_to_exitcode(status), -signal.SIGKILL)
+            descendant = None
+        finally:
+            if descendant is not None:
+                os.kill(descendant, signal.SIGKILL)
+                os.waitpid(descendant, 0)
+            libc.prctl(36, old.value, 0, 0, 0)
+
     def test_missing_confirmation_cannot_claim_improvement(self):
         bundle, _ = self.frozen(self.make_manifest(phase='confirmation'))
         result = analyze(bundle, self.root / 'incomplete')
@@ -608,6 +795,9 @@ if step=='observe':
         self.assertIn('95% bootstrap interval: N/A', report)
         self.assertIn('incomplete_or_invalid_planned_pairs', report)
         self.assertIn('Primary interval unavailable: `no_valid_pairs`', report)
+        self.assertIn('| example-fixed-replay | baseline | 30 | 0 | 0 | 0 | 0 | 30 |', report)
+        self.assertIn('slot_not_collected', report)
+        self.assertIn('Planned pairs: 140; valid pairs: 0; excluded pairs: 140', report)
 
     def test_report_renders_calculated_uncertainty_for_pilot_metrics(self):
         m = self.e2_manifest()

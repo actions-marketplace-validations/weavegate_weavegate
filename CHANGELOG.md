@@ -36,6 +36,11 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   termination grace, and preserves non-object receipts as sealed failed evidence.
   Reports include bootstrap intervals, missing-interval reasons and fixed
   confirmation thresholds. See `experiments/gate-performance/harness/README.md`.
+- Experiment campaigns reject malformed fact objects and inventory lists before
+  freeze, retain arms whose UTC date expired as not started, terminate surviving
+  members of timed command groups, and refuse to reseal changes to prior evidence.
+  Reports include planned and observed denominators, all exclusions, deviations
+  and stopped-campaign status. See `experiments/gate-performance/harness/README.md`.
 
 ### Added
 

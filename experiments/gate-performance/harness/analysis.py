@@ -1,4 +1,5 @@
 """Rebuild accounting and paired estimates from a sanitized, sealed bundle."""
+import json
 import math
 import sys
 from collections import Counter, defaultdict
@@ -249,6 +250,43 @@ def analyze(root, output):
     if decision['undefined_resource_ratios']:
         lines += ['Undefined resource ratios: %s; no resource-efficiency claim follows.' %
                   ', '.join('`%s`' % name for name in decision['undefined_resource_ratios']), '']
+    def cell(value):
+        return str(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace(
+            '|', '&#124;').replace('\n', '<br>').replace('\r', '')
+    stopped = read_json(root / 'stopped.json') if (root / 'stopped.json').exists() else None
+    lines += ['Registered arms: %s.' % cell(json.dumps(m['arms'], sort_keys=True)), '',
+              'Quality inventory: %s.' % ', '.join(cell(name) for name in m['quality_checks']), '',
+              'Collection status: %s.' % ('stopped — ' + cell(json.dumps(stopped, sort_keys=True))
+                                         if stopped else 'not stopped'), '',
+              'Planned pairs: %d; valid pairs: %d; excluded pairs: %d.' %
+              (len(blocks), sum(not reasons for reasons in pair_reasons.values()),
+               sum(bool(reasons) for reasons in pair_reasons.values())), '',
+              '| Workload | Arm | Planned | Started | Complete | Operational failure | Quality failure | Not started |',
+              '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |']
+    for workload, arms in accounting.items():
+        for arm, counts in arms.items():
+            lines.append('| %s | %s | %d | %d | %d | %d | %d | %d |' %
+                         (cell(workload), arm, counts['planned'], counts['started'],
+                          counts.get('complete', 0), counts.get('operational_failure', 0),
+                          counts.get('quality_failure', 0), counts.get('not_started', 0)))
+    lines += ['', '| Workload | Arm | Failure or missingness reason | Count |',
+              '| --- | --- | --- | ---: |']
+    for workload, arms in accounting.items():
+        for arm, counts in arms.items():
+            for reason, count in sorted(counts['reasons'].items()):
+                lines.append('| %s | %s | %s | %d |' % (cell(workload), arm, cell(reason), count))
+    if not any(counts['reasons'] for arms in accounting.values() for counts in arms.values()):
+        lines += ['| — | — | none | 0 |']
+    lines += ['', '| Excluded block | Pair reasons |', '| --- | --- |']
+    for block, reasons in sorted(pair_reasons.items()):
+        if reasons:
+            lines.append('| %s | %s |' % (cell(block), '; '.join(cell(reason) for reason in reasons)))
+    if not any(pair_reasons.values()):
+        lines += ['| — | none |']
+    lines += ['', 'Registered deviations:', '']
+    deviations = m.get('deviations', [])
+    lines += ['- ' + cell(value) for value in deviations] if deviations else ['None.']
+    lines += ['']
     lines += ['| Workload | Metric | Pairs | Geometric ratio | Ratio 95% interval | Mean difference | Difference 95% interval | Interval limitation |',
               '| --- | --- | ---: | ---: | --- | ---: | --- | --- |']
     for workload, metrics in results.items():

@@ -97,7 +97,7 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 | `sources` | Collector/analyzer source commits and dependency locks, protocol commit, registration provenance. The collector also archives its actual Python sources. |
 | `arms`, `inputs`, `runtime`, `environment`, `observation` | Nonempty inventories from the shared protocol's required campaign manifest. Include all identities, build commands, settings, resource boundaries, cache policy, expected evidence and redaction policy. Their experiment-specific completeness is a checker/auditor obligation. |
 | `commands` | Workload → `baseline`/`candidate` → `prepare`, `run`, `observe`, `check`, `cleanup` command specifications. |
-| `expected_exit`, `expected_facts` | Workload → arm → nonempty lists of integer exit codes / exact expected receipt facts. Booleans and floating-point exit codes fail before freeze. Fact equality preserves JSON types recursively: booleans cannot substitute for numbers, while equal integer/float spellings are both JSON numbers. E1 enforces exit 0 for fixed workloads and exit 2 for vulnerable workloads, plus the registered `schedule_runs` and `flaky: false` expectations. E2 enforces wrapper exit 0 after existing probe assertions succeed. |
+| `expected_exit`, `expected_facts` | Workload → arm → nonempty lists of integer exit codes / nonempty objects of exact expected receipt facts, validated before freeze for E1–E4. Booleans and floating-point exit codes fail before freeze. Fact equality preserves JSON types recursively: booleans cannot substitute for numbers, while equal integer/float spellings are both JSON numbers. E1 enforces exit 0 for fixed workloads and exit 2 for vulnerable workloads, plus the registered `schedule_runs` and `flaky: false` expectations. E2 enforces wrapper exit 0 after existing probe assertions succeed. |
 | `compare_facts` | Receipt fact keys that must match within every pair, such as normalized evidence hashes, schedule inventory, workload counts, image/cache/resource class and allocation identity. Do not compare volatile IDs or treatment-specific identities. |
 | `quality_checks` | Required receipt checks. E1/E2 require `outcome`, `assertions`, `schedules`, `repetitions`, `normalized_evidence`, `isolation`, `lifecycle`, `resources`, `environment`; add the full campaign inventory, including acceptance-completeness checks. |
 | `resource_metrics`, `analysis_metrics` | Required resources and optional descriptive numeric endpoints, with units/provenance declared in the observation inventory. `analysis_metrics`, when present, must be a list of unique nonempty string names, validated before freeze; an empty list is allowed. Missing values remain unknown; zero is retained and its ratio is undefined. |
@@ -112,6 +112,12 @@ collector. Tokens `{trial_dir}`, `{campaign_dir}`, `{block_id}`, `{arm}` expand
 at execution. Use absolute executable paths or explicitly supply `PATH`.
 Date slots must use canonical UTC `YYYY-MM-DD` strings; unpadded dates fail
 before a campaign directory is created.
+`quality_checks`, `resource_metrics`, `compare_facts` and `redact_env` must be
+lists of unique nonempty strings; only `redact_env` may be empty. Invalid
+inventories fail before freeze. The registered UTC date is rechecked before
+each arm's preparation and before its measured run. An expired slot stays
+`not_started` with reason `registered_date_expired`; any preparation receives
+normal cleanup and the pair remains incomplete without a replacement.
 
 Parent environment values are not inherited except names in `redact_env`.
 Secrets must be supplied only by those environment variables, never argv,
@@ -128,8 +134,13 @@ checkout/build/install/gate/upload spans. Its `gate_seconds` requires a separate
 file. The wrapper's duration is never relabeled as the nested CLI duration.
 E2's `run` is a pinned observer/dispatch wrapper for one complete workflow.
 The 600/1,800/5,400-second observation budgets never modify product timeouts.
-On expiration the process group receives TERM, followed by KILL if it has not
-exited after the registered `cancel_grace_seconds` (default 25); cleanup still
+On expiration the process group receives TERM, followed by KILL if any live
+member remains after the registered `cancel_grace_seconds` (default 25).
+The grace deadline covers the whole group even when its leader exits first.
+Linux `/proc` liveness polling excludes exited zombies; it observes termination
+only and does not coordinate measured workloads. After KILL, the leader is reaped
+and group death is checked within a further grace bound; surviving members
+produce an explicit command error. Cleanup still
 runs, and the attempt is incomplete. Grace/teardown beyond the cap remains in
 the command/event receipts. A process exit does not establish resource cleanup.
 An interruption during the termination grace wait also kills and reaps the
@@ -241,6 +252,13 @@ stdout/stderr, trial rows, observer/checker originals and cleanup proofs.
 slots and actual commands. A private `collection.lock` prevents concurrent
 local writers. `SHA256SUMS` is a sorted JSON path-to-hash inventory of every
 other bundle file; JSON preserves unusual filenames unambiguously.
+Each hook's return and final sealing check the entry hashes of preexisting
+evidence and frozen files. Hooks may add/change files only in the current block
+and the regenerated aggregate ledgers. Changes to prior evidence, the checksum
+inventory or other protected paths stop collection and refuse resealing. The
+current block retains `integrity-error.json`; the damaged bundle and original
+checksum inventory remain for audit. Preserve them rather than repairing them
+into replacement primary evidence.
 
 Analyze into a **new directory outside the input bundle**. `results.json`
 contains every planned/started/completion/failure denominator, reason counts,
@@ -254,6 +272,9 @@ Moving the input bundle does not change the numeric tables.
 each estimate, including reasons for unavailable intervals. E1/E2 confirmation
 reports also show the primary ratio/interval, fixed threshold, upper-bound rule
 and decision reasons. Pilot estimates remain descriptive.
+The report also includes registered arms, quality inventory, planned/started
+and every outcome denominator by workload/arm, failure-reason counts, excluded
+blocks with pair reasons, registered deviations and stopped-campaign status.
 
 No missing duration is zero, no attempt is replaced, and phases/workloads are
 never pooled. Fewer than two valid pairs in any planned date suppresses the
