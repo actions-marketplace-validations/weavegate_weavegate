@@ -25,6 +25,12 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   malformed pairing timestamps as missing evidence, and report provider request
   failures with a controlled diagnostic. See
   `experiments/gate-performance/harness/README.md`.
+- Experiment evidence checks bind E2 pairing timestamps to retained provider
+  data, reject missing runner identities and boolean/number substitutions in
+  facts, and require string working directories and lowercase execution commits
+  before freeze. Human-facing reports qualify faster results with higher measured
+  resource costs and name the affected metrics. See
+  `experiments/gate-performance/harness/README.md`.
 
 ### Added
 

@@ -15,8 +15,8 @@ def validate_inventory(inventory):
     if (not isinstance(repository, str) or
             not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository)):
         raise ValueError('CI repository must use owner/repo')
-    if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-fA-F]{40}', revision):
-        raise ValueError('CI execution_sha must be a full commit SHA')
+    if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision):
+        raise ValueError('CI execution_sha must be a full lowercase commit SHA')
     tasks = inventory.get('tasks')
     if not isinstance(tasks, dict) or set(tasks) != {'baseline', 'candidate'}:
         raise ValueError('CI task mappings required for both arms')
@@ -53,6 +53,17 @@ def snapshot(repository, run_id, attempt, output):
     write_json(output, {'repository': repository, 'run': run, 'pages': pages})
 
 
+def workflow_bounds(snapshot):
+    """Provider pairing instants, using the same conservative end as the cap.
+
+    Call only after endpoint has validated the complete attempt's telemetry.
+    """
+    run = snapshot['run']
+    ends = [timestamp(j['completed_at']) for page in snapshot['pages'] for j in page['jobs']
+            if j.get('started_at') is not None and j['conclusion'] != 'skipped']
+    return timestamp(run['created_at']), max([timestamp(run['updated_at'])] + ends)
+
+
 def endpoint(snapshot, inventory):
     run = snapshot['run']
     if (run.get('status') != 'completed' or run['run_attempt'] != 1 or run['head_sha'] != inventory['execution_sha'] or
@@ -75,6 +86,8 @@ def endpoint(snapshot, inventory):
         if len(found) != 1 or found[0]['conclusion'] != 'success':
             raise ValueError('required logical job incomplete: ' + task)
         job = found[0]
+        if not job.get('started_at'):
+            raise ValueError('missing required job start: ' + task)
         if not job.get('completed_at'):
             raise ValueError('missing required job completion: ' + task)
         steps = [s for s in job['steps'] if s['name'] == mapping['step']]
@@ -83,11 +96,13 @@ def endpoint(snapshot, inventory):
         completed.append(timestamp(job['completed_at']))
     intervals = []
     for job in jobs:
-        if job.get('started_at') is None or not job.get('runner_id'):
-            continue
         # A skipped job never acquired a runner, even if the API supplies timestamps.
         if job['conclusion'] == 'skipped':
             continue
+        if job.get('started_at') is None:
+            continue
+        if type(job.get('runner_id')) is not int or job['runner_id'] <= 0:
+            raise ValueError('missing/invalid started-job runner identity')
         if not job.get('completed_at'):
             raise ValueError('censored runner use')
         start, end = timestamp(job['started_at']), timestamp(job['completed_at'])
@@ -96,10 +111,10 @@ def endpoint(snapshot, inventory):
         intervals.append((start, end))
     if not intervals:
         raise ValueError('no started jobs')
-    first, bundle, created = min(a for a, _ in intervals), max(completed), timestamp(run['created_at'])
+    first, bundle = min(a for a, _ in intervals), max(completed)
     # Completed Actions runs expose updated_at rather than a workflow completed_at.
     # Retain the acceptance endpoint, but censor using the whole attempt's boundary.
-    finished = max(timestamp(run['updated_at']), bundle, max(b for _, b in intervals))
+    created, finished = workflow_bounds(snapshot)
     if created > first or bundle < first or (finished - created).total_seconds() > 5400:
         raise ValueError('invalid/capped workflow boundaries')
     events = [(a, 1) for a, b in intervals if b > a] + [(b, -1) for a, b in intervals if b > a]

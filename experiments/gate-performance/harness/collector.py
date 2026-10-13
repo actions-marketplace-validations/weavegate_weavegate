@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common import (E1_RESOURCES, E2_RESOURCES, INVENTORIES, PROTOCOLS, QUALITY,
-                    SEED, canonical, child, counter, digest, files, order,
+                    SEED, canonical, child, counter, digest, files, json_equal, order,
                     positive, read_json, sampling, seal, sha, timestamp, utc,
                     verify, write_csv, write_json)
 
@@ -71,7 +71,8 @@ def validate_manifest(m):
                 raise ValueError('prepare/run/observe/check/cleanup commands required')
             for step, spec in commands.items():
                 if (not spec.get('argv') or not all(isinstance(a, str) for a in spec['argv'])
-                        or not spec.get('cwd') or not positive(spec.get('timeout_seconds'))
+                        or not isinstance(spec.get('cwd'), str) or not spec['cwd']
+                        or not positive(spec.get('timeout_seconds'))
                         or not isinstance(spec.get('env'), dict)
                         or not all(isinstance(k, str) and isinstance(v, str) for k, v in spec['env'].items())
                         or not positive(spec.get('cancel_grace_seconds', 25))):
@@ -224,7 +225,7 @@ def receipt_valid(m, row, receipt, directory):
         raise ValueError('missing or failed quality checks')
     facts = receipt.get('facts', {})
     expected = m['expected_facts'][row['workload']][row['arm']]
-    if any(key not in facts or facts[key] != value for key, value in expected.items()):
+    if any(key not in facts or not json_equal(facts[key], value) for key, value in expected.items()):
         raise ValueError('observed facts differ from registered expectations')
     if any(key not in facts for key in m['compare_facts']):
         raise ValueError('missing paired comparison facts')
@@ -240,11 +241,14 @@ def receipt_valid(m, row, receipt, directory):
             raise ValueError('retained evidence hash mismatch: ' + name)
     metric = 'gate_seconds' if m['experiment'] == 'E1' else 'validation_seconds'
     if m['experiment'] == 'E2':
-        from ci import endpoint
-        derived = endpoint(read_json(child(directory, receipt['ci_snapshot'])),
-                           dict(m['ci'], tasks=m['ci']['tasks'][row['arm']]))
+        from ci import endpoint, workflow_bounds
+        provider = read_json(child(directory, receipt['ci_snapshot']))
+        derived = endpoint(provider, dict(m['ci'], tasks=m['ci']['tasks'][row['arm']]))
         if any(receipt['metrics'].get(k) != v for k, v in derived.items()):
             raise ValueError('CI receipt disagrees with provider timestamps')
+        for key, boundary in zip(('ci_created_at', 'ci_completed_at'), workflow_bounds(provider)):
+            if timestamp(facts.get(key)) != boundary:
+                raise ValueError('CI pairing timestamp disagrees with provider: ' + key)
     elif m['experiment'] in ('E3', 'E4'):
         return
     if m['experiment'] == 'E1' and m['phase'] == 'adoption-cold':

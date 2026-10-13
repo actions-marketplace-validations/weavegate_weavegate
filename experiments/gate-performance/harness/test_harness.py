@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
@@ -185,6 +185,165 @@ if step=='cleanup':
                 self.frozen(m)
             self.assertFalse((self.root / 'bundle').exists())
         self.frozen()  # Canonical dates still freeze.
+
+    def test_freeze_requires_string_working_directories(self):
+        for step in ('prepare', 'run', 'observe', 'check', 'cleanup'):
+            for index, cwd in enumerate((42, True, ['path'], {'path': 'cwd'}, '', None)):
+                m = copy.deepcopy(self.manifest)
+                m['commands']['example-fixed-replay']['baseline'][step]['cwd'] = cwd
+                source = self.source / 'cwd-manifest.json'
+                write_json(source, m)
+                destination = self.root / ('cwd-%s-%d' % (step, index))
+                with self.subTest(step=step, cwd=cwd):
+                    with self.assertRaises(ValueError):
+                        freeze(source, destination)
+                    self.assertFalse(destination.exists())
+        self.frozen()  # Valid string directories still freeze.
+
+    def test_freeze_requires_lowercase_execution_sha(self):
+        m = self.e2_manifest()
+        m['ci']['execution_sha'] = 'A' * 40
+        source = self.source / 'sha-manifest.json'
+        write_json(source, m)
+        with self.assertRaises(ValueError):
+            freeze(source, self.root / 'uppercase')
+        self.assertFalse((self.root / 'uppercase').exists())
+        m['ci']['execution_sha'] = 'a' * 40
+        self.frozen(m)
+
+    def test_expected_facts_distinguish_booleans_from_numbers_recursively(self):
+        m = copy.deepcopy(self.manifest)
+        workload, arm = 'example-fixed-replay', 'baseline'
+        m['expected_facts'][workload][arm].update(
+            passed=True, nested={'ok': False, 'probes': [True, 1]})
+        directory = self.root / 'facts'
+        directory.mkdir()
+        (directory / 'proof.log').write_text('constructed evidence')
+        receipt = {'checks': {key: True for key in QUALITY},
+                   'facts': dict(m['expected_facts'][workload][arm], host='test'),
+                   'metrics': dict.fromkeys(E1_RESOURCES, 1),
+                   'environment': {'host': 'test'}, 'resource_method': 'constructed',
+                   'evidence': {'proof.log': digest(directory / 'proof.log')}}
+        receipt['metrics']['gate_seconds'] = 1
+        row = {'workload': workload, 'arm': arm}
+        receipt_valid(m, row, receipt, directory)
+        mutations = [('flaky', 0), ('passed', 1),
+                     ('nested', {'ok': 0, 'probes': [True, 1]}),
+                     ('nested', {'ok': False, 'probes': [1, 1]}),
+                     ('nested', {'ok': False, 'probes': [True, True]})]
+        for key, value in mutations:
+            bad = copy.deepcopy(receipt)
+            bad['facts'][key] = value
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, 'facts differ'):
+                receipt_valid(m, row, bad, directory)
+        # JSON has a single number type; equal integer/float spellings remain valid.
+        receipt['facts']['schedule_runs'] = 20.0
+        receipt_valid(m, row, receipt, directory)
+
+    def test_ci_pairing_facts_must_match_retained_provider_boundaries(self):
+        m = self.e2_manifest()
+        data, inventory = CITests().data()
+        m['ci']['tasks'] = {arm: copy.deepcopy(inventory['tasks'])
+                            for arm in ('baseline', 'candidate')}
+        directory = self.root / 'provider'
+        directory.mkdir()
+        write_json(directory / 'ci.json', data)
+        workload, arm = 'external-acceptance', 'baseline'
+        receipt = {'checks': {key: True for key in QUALITY},
+                   'facts': dict(m['expected_facts'][workload][arm], host='test',
+                                 ci_created_at=data['run']['created_at'],
+                                 ci_completed_at=data['run']['updated_at']),
+                   'metrics': endpoint(data, inventory),
+                   'environment': {'host': 'test'}, 'resource_method': 'constructed',
+                   'ci_snapshot': 'ci.json', 'evidence': {'ci.json': digest(directory / 'ci.json')}}
+        row = {'workload': workload, 'arm': arm}
+        receipt_valid(m, row, receipt, directory)
+        for key in ('ci_created_at', 'ci_completed_at'):
+            for value in ('2026-10-13T00:00:30Z', None, 42):
+                bad = copy.deepcopy(receipt)
+                bad['facts'][key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    receipt_valid(m, row, bad, directory)
+            bad = copy.deepcopy(receipt)
+            bad['facts'].pop(key)
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                receipt_valid(m, row, bad, directory)
+        # Equivalent UTC timestamp spellings match the provider instant.
+        receipt['facts']['ci_created_at'] = '2026-10-13T00:00:00+00:00'
+        receipt_valid(m, row, receipt, directory)
+        # Use the latest started-job end when metadata precedes it.
+        data['run']['updated_at'] = '2026-10-13T00:00:30Z'
+        write_json(directory / 'ci.json', data)
+        receipt['evidence']['ci.json'] = digest(directory / 'ci.json')
+        receipt_valid(m, row, receipt, directory)
+
+    def test_analyzer_rejects_forged_ci_pairing_facts(self):
+        m = self.e2_manifest()
+        _, inventory = CITests().data()
+        m['ci']['tasks'] = {arm: copy.deepcopy(inventory['tasks'])
+                            for arm in ('baseline', 'candidate')}
+        bundle, registration = self.frozen(m)
+        shutil.copyfile(registration, bundle / 'registration.json')
+        slot = order(m)[0]
+        for index, arm in enumerate(slot['arms']):
+            data, _ = CITests().data()
+            if index:
+                # The real second dispatch is 600 seconds after first completion.
+                shift = timedelta(seconds=635)
+                for key in ('created_at', 'updated_at'):
+                    data['run'][key] = (datetime.fromisoformat(data['run'][key].replace('Z', '+00:00'))
+                                        + shift).isoformat()
+                data['run']['id'] = 2
+                for job in data['pages'][0]['jobs']:
+                    job['run_id'] = 2
+                    for key in ('started_at', 'completed_at'):
+                        job[key] = (datetime.fromisoformat(job[key].replace('Z', '+00:00')) + shift).isoformat()
+                    for step in job['steps']:
+                        step['completed_at'] = job['completed_at']
+            directory = bundle / 'blocks' / slot['block'] / arm
+            directory.mkdir(parents=True)
+            write_json(directory / 'ci.json', data)
+            facts = dict(m['expected_facts'][slot['workload']][arm], host='test',
+                         ci_created_at='2026-10-13T00:00:35Z' if index else data['run']['created_at'],
+                         ci_completed_at=data['run']['updated_at'])
+            metrics = endpoint(data, inventory)
+            receipt = {'checks': dict.fromkeys(QUALITY, True), 'facts': facts, 'metrics': metrics,
+                       'environment': {'host': 'test'}, 'resource_method': 'constructed',
+                       'ci_snapshot': 'ci.json', 'evidence': {'ci.json': digest(directory / 'ci.json')}}
+            write_json(directory / 'receipt.json', receipt)
+            for step in ('prepare', 'run', 'observe', 'check', 'cleanup'):
+                write_json(directory / (step + '.command.json'),
+                           {'exit': 0, 'timeout': False, 'error': None, 'seconds': 1,
+                            'started_at': data['run']['created_at']})
+            (directory / 'cleanup.log').write_text('constructed cleanup proof')
+            write_json(directory / 'cleanup.json',
+                       {'proven': True, 'evidence': {'cleanup.log': digest(directory / 'cleanup.log')}})
+            write_json(directory / 'trial.json', dict(slot, arm=arm, attempt=1, started=True,
+                       cleanup_proven=True, classification='complete', reason='', exit=0,
+                       elapsed_seconds=1, facts=facts, metrics=metrics))
+        seal(bundle)
+        output = self.root / 'forged-analysis'
+        result = analyze(bundle, output)
+        self.assertIn('CI pairing timestamp disagrees with provider: ci_created_at',
+                      result['paired_missingness'][slot['block']])
+        rows = read_json(output / 'trials.json')
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(next(r for r in rows if r['block'] == slot['block'] and
+                              r['arm'] == slot['arms'][1])['classification'], 'quality_failure')
+
+    def test_paired_facts_distinguish_booleans_from_numbers(self):
+        bundle, registration = self.frozen()
+        block = self.block(bundle)
+        collect(bundle, block, registration)
+        for arm, value in (('baseline', False), ('candidate', 0)):
+            directory = bundle / 'blocks' / block / arm
+            for name in ('receipt.json', 'trial.json'):
+                record = read_json(directory / name)
+                record['facts']['host'] = {'nested': [value]}
+                write_json(directory / name, record)
+        seal(bundle)
+        result = analyze(bundle, self.root / 'paired-types')
+        self.assertEqual(result['paired_missingness'][block], ['paired_facts_mismatch'])
 
     def test_freeze_rejects_malformed_e2_inventory_before_creating_bundle(self):
         valid = self.e2_manifest()
@@ -368,6 +527,8 @@ if step=='cleanup':
                 patch('analysis.estimate', side_effect=fixed_estimate):
             result = analyze(bundle, self.root / 'good-decision')
             self.assertEqual(result['decision']['status'], 'improvement_demonstrated')
+            self.assertNotIn('faster with higher measured resource cost',
+                             (self.root / 'good-decision/report.md').read_text())
             state['missing'] = True
             result = analyze(bundle, self.root / 'missing-secondary')
             self.assertEqual(result['decision']['status'], 'no_positive_claim')
@@ -377,11 +538,58 @@ if step=='cleanup':
             self.assertEqual(result['decision']['status'], 'improvement_demonstrated')
             self.assertEqual(set(result['decision']['higher_resource_cost']),
                              {'cpu_seconds', 'peak_memory_bytes', 'disk_write_bytes'})
+            report = (self.root / 'higher-cost/report.md').read_text()
+            self.assertIn('faster with higher measured resource cost', report)
+            for metric in result['decision']['higher_resource_cost']:
+                self.assertIn('`' + metric + '`', report)
             state['cost'] = None
             result = analyze(bundle, self.root / 'undefined-cost')
             self.assertEqual(result['decision']['status'], 'improvement_demonstrated')
             self.assertEqual(set(result['decision']['undefined_resource_ratios']),
                              {'cpu_seconds', 'peak_memory_bytes', 'disk_write_bytes'})
+            self.assertIn('no resource-efficiency claim follows',
+                          (self.root / 'undefined-cost/report.md').read_text())
+
+    def test_e2_report_qualifies_faster_feedback_with_higher_runner_cost(self):
+        m = self.e2_manifest()
+        m['phase'] = 'confirmation'
+        m['strata'] = sampling('E2', 'confirmation')
+        m['dates'].append('2099-01-02')
+        bundle, registration = self.frozen(m)
+        shutil.copyfile(registration, bundle / 'registration.json')
+        seal(bundle)
+        state = {'cost': 1.2, 'timing': .7}
+        def constructed_row(root, manifest, slot, arm):
+            return dict(slot, arm=arm, attempt=1, started=True,
+                        classification='complete', reason='', exit=0, elapsed_seconds=1,
+                        metrics={'validation_seconds': 1, 'runner_minutes': 1,
+                                 'peak_runner_concurrency': 1},
+                        facts={'schedule': 'sch_constructed', 'host': 'test',
+                               'ci_created_at': '2026-10-13T00:00:00Z',
+                               'ci_completed_at': '2026-10-13T00:00:00Z'})
+        def fixed_estimate(manifest, workload, metric, pairs, dates):
+            ratio = state['timing'] if metric == 'validation_seconds' else state['cost']
+            return {'n': len(pairs), 'ratio': ratio, 'difference': -1,
+                    'interval': {'ratio': [ratio, ratio]}}
+        with patch('analysis.trial', side_effect=constructed_row), \
+                patch('analysis.estimate', side_effect=fixed_estimate):
+            result = analyze(bundle, self.root / 'e2-higher-cost')
+            self.assertEqual(result['decision']['status'], 'improvement_demonstrated')
+            self.assertEqual(result['decision']['higher_resource_cost'], ['runner_minutes'])
+            report = (self.root / 'e2-higher-cost/report.md').read_text()
+            self.assertIn('faster feedback with higher runner cost', report)
+            self.assertIn('`runner_minutes`', report)
+            state['cost'] = 1.10
+            result = analyze(bundle, self.root / 'e2-boundary-cost')
+            self.assertEqual(result['decision']['higher_resource_cost'], [])
+            self.assertNotIn('faster feedback with higher runner cost',
+                             (self.root / 'e2-boundary-cost/report.md').read_text())
+            state.update(cost=1.2, timing=.95)
+            result = analyze(bundle, self.root / 'e2-no-improvement')
+            self.assertEqual(result['decision']['status'], 'no_positive_claim')
+            report = (self.root / 'e2-no-improvement/report.md').read_text()
+            self.assertIn('Higher measured resource cost', report)
+            self.assertNotIn('faster feedback with higher runner cost', report)
 
     def test_wrong_expected_exit_and_repetition_counts_rejected(self):
         for field in ('expected_exit', 'expected_facts'):
@@ -505,6 +713,22 @@ class CITests(unittest.TestCase):
         self.assertEqual(metrics['initial_queue_seconds'], 5)
         self.assertEqual(metrics['runner_minutes'], 65 / 60)
         self.assertEqual(metrics['peak_runner_concurrency'], 3)
+
+    def test_started_jobs_require_runner_identity(self):
+        for index in (2, 3):  # Required successful job and unrelated failed job.
+            for runner in (None, 0, -1, True, '3'):
+                data, inventory = self.data()
+                data['pages'][0]['jobs'][index]['runner_id'] = runner
+                with self.subTest(index=index, runner=runner), self.assertRaises(ValueError):
+                    endpoint(data, inventory)
+            data, inventory = self.data()
+            data['pages'][0]['jobs'][index].pop('runner_id')
+            with self.subTest(index=index, missing=True), self.assertRaises(ValueError):
+                endpoint(data, inventory)
+        data, inventory = self.data()
+        data['pages'][0]['jobs'][2]['started_at'] = None
+        with self.assertRaises(ValueError):
+            endpoint(data, inventory)
 
     def test_pages_attempt_sha_skipped_upload_and_missing_end_rejected(self):
         for failure in ('page', 'duplicate', 'attempt', 'sha', 'skipped', 'upload', 'end', 'task', 'running'):

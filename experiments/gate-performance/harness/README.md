@@ -83,8 +83,8 @@ audit rather than repairing its primary observations or replacing the block.
 
 ## Manifest schema 1
 
-JSON rejects duplicate keys and nonfinite numbers. All hashes are full lowercase
-SHA-256 without a prefix. Paths in retained evidence and portable pins are
+JSON rejects duplicate keys and nonfinite numbers. Artifact hashes are full
+lowercase SHA-256 without a prefix. Paths in retained evidence and portable pins are
 relative, cannot traverse `..`, and cannot traverse symlinks.
 
 | Field | Contract |
@@ -97,16 +97,17 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 | `sources` | Collector/analyzer source commits and dependency locks, protocol commit, registration provenance. The collector also archives its actual Python sources. |
 | `arms`, `inputs`, `runtime`, `environment`, `observation` | Nonempty inventories from the shared protocol's required campaign manifest. Include all identities, build commands, settings, resource boundaries, cache policy, expected evidence and redaction policy. Their experiment-specific completeness is a checker/auditor obligation. |
 | `commands` | Workload → `baseline`/`candidate` → `prepare`, `run`, `observe`, `check`, `cleanup` command specifications. |
-| `expected_exit`, `expected_facts` | Workload → arm → allowed existing exit codes / exact expected receipt facts. E1 enforces exit 0 for fixed workloads and exit 2 for vulnerable workloads, plus the registered `schedule_runs` and `flaky: false` expectations. E2 enforces wrapper exit 0 after existing probe assertions succeed. |
+| `expected_exit`, `expected_facts` | Workload → arm → allowed existing exit codes / exact expected receipt facts. Fact equality preserves JSON types recursively: booleans cannot substitute for numbers, while equal integer/float spellings are both JSON numbers. E1 enforces exit 0 for fixed workloads and exit 2 for vulnerable workloads, plus the registered `schedule_runs` and `flaky: false` expectations. E2 enforces wrapper exit 0 after existing probe assertions succeed. |
 | `compare_facts` | Receipt fact keys that must match within every pair, such as normalized evidence hashes, schedule inventory, workload counts, image/cache/resource class and allocation identity. Do not compare volatile IDs or treatment-specific identities. |
 | `quality_checks` | Required receipt checks. E1/E2 require `outcome`, `assertions`, `schedules`, `repetitions`, `normalized_evidence`, `isolation`, `lifecycle`, `resources`, `environment`; add the full campaign inventory, including acceptance-completeness checks. |
 | `resource_metrics`, `analysis_metrics` | Required resources and optional descriptive numeric endpoints, with units/provenance declared in the observation inventory. Missing values remain unknown; zero is retained and its ratio is undefined. |
 | `redact_env` | Environment variable names whose required values are passed to hooks and removed from retained bytes and command receipts. Values are never in the manifest. |
-| `ci` | E2 `owner/repo`, full 40-hex common `execution_sha`, and required `tasks` mappings for both arms (below), validated before freeze; workflow/action/ruleset pins belong in the inventories. |
+| `ci` | E2 `owner/repo`, full lowercase 40-hex common `execution_sha`, and required `tasks` mappings for both arms (below), validated before freeze; workflow/action/ruleset pins belong in the inventories. |
 | `deviations` | Disclosed departures from the registered design; prevents favorable confirmatory claims. |
 
-A command specification contains exact `argv` (array), `cwd`, `env` (explicit
-allowlisted values) and `timeout_seconds`. No shell is introduced by the
+A command specification contains exact `argv` (array), `cwd` (nonempty string
+working directory), `env` (explicit allowlisted values) and `timeout_seconds`.
+No shell is introduced by the
 collector. Tokens `{trial_dir}`, `{campaign_dir}`, `{block_id}`, `{arm}` expand
 at execution. Use absolute executable paths or explicitly supply `PATH`.
 Date slots must use canonical UTC `YYYY-MM-DD` strings; unpadded dates fail
@@ -196,7 +197,10 @@ tasks are allowed. Every mapping must contain nonempty string `job` and `step`
 names; malformed or incomplete inventories fail before freeze.
 Provider calculation rejects incomplete/duplicated pages,
 wrong attempt/run/revision, failed/skipped required jobs or steps and missing
-runner end times. It derives `validation_seconds`, `queue_inclusive_seconds`,
+runner end times. Every started non-skipped job requires a positive integer
+runner ID; missing identity makes telemetry incomplete rather than omitting
+that job's timing or cost. Required jobs must have a start timestamp.
+It derives `validation_seconds`, `queue_inclusive_seconds`,
 `initial_queue_seconds`, `runner_minutes`, `peak_runner_concurrency` from UTC
 provider timestamps. Failed and matrix jobs contribute runner cost; skipped
 jobs do not. Concurrency uses half-open intervals and does not sum parallel
@@ -208,11 +212,16 @@ used conservatively for the outer bound. Exceeding the cap invalidates the
 observation even when the acceptance bundle finished earlier. The primary and
 queue-inclusive endpoints still end at acceptance-bundle completion.
 
-Receipt facts `ci_created_at` and `ci_completed_at` identify each workflow's
-provider boundaries; the analyzer requires the second run's creation to follow
-the first run's completion by at most 300 seconds. Missing, malformed or
-non-string pairing timestamps retain the pair as `pairing_window_missing`
-without aborting campaign analysis. Register required image,
+Receipt facts `ci_created_at` and `ci_completed_at` must match each workflow's
+retained provider boundaries: `run.created_at` and the later of `run.updated_at`
+or any started non-skipped job's completion. Equivalent UTC string spellings
+identify the same instant. These facts are validated during collection and
+revalidated by analysis; acceptance-bundle completion cannot substitute for
+workflow completion. The analyzer requires the second run's creation to follow
+the first run's completion by at most 300 seconds. Missing, malformed,
+non-string or inconsistent timestamps invalidate the evidence without
+aborting campaign analysis; all planned slots and failure reasons remain
+in the output. Register required image,
 cache and resource-class facts for paired equality and validate workflow hashes
 and run IDs in the campaign checker. Merge-ready and evidence-ready timings
 need their separate frozen ruleset/step mappings in the observer; the tool does
@@ -243,9 +252,14 @@ interval. Zero counters retain their absolute differences and an N/A ratio.
 All planned confirmation pairs, resources and quality evidence must be complete
 before the E1 0.85 / E2 0.80 ratio threshold and upper interval bound `< 1`
 can produce a favorable decision. Resource ratios above 1.10 are disclosed
-in `higher_resource_cost`. Undefined ratios appear in
-`undefined_resource_ratios` and prevent a resource-efficiency claim; present
-zero counters do not invalidate the timing estimate. Secondary endpoints remain descriptive. There are
+in `higher_resource_cost` and beside the decision in `report.md`, naming the
+metrics. A favorable E1 timing result is qualified as "faster with higher
+measured resource cost"; E2 uses "faster feedback with higher runner cost."
+The qualification applies strictly above 1.10 and does not turn a failed timing
+decision into an improvement. Undefined ratios appear in
+`undefined_resource_ratios` and in the report and prevent a resource-efficiency
+claim; present zero counters do not invalidate the timing estimate.
+Secondary endpoints remain descriptive. There are
 no p99, productivity, general Spring population or proven resource-equivalence
 claims. E2 remains conditional on hosted-runner dates/cache/hardware pool.
 

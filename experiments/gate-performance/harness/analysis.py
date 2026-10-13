@@ -4,7 +4,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from common import (E1_RESOURCES, E2_RESOURCES, child, counter, digest, order,
+from common import (E1_RESOURCES, E2_RESOURCES, child, counter, digest, json_equal, order,
                     read_json, sha, verify, write_csv, write_json)
 from collector import receipt_valid, succeeded, validate_manifest
 
@@ -136,7 +136,7 @@ def analyze(root, output):
         b, w = arms['baseline'], arms['candidate']
         reasons = [r['reason'] or r['classification'] for r in (b, w)
                    if r['classification'] != 'complete']
-        if not reasons and any(b['facts'][key] != w['facts'][key] for key in m['compare_facts']):
+        if not reasons and any(not json_equal(b['facts'][key], w['facts'][key]) for key in m['compare_facts']):
             reasons.append('paired_facts_mismatch')
         if not reasons and m['experiment'] == 'E2':
             first, second = [arms[a] for a in b['arms']]
@@ -216,9 +216,19 @@ def analyze(root, output):
                                'classification', 'reason', 'exit', 'elapsed_seconds'])
     lines = ['# Campaign analysis', '', 'Campaign: `%s` (%s / %s).' %
              (m['campaign_id'], m['experiment'], m['phase']), '',
-             'Decision: **%s**.' % decision['status'], '',
-             '| Workload | Metric | Pairs | Geometric ratio | Mean difference |',
-             '| --- | --- | ---: | ---: | ---: |']
+             'Decision: **%s**.' % decision['status'], '']
+    if decision['higher_resource_cost']:
+        if decision['status'] == 'improvement_demonstrated':
+            qualification = ('faster with higher measured resource cost' if m['experiment'] == 'E1'
+                             else 'faster feedback with higher runner cost')
+            lines += ['Timing result: **%s**.' % qualification, '']
+        lines += ['Higher measured resource cost (ratio > 1.10): %s.' %
+                  ', '.join('`%s`' % name for name in decision['higher_resource_cost']), '']
+    if decision['undefined_resource_ratios']:
+        lines += ['Undefined resource ratios: %s; no resource-efficiency claim follows.' %
+                  ', '.join('`%s`' % name for name in decision['undefined_resource_ratios']), '']
+    lines += ['| Workload | Metric | Pairs | Geometric ratio | Mean difference |',
+              '| --- | --- | ---: | ---: | ---: |']
     for workload, metrics in results.items():
         for metric, value in metrics.items():
             def display(number):

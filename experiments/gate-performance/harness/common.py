@@ -28,6 +28,19 @@ def canonical(value):
     return (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + '\n').encode()
 
 
+def json_equal(left, right):
+    """Compare JSON facts recursively without Python's bool/number coercion."""
+    if type(left) in (int, float) and type(right) in (int, float):
+        return left == right  # Both are JSON numbers.
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(json_equal(left[k], right[k]) for k in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(json_equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
 def read_json(path):
     def pairs(items):
         result = {}
