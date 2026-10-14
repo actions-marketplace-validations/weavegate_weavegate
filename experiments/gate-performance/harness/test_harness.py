@@ -123,6 +123,173 @@ if step=='cleanup':
     def block(self, bundle):
         return read_json(bundle / 'order.json')[0]['block']
 
+    def test_relative_working_directories_fail_before_freeze(self):
+        for index, cwd in enumerate(('.', 'relative/path', '{arm}', '{block_id}/work',
+                                     '{unknown}/work', '{trial_dir}suffix')):
+            m = copy.deepcopy(self.manifest)
+            m['commands']['example-fixed-replay']['baseline']['run']['cwd'] = cwd
+            source = self.source / 'relative-cwd.json'
+            write_json(source, m)
+            destination = self.root / ('relative-cwd-%d' % index)
+            with self.subTest(cwd=cwd), self.assertRaisesRegex(ValueError, 'absolute'):
+                freeze(source, destination)
+            self.assertFalse(destination.exists())
+
+    def test_working_directory_placeholders_expand_to_absolute_paths(self):
+        m = copy.deepcopy(self.manifest)
+        for arms in m['commands'].values():
+            for specs in arms.values():
+                for step, spec in specs.items():
+                    spec['cwd'] = '{campaign_dir}' if step == 'prepare' else '{trial_dir}'
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        collect(bundle, slot['block'], registration)
+        for arm in slot['arms']:
+            directory = bundle / 'blocks' / slot['block'] / arm
+            self.assertEqual(read_json(directory / 'prepare.command.json')['cwd'], str(bundle))
+            self.assertEqual(read_json(directory / 'run.command.json')['cwd'], str(directory))
+            self.assertEqual(read_json(directory / 'trial.json')['classification'], 'complete')
+
+    def test_retained_registration_is_validated_without_commands(self):
+        bundle, registration = self.frozen()
+        analyze(bundle, self.root / 'unregistered-frozen')
+        original = read_json(registration)
+        for index, (key, value) in enumerate((('campaign_sha256', '0' * 64),
+                                            ('order_sha256', '0' * 64),
+                                            ('public_url', 'invalid'),
+                                            ('registered_at', 'invalid'))):
+            write_json(bundle / 'registration.json', dict(original, **{key: value}))
+            seal(bundle)
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                analyze(bundle, self.root / ('bad-registration-%d' % index))
+        write_json(bundle / 'registration.json', original)
+        seal(bundle)
+        analyze(bundle, self.root / 'valid-registration')
+
+    def test_interrupted_clean_arm_stops_campaign_and_retains_missing_mate(self):
+        from collector import execute as real_execute
+        for index, interruption in enumerate((KeyboardInterrupt, SystemExit)):
+            source = self.source / 'interrupted.json'
+            write_json(source, self.manifest)
+            bundle = self.root / ('interrupted-%d' % index)
+            freeze(source, bundle)
+            registration = self.root / ('registration-%d.json' % index)
+            write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                     'order_sha256': digest(bundle / 'order.json'),
+                                     'registered_at': '2020-01-01T00:00:00Z',
+                                     'revision': 'constructed', 'public_url': 'https://example.invalid'})
+            slot, next_slot = order(self.manifest)[:2]
+            def command(spec, context, directory, step, secrets):
+                result = real_execute(spec, context, directory, step, secrets)
+                if step == 'run':
+                    raise interruption()
+                return result
+            with self.subTest(interruption=interruption), patch('collector.execute', side_effect=command):
+                with self.assertRaises(interruption):
+                    collect(bundle, slot['block'], registration)
+            verify(bundle)
+            self.assertEqual(read_json(bundle / 'stopped.json')['reason'], 'interrupted_collection')
+            first = read_json(bundle / 'blocks' / slot['block'] / slot['arms'][0] / 'trial.json')
+            self.assertTrue(first['cleanup_proven'])
+            result = analyze(bundle, self.root / ('interrupted-analysis-%d' % index))
+            mate = result['accounting'][slot['workload']][slot['arms'][1]]
+            self.assertEqual(mate['started'], 0)
+            self.assertEqual(mate['reasons']['interrupted_collection'], 1)
+            self.assertIn('Collection status: stopped',
+                          (self.root / ('interrupted-analysis-%d' % index) / 'report.md').read_text())
+            with self.assertRaisesRegex(ValueError, 'campaign stopped'):
+                collect(bundle, next_slot['block'], registration)
+
+    def test_secret_bearing_paths_refuse_sealing_even_if_cleanup_removes_them(self):
+        from collector import execute as real_execute
+        for index, kind in enumerate(('file', 'directory', 'empty-directory')):
+            secret = 'synthetic-path-credential'
+            m = copy.deepcopy(self.manifest)
+            m['redact_env'] = ['TEST_REDACTION_SECRET']
+            source = self.source / 'secret-path.json'
+            write_json(source, m)
+            bundle = self.root / ('secret-path-%d' % index)
+            freeze(source, bundle)
+            registration = self.root / ('secret-registration-%d.json' % index)
+            write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                     'order_sha256': digest(bundle / 'order.json'),
+                                     'registered_at': '2020-01-01T00:00:00Z',
+                                     'revision': 'constructed', 'public_url': 'https://example.invalid'})
+            calls = []
+            def command(spec, context, directory, step, secrets):
+                calls.append(step)
+                result = real_execute(spec, context, directory, step, secrets)
+                path = directory / secret
+                if step == 'prepare':
+                    if kind == 'file':
+                        path.write_text('constructed')
+                    else:
+                        path.mkdir()
+                        if kind == 'directory':
+                            (path / 'evidence.log').write_text('constructed')
+                elif step == 'cleanup':
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                return result
+            with self.subTest(kind=kind), patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}), \
+                    patch('collector.execute', side_effect=command):
+                with self.assertRaisesRegex(ValueError, 'refusing to reseal') as failure:
+                    collect(bundle, self.block(bundle), registration)
+            self.assertIn('cleanup', calls)
+            self.assertNotIn('run', calls)
+            self.assertNotIn(secret, str(failure.exception))
+            self.assertNotIn(secret, (bundle / 'SHA256SUMS').read_text())
+            self.assertNotIn(secret, (bundle / 'blocks' / self.block(bundle) / 'integrity-error.json').read_text())
+            with self.assertRaises(ValueError):
+                verify(bundle)
+
+    def test_empty_directories_are_authenticated_and_guarded(self):
+        from storage import BundleGuard
+        bundle = self.root / 'directory-bundle'
+        bundle.mkdir()
+        (bundle / 'retained').mkdir()
+        seal(bundle)
+        verify(bundle)
+        (bundle / 'retained').rmdir()
+        with self.assertRaisesRegex(ValueError, 'inventory'):
+            verify(bundle)
+        (bundle / 'retained').mkdir()
+        verify(bundle)
+        guard = BundleGuard(bundle)
+        (bundle / 'unregistered').mkdir()
+        with self.assertRaisesRegex(ValueError, 'unregistered evidence'):
+            guard.check()
+        with self.assertRaisesRegex(ValueError, 'inventory'):
+            verify(bundle)
+        (bundle / 'unregistered').rmdir()
+        with self.assertRaisesRegex(ValueError, 'unregistered evidence'):
+            guard.check()
+        (bundle / 'retained').rmdir()
+        (bundle / 'retained').write_text('')
+        with self.assertRaisesRegex(ValueError, 'inventory'):
+            verify(bundle)
+
+    def test_hook_cannot_add_empty_directories_outside_active_arm(self):
+        from collector import execute as real_execute
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        calls = []
+        def command(spec, context, directory, step, secrets):
+            calls.append(step)
+            result = real_execute(spec, context, directory, step, secrets)
+            if step == 'prepare':
+                (bundle / 'blocks' / 'unregistered').mkdir()
+            return result
+        with patch('collector.execute', side_effect=command):
+            with self.assertRaisesRegex(ValueError, 'refusing to reseal'):
+                collect(bundle, slot['block'], registration)
+        self.assertIn('cleanup', calls)
+        self.assertNotIn('run', calls)
+        with self.assertRaises(ValueError):
+            verify(bundle)
+
     def test_plan_container_boundaries_fail_before_consuming_a_campaign(self):
         for key in ('strata', 'commands', 'expected_facts', 'expected_exit', 'protocols',
                     'dates', 'pins', 'execution_pins'):
@@ -1863,16 +2030,22 @@ else:
 
     def test_unchanged_readonly_evidence_is_not_rewritten(self):
         from redaction import sanitize
-        path = self.root / 'readonly.log'
+        directory = self.root / 'readonly'
+        directory.mkdir()
+        path = directory / 'readonly.log'
         path.write_bytes(b'unchanged constructed evidence')
         path.chmod(0o444)
         original = path.stat().st_mtime_ns
-        for secrets in ([], [b'absent-secret']):
-            self.assertEqual(sanitize(self.root, secrets), 0)
-            self.assertEqual(path.stat().st_mtime_ns, original)
-        # A required redaction still fails rather than publishing raw bytes.
-        with self.assertRaises(PermissionError):
-            sanitize(self.root, [b'constructed'])
+        # Model a write denial even for privileged UIDs, which bypass mode bits.
+        with patch.object(Path, 'write_bytes', autospec=True, side_effect=PermissionError) as write:
+            for secrets in ([], [b'absent-secret']):
+                self.assertEqual(sanitize(directory, secrets), 0)
+                self.assertEqual(path.stat().st_mtime_ns, original)
+            write.assert_not_called()
+            # A required redaction still fails rather than publishing raw bytes.
+            with self.assertRaises(PermissionError):
+                sanitize(directory, [b'constructed'])
+            write.assert_called_once_with(path, b'unchanged [REDACTED] evidence')
         self.assertEqual(path.read_bytes(), b'unchanged constructed evidence')
 
     def test_nonregular_entries_cannot_be_sealed_or_verified(self):
@@ -1953,20 +2126,30 @@ else:
                                      'registered_at': '2020-01-01T00:00:00Z',
                                      'revision': 'constructed', 'public_url': 'https://example.invalid/constructed'})
             with patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}):
-                collect(bundle, self.block(bundle), registration)
-            verify(bundle)
+                if secret == 'a':
+                    # Public control paths are exempt; hook-owned cleanup paths
+                    # containing this short value must still refuse sealing.
+                    with self.assertRaisesRegex(ValueError, 'refusing to reseal'):
+                        collect(bundle, self.block(bundle), registration)
+                else:
+                    collect(bundle, self.block(bundle), registration)
             slot = order(m)[0]
             directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
-            row = read_json(directory / 'trial.json')
-            self.assertEqual(row['block'], slot['block'])
-            self.assertEqual(row['arm'], slot['arms'][0])
-            self.assertIs(type(row['attempt']), int)
             for path in directory.glob('*.command.json'):
                 command = read_json(path)
                 self.assertIs(type(command['started']), bool)
                 self.assertIs(type(command['seconds']), float)
             self.assertIn('[REDACTED]', (directory / 'run.stdout').read_text())
             self.assertNotIn(secret, (directory / 'run.stdout').read_text())
+            if secret == 'a':
+                with self.assertRaises(ValueError):
+                    verify(bundle)
+                continue
+            verify(bundle)
+            row = read_json(directory / 'trial.json')
+            self.assertEqual(row['block'], slot['block'])
+            self.assertEqual(row['arm'], slot['arms'][0])
+            self.assertIs(type(row['attempt']), int)
             result = analyze(bundle, self.root / ('short-analysis-%d' % index))
             self.assertEqual(result['accounting'][slot['workload']][slot['arms'][0]]['started'], 1)
 
@@ -2470,6 +2653,17 @@ class CITests(unittest.TestCase):
             with patch('ci.subprocess.run') as api, self.assertRaises(ValueError):
                 snapshot('owner/repo', 1, attempt, Path('/unused'))
             api.assert_not_called()
+
+    def test_run_and_job_identifiers_require_positive_integers(self):
+        for target, key in (('run', 'id'), ('job', 'run_id'), ('job', 'id')):
+            for identifier in (True, 1.0, '1', None, 0, -1):
+                data, inventory = self.data()
+                value = data['run'] if target == 'run' else data['pages'][0]['jobs'][0]
+                value[key] = identifier
+                with self.subTest(target=target, key=key, identifier=identifier), self.assertRaises(ValueError):
+                    endpoint(data, inventory)
+        data, inventory = self.data()
+        endpoint(data, inventory)
 
     def test_outer_cap_includes_workflow_and_nonrequired_job_completion(self):
         for late in ('workflow', 'job'):

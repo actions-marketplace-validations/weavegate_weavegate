@@ -66,6 +66,8 @@ def workflow_bounds(snapshot):
 
 def endpoint(snapshot, inventory):
     run = snapshot['run']
+    if type(run.get('id')) is not int or run['id'] <= 0:
+        raise ValueError('CI run ID must be a positive integer')
     if (run.get('status') != 'completed' or type(run.get('run_attempt')) is not int
             or run['run_attempt'] != 1 or run['head_sha'] != inventory['execution_sha'] or
             snapshot['repository'] != inventory['repository']):
@@ -74,6 +76,8 @@ def endpoint(snapshot, inventory):
     if not pages or any(p['total_count'] != pages[0]['total_count'] for p in pages):
         raise ValueError('inconsistent jobs pages')
     jobs = [job for page in pages for job in page['jobs']]
+    if any(type(j.get(key)) is not int or j[key] <= 0 for j in jobs for key in ('id', 'run_id')):
+        raise ValueError('CI job and run IDs must be positive integers')
     if len(jobs) != pages[0]['total_count'] or len({j['id'] for j in jobs}) != len(jobs):
         raise ValueError('missing or duplicated jobs pages')
     if any(j['run_id'] != run['id'] or type(j.get('run_attempt')) is not int or j['run_attempt'] != 1 or

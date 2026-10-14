@@ -206,7 +206,7 @@ make no positive confirmatory improvement claim.
 ## Evidence bundle and publication
 
 The following is the protocol's **planned bundle layout**, not product CLI
-output. The [collector reference](harness/README.md#bundle-and-deterministic-analysis)
+output. The [collector reference](harness/README.md#sanitization-and-bundle-layout)
 documents its concrete schema, including per-block directories. It must live
 outside product artifacts; adding an experiment field does not change the [report schema](../../docs/reference/report-schema.md).
 

@@ -5,8 +5,9 @@ as the collector's user. A violation is sticky even if a later hook restores byt
 """
 from pathlib import Path
 
-from common import child, digest, files, write_json
+from common import bundle_inventory, child, digest, write_json
 from plan import STEPS
+from redaction import validate_paths
 
 CONTROL = {'attempt.json', 'trial.json', 'redactions.json'}
 COMMAND_FILES = {step + suffix for step in STEPS
@@ -14,23 +15,26 @@ COMMAND_FILES = {step + suffix for step in STEPS
 
 
 class BundleGuard:
-    def __init__(self, root):
+    def __init__(self, root, secrets=()):
         self.root = Path(root)
+        self.secrets = secrets
         self.hashes = self.snapshot()
         self.active = None
         self.error = None
 
     def snapshot(self):
-        return {str(p.relative_to(self.root)): digest(p) for p in files(self.root)}
+        return bundle_inventory(self.root)
 
     def check(self, writing=()):
         if self.error is not None:
             raise ValueError(self.error)
         try:
+            if self.active is not None:
+                validate_paths(self.active, self.secrets, self.owned_paths(self.active))
             writing = {str(Path(p).relative_to(self.root)) for p in writing}
             actual = self.snapshot()
             for name, checksum in self.hashes.items():
-                if name not in writing and actual.get(name) != checksum:
+                if name not in writing and (name not in actual or actual[name] != checksum):
                     raise ValueError('protected evidence changed during collection: ' + name)
             for name in actual.keys() - self.hashes.keys() - writing:
                 path = child(self.root, name)
@@ -41,6 +45,12 @@ class BundleGuard:
         except (OSError, ValueError) as error:
             self.error = str(error)
             raise
+
+    def mkdir(self, path):
+        """Admit only the collector's next assigned arm directory."""
+        self.check()
+        path.mkdir(mode=0o700)
+        self.hashes[str(path.relative_to(self.root))] = None
 
     def own(self, path, value):
         """Only collector writes may update an already retained control file."""

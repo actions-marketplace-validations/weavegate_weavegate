@@ -99,7 +99,7 @@ def analyze(root, output):
     if output == root or root in output.parents:
         raise ValueError('analysis output must be outside the immutable input bundle')
     verify(root)
-    if read_json(root / 'analysis/dependencies.json').get('bundle_format') != 2:
+    if read_json(root / 'analysis/dependencies.json').get('bundle_format') != 3:
         raise ValueError('unsupported bundle format; use the bundle archived analyzer')
     m = read_json(root / 'campaign.json')
     validate_manifest(m)
@@ -109,15 +109,18 @@ def analyze(root, output):
         raise ValueError('unregistered block in evidence bundle')
     if read_json(root / 'order.json') != slots:
         raise ValueError('order file differs from frozen assignment')
+    registration = root / 'registration.json'
+    if (registration.exists() or any(block_dir.glob('*/*/*.command.json'))
+            or any(block_dir.glob('*/*/attempt.json'))
+            or any(block_dir.glob('*/collection-command.json'))):
+        reg = read_json(registration)
+        validate_registration(reg)
+        if reg.get('campaign_sha256') != digest(root / 'campaign.json') or reg.get('order_sha256') != digest(root / 'order.json'):
+            raise ValueError('registration hash mismatch')
     rows = [trial(root, m, slot, arm) for slot in slots for arm in slot['arms']]
     blocks = defaultdict(dict)
     for row in rows:
         blocks[row['block']][row['arm']] = row
-    if any(r['started'] for r in rows) or any(block_dir.glob('*/*/*.command.json')):
-        reg = read_json(root / 'registration.json')
-        validate_registration(reg)
-        if reg['campaign_sha256'] != digest(root / 'campaign.json') or reg['order_sha256'] != digest(root / 'order.json'):
-            raise ValueError('registration hash mismatch')
     pair_reasons = {}
     for block, arms in blocks.items():
         b, w = arms['baseline'], arms['candidate']

@@ -57,7 +57,7 @@ attempted; the original checksum inventory is preserved and resealing refused.
 This is integrity checking among trusted hooks, not an OS security sandbox
 against processes running as the same user.
 
-The evidence layout is bundle format `2`, recorded in
+The evidence layout is bundle format `3`, recorded in
 `analysis/dependencies.json`; the input manifest remains schema `1`. Earlier
 development bundles retain their own archived analyzer. This analyzer rejects
 older layouts rather than interpreting their cached trials as original evidence.
@@ -129,12 +129,14 @@ Portable paths are relative, without parent traversal, NUL or symlinks.
 | `ci` | E2 `repository` (`owner/repo`), common lowercase 40-hex `execution_sha`, and logical task mappings for both arms |
 
 A command has `argv` (nonempty string array with a nonempty executable), `cwd`
-(nonempty string), `env` (explicit string-to-string allowlist), positive
+(absolute directory, or a path beginning with `{campaign_dir}` or `{trial_dir}`
+as its first component), `env` (explicit string-to-string allowlist), positive
 `timeout_seconds` and optional positive `cancel_grace_seconds` (default 25).
 Environment names must be nonempty and cannot contain `=`; arguments, cwd,
 environment names and values cannot contain NUL. No shell is introduced.
 `{trial_dir}`, `{campaign_dir}`, `{block_id}` and `{arm}` expand once. Unknown
-tokens and braces inside inserted paths remain literal. Supply an absolute
+tokens and braces inside inserted paths remain literal. Relative working
+directories are rejected before freeze creates a bundle. Supply an absolute
 executable or explicit `PATH`; the parent environment is otherwise not inherited.
 
 The five hooks run in this order:
@@ -204,7 +206,9 @@ supplies a successful cleanup receipt.
 SIGINT/SIGTERM interrupt collection through cleanup and sanitization; the CLI
 returns 130 after preserving evidence. Failed spawn stays unstarted; an
 interrupted running command stays started with its actual elapsed time. Atomic
-JSON replacement preserves complete checkpoints. SIGKILL, power loss or failed
+JSON replacement preserves complete checkpoints. An interruption writes
+`stopped.json` even after proven cleanup; the unexecuted mate remains in missing
+attempt accounting and further collection is prohibited. SIGKILL, power loss or failed
 sanitization can leave an unsealed bundle: preserve it for audit, do not repair
 or rerun it as a primary observation. No claim of crash recovery is made.
 
@@ -218,6 +222,11 @@ syntax; non-JSON payloads receive byte redaction, including JSON-escaped forms.
 No payload is exempt merely because its filename resembles a control file.
 Only the collector's exact owned paths retain public identity/control fields.
 Additional payload encodings and domain-specific sanitization belong in hooks.
+Hook-owned relative file and directory paths containing a configured secret
+are rejected, including empty directories and collisions with short secret
+values. Paths are never silently renamed. The diagnostic omits the leaking
+name, cleanup is attempted and resealing remains forbidden even if cleanup
+removes that path. Collector-owned public control paths remain exempt.
 
 Sanitization precedes evidence checkpoints. Unchanged bytes are not rewritten.
 If replacement changes a proof's original bytes, its old hash fails; the tool
@@ -234,7 +243,10 @@ are reserved at the arm root; nested originals are ordinary payloads.
 `attempt.json` stores admission/interruption and cleanup-input state.
 `trials.csv`, `commands.jsonl`, `events.jsonl` and `environments.jsonl` inventory
 all planned arms and actual commands. `collection.lock` prevents concurrent
-local writers. `SHA256SUMS` is a JSON path-to-hash inventory of every other file.
+local writers. `SHA256SUMS` is a JSON inventory of every other entry: files map
+to SHA-256 values and directories map to `null`. Empty directory addition,
+removal and file/directory replacement are authenticated at hook boundaries
+and during verification.
 
 ## E2 provider evidence
 
@@ -253,7 +265,9 @@ provider success cannot replace the existing `--require-complete` checks.
 `rollback`, `death`, `cancellation`, `accounting`, `upload` and any extra required
 tasks to exact nonempty `{job, step}` names. All pages, original attempt 1,
 revision, required successful jobs/steps, started-job runner identities and end
-times must be present. Failed/matrix jobs contribute runner cost; skipped jobs
+times must be present. Run IDs, job IDs and job `run_id` values must be positive
+integers; booleans, floats and strings are rejected before identity comparison.
+Failed/matrix jobs contribute runner cost; skipped jobs
 do not. Concurrency uses half-open intervals, not summed parallel wall time.
 
 Provider timestamps derive `validation_seconds`, `queue_inclusive_seconds`,
@@ -270,7 +284,10 @@ endpoints require separately frozen mappings and cannot rename the primary.
 
 Analyze into a **new directory outside the input bundle**. Analysis verifies
 inventory, plan, order and registration, then reconstructs every trial from
-original command/observation/cleanup evidence. Commands must match frozen argv,
+original command/observation/cleanup evidence. Any retained registration is
+validated, including before the first command; collection evidence requires a
+registration. A newly frozen bundle can be analyzed before registration.
+Commands must match frozen argv,
 cwd and public environment, their registered UTC date and watchdog. The bundle
 can move: command verification uses its retained original execution location.
 No live checkout, executable pin or provider connection is needed for analysis.

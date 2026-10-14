@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from common import canonical, files, read_json
+from common import canonical, entries, files, read_json
 from plan import STEPS
 
 REDACTION_MARKER = b'[REDACTED]'
@@ -16,6 +16,7 @@ def validate_redaction_secrets(secrets):
 def sanitize(root, secrets, owned=()):
     """Sanitize retained bytes before computing evidence hashes."""
     validate_redaction_secrets(secrets)
+    validate_paths(root, secrets, owned)
     removed = 0
     for path in files(root):
         data = path.read_bytes()
@@ -42,6 +43,16 @@ def sanitize(root, secrets, owned=()):
         if data != original:
             path.write_bytes(data)
     return removed
+
+
+def validate_paths(root, secrets, owned=()):
+    """Reject payload path leaks without renaming immutable evidence references."""
+    for path in entries(root):
+        if path not in owned:
+            name = str(path.relative_to(root)).encode()
+            if any(secret in name for secret in secrets):
+                # Never include the leaking filename in a public diagnostic.
+                raise ValueError('secret-bearing relative path in evidence bundle')
 
 
 def redact_metadata(value, secrets, filename, replacements=None):

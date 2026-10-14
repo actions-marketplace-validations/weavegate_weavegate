@@ -68,7 +68,7 @@ def freeze(source, destination):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(path.read_bytes())
     write_json(destination / 'analysis' / 'dependencies.json',
-               {'bundle_format': 2, 'runtime': 'Python >= 3.9', 'dependencies': 'standard library only'})
+               {'bundle_format': 3, 'runtime': 'Python >= 3.9', 'dependencies': 'standard library only'})
     inventory(destination, m)
     seal(destination)
 
@@ -137,10 +137,11 @@ def collect_locked(root, block, registration):
     seal(root)  # A crash consumes the slot, never creates a replacement attempt.
     session = Collection(root, m, secrets)
     safe = True
+    interrupted = False
     try:
         for arm in slot['arms']:
             directory = pair_dir / arm
-            directory.mkdir(mode=0o700)
+            session.guard.mkdir(directory)
             session.guard.active = directory
             state = {'collection_root': str(root), 'state': 'entered', 'reason': '',
                      'cleanup_inputs_valid': False}
@@ -157,9 +158,13 @@ def collect_locked(root, block, registration):
             finally:
                 # Even BaseException paths have a durable, reduced arm receipt.
                 safe = state['cleanup_inputs_valid']
+    except BaseException:
+        interrupted = True
+        raise
     finally:
-        if not safe:
-            session.save(root / 'stopped.json', {'reason': 'cleanup_unproven', 'block': block})
+        if not safe or interrupted:
+            session.save(root / 'stopped.json', {'reason': 'cleanup_unproven' if not safe
+                         else 'interrupted_collection', 'block': block})
         if session.guard.error is not None:
             write_json(pair_dir / 'integrity-error.json',
                        {'reason': redact_metadata(session.guard.error, secrets, '')})
@@ -178,7 +183,7 @@ class Collection:
     """Linear step lifecycle. The evidence reducer owns outcome classification."""
     def __init__(self, root, manifest, secrets):
         self.root, self.manifest, self.secrets = root, manifest, secrets
-        self.guard = BundleGuard(root)
+        self.guard = BundleGuard(root, secrets)
         self.redactions = {}
         self.contained = True
 

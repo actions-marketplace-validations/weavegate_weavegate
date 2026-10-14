@@ -104,31 +104,41 @@ def child(root, name):
     return result
 
 
-def files(root):
+def entries(root):
+    """Inventory directories too: even empty entries can change accounting."""
     result = []
     for path in sorted(Path(root).rglob('*')):
         if path.is_symlink():
             raise ValueError('symlink in bundle: ' + str(path))
-        if path.is_file():
-            result.append(path)
-        elif not path.is_dir():
+        if not path.is_file() and not path.is_dir():
             raise ValueError('non-regular entry in bundle: ' + str(path))
+        result.append(path)
     return result
+
+
+def files(root):
+    return [path for path in entries(root) if path.is_file()]
+
+
+def bundle_inventory(root):
+    # Null authenticates directory presence/type; files retain SHA-256 values.
+    return {str(path.relative_to(root)): None if path.is_dir() else digest(path)
+            for path in entries(root)}
 
 
 def seal(root):
     root = Path(root)
-    entries = {str(p.relative_to(root)): digest(p) for p in files(root)
-               if p != root / 'SHA256SUMS'}
+    inventory = bundle_inventory(root)
+    inventory.pop('SHA256SUMS', None)
     # JSON avoids ambiguous filenames in line-oriented checksum formats.
-    write_json(root / 'SHA256SUMS', entries)
+    write_json(root / 'SHA256SUMS', inventory)
 
 
 def verify(root):
     root = Path(root)
     expected = read_json(root / 'SHA256SUMS')
-    actual = {str(p.relative_to(root)): digest(p) for p in files(root)
-              if p != root / 'SHA256SUMS'}
+    actual = bundle_inventory(root)
+    actual.pop('SHA256SUMS', None)
     if expected != actual:
         raise ValueError('bundle checksum inventory differs')
 

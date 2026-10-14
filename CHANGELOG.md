@@ -24,7 +24,9 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   original command/observation/cleanup evidence at immutable hook boundaries,
   and reproduce E1/E2 paired analysis from the same evidence rules used during
   collection. Failed, interrupted and missing attempts remain in the accounting;
-  unproven cleanup stops allocation reuse. Retained analyzer sources reproduce
+  interruptions and unproven cleanup stop further collection. Bundles authenticate
+  empty directories, reject secret-bearing evidence paths and validate retained
+  registrations before measurements begin. Retained analyzer sources reproduce
   tables without a live checkout. See
   `experiments/gate-performance/harness/README.md`; its runnable demo is
   constructed evidence, not a performance result.

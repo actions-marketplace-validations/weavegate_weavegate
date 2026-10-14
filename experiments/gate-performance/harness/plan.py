@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from common import (E1_RESOURCES, E2_RESOURCES, INVENTORIES, PROTOCOLS, QUALITY,
-                    SEED, child, digest, positive, sampling)
+                    SEED, child, digest, positive, sampling, timestamp)
 
 STEPS = ('prepare', 'run', 'observe', 'check', 'cleanup')
 
@@ -104,6 +104,10 @@ def validate_manifest(m):
                                    for k, v in spec['env'].items())
                         or not positive(spec.get('cancel_grace_seconds', 25))):
                     raise ValueError('invalid command: ' + step)
+                if (not Path(spec['cwd']).is_absolute() and not any(
+                        spec['cwd'] == token or spec['cwd'].startswith(token + '/')
+                        for token in ('{campaign_dir}', '{trial_dir}'))):
+                    raise ValueError('command cwd must expand to an absolute directory: ' + step)
                 if m['experiment'] in ('E1', 'E2') and step == 'run':
                     if m['experiment'] == 'E2':
                         if spec['timeout_seconds'] <= 5400:
@@ -192,6 +196,7 @@ def validate_registration(reg):
             or parsed.username is not None or parsed.password is not None):
         raise ValueError('invalid public registration URL')
     parsed.port  # Reject malformed or out-of-range ports without fetching the URL.
+    timestamp(reg.get('registered_at'))
 
 
 def verify_execution_pins(m, selected=None):
