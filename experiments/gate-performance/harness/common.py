@@ -3,6 +3,8 @@ import csv
 import hashlib
 import json
 import math
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -59,7 +61,19 @@ def read_json(path):
 
 
 def write_json(path, value):
-    Path(path).write_bytes(canonical(value))
+    # A reader sees either the previous complete checkpoint or the next one.
+    path = Path(path)
+    data = canonical(value)
+    descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def utc():
@@ -77,6 +91,8 @@ def timestamp(value):
 
 def child(root, name):
     """Bundle paths are portable, relative and never traverse symlinks."""
+    if not isinstance(name, str) or not name or '\0' in name:
+        raise ValueError('unsafe relative path: ' + str(name))
     path = Path(name)
     if path.is_absolute() or not path.parts or any(p in ('.', '..') for p in path.parts):
         raise ValueError('unsafe relative path: ' + str(name))

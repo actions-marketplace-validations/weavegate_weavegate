@@ -18,83 +18,16 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ## [Unreleased]
 
-### Fixed
-
-- Experiment collection rejects secrets contained in its replacement marker
-  before starting a block, expands command placeholders only once, preserves
-  unchanged read-only evidence and rejects non-regular bundle entries.
-  Reanalysis recognizes only the five collector command receipts, keeping
-  similarly named original evidence usable and sanitized. See
-  `experiments/gate-performance/harness/README.md`.
-- Experiment cleanup can use separately frozen input pins to attempt trusted
-  teardown after unrelated pin drift, while drift still stops the campaign.
-  Redaction counts include check, cleanup and final passes; original CI attempt
-  numbers must be integers. See
-  `experiments/gate-performance/harness/README.md`.
-- Experiment JSON redaction masks overlapping secrets in full regardless of
-  their manifest order, and cold-adoption timer receipts reject booleans in
-  place of numeric durations. See
-  `experiments/gate-performance/harness/README.md`.
-- Experiment reports qualify higher costs for all seven E1 resources. E2
-  provider-derived measurements reject boolean/number substitutions. Redaction
-  preserves collector JSON types and public slot identities for short secrets;
-  command watchdogs include spawn setup, and hooks cannot forge stopped status
-  or restore away an observed integrity violation. See
-  `experiments/gate-performance/harness/README.md`.
-- Experiment hooks cannot replace a completed arm's evidence while running its
-  mate, and oversized integer counters become quality failures without aborting
-  collection. E2 keeps the provider-based 90-minute cap separate from its
-  wrapper's dispatch/retention watchdog. See
-  `experiments/gate-performance/harness/README.md`.
-- Interrupted experiment cleanup sanitizes retained output before sealing, and
-  post-KILL reaping uses a bounded deadline. Campaigns reject invalid redaction
-  variable names and protocol paths before freeze. Reports show failed-attempt
-  time/resource costs and retain finite observations with unrepresentable ratios
-  as N/A rather than aborting analysis. See
-  `experiments/gate-performance/harness/README.md`.
-- Experiment campaigns reject malformed E3/E4 phases and unspawnable executable,
-  argument and working-directory strings before freeze, and classify malformed
-  environment/resource provenance as quality failures during collection and
-  reanalysis. E2 reports always include both derived queue endpoints. See
-  `experiments/gate-performance/harness/README.md`.
-- Experiment campaigns reject unspawnable environments, non-integer versions,
-  malformed seeds and registration provenance before consuming an assigned
-  block. Markdown reports safely display campaign metadata and include
-  improvement intervals, both arm medians/IQRs and all planned date estimates.
-  See `experiments/gate-performance/harness/README.md`.
-- Experiment campaigns reject malformed command argument lists and deviations
-  before freeze, count started attempts despite later execution errors, and
-  escape custom metric names in Markdown reports. See
-  `experiments/gate-performance/harness/README.md`.
-- Experiment campaigns reject unpadded UTC dates and malformed E2 CI inventories
-  before freeze, apply the 90-minute cap to the whole workflow attempt, retain
-  malformed pairing timestamps as missing evidence, and report provider request
-  failures with a controlled diagnostic. See
-  `experiments/gate-performance/harness/README.md`.
-- Experiment evidence checks bind E2 pairing timestamps to retained provider
-  data, reject missing runner identities and boolean/number substitutions in
-  facts, and require string working directories and lowercase execution commits
-  before freeze. Human-facing reports qualify faster results with higher measured
-  resource costs and name the affected metrics. See
-  `experiments/gate-performance/harness/README.md`.
-- Experiment collection rejects malformed optional metric names and non-integer
-  exit contracts before freeze, kills and reaps commands interrupted during
-  termination grace, and preserves non-object receipts as sealed failed evidence.
-  Reports include bootstrap intervals, missing-interval reasons and fixed
-  confirmation thresholds. See `experiments/gate-performance/harness/README.md`.
-- Experiment campaigns reject malformed fact objects and inventory lists before
-  freeze, retain arms whose UTC date expired as not started, terminate surviving
-  members of timed command groups, and refuse to reseal changes to prior evidence.
-  Reports include planned and observed denominators, all exclusions, deviations
-  and stopped-campaign status. See `experiments/gate-performance/harness/README.md`.
-
 ### Added
 
-- Standalone experiment tools freeze campaign inputs and arm order, retain failed
-  and missing attempts with cleanup evidence, and reproduce E1/E2 paired tables
-  and uncertainty from hashed raw bundles. See
-  `experiments/gate-performance/harness/README.md`; the demo is constructed
-  evidence, not a performance result.
+- Standalone experiment tools freeze campaign inputs and arm order, retain
+  original command/observation/cleanup evidence at immutable hook boundaries,
+  and reproduce E1/E2 paired analysis from the same evidence rules used during
+  collection. Failed, interrupted and missing attempts remain in the accounting;
+  unproven cleanup stops allocation reuse. Retained analyzer sources reproduce
+  tables without a live checkout. See
+  `experiments/gate-performance/harness/README.md`; its runnable demo is
+  constructed evidence, not a performance result.
 - Completed CLI runs retain stage timings in `manifest.json` and `report.json`,
   including every explored candidate and replay repetition, database preparation,
   external JAR/startup, execution, Oracle and cleanup. Timings stop before artifact

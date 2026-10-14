@@ -4,6 +4,9 @@ import argparse
 import sys
 from pathlib import Path
 
+# An archived analyzer must not mutate its input by importing sibling modules.
+sys.dont_write_bytecode = True
+
 from analysis import analyze
 from ci import snapshot
 from collector import collect, freeze
@@ -48,6 +51,9 @@ def main():
     except (ValueError, OSError, KeyError, TypeError, AttributeError) as error:
         print('campaign tooling: ' + str(error), file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print('campaign tooling: collection interrupted; retained evidence must be preserved', file=sys.stderr)
+        return 130
     return 0
 
 

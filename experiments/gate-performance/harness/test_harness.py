@@ -19,7 +19,10 @@ from unittest.mock import Mock, patch
 
 from analysis import analyze, estimate, mean, quantile, trial as analyzed_trial
 from ci import TASKS, endpoint, snapshot
-from collector import collect, execute, freeze, kill_group, receipt_valid, validate_manifest
+from collector import collect, execute, freeze
+from evidence import receipt_valid
+from execution import kill_group
+from plan import validate_manifest
 from common import (E1_RESOURCES, E2_RESOURCES, PROTOCOLS, QUALITY, SEED, canonical,
                     digest, order, read_json, sampling, seal, sha, verify, write_json)
 
@@ -120,6 +123,278 @@ if step=='cleanup':
     def block(self, bundle):
         return read_json(bundle / 'order.json')[0]['block']
 
+    def test_plan_container_boundaries_fail_before_consuming_a_campaign(self):
+        for key in ('strata', 'commands', 'expected_facts', 'expected_exit', 'protocols',
+                    'dates', 'pins', 'execution_pins'):
+            for index, value in enumerate((None, True, 'value', [], {})):
+                m = copy.deepcopy(self.manifest)
+                m[key] = value
+                source = self.source / 'shape.json'
+                write_json(source, m)
+                destination = self.root / ('shape-%s-%d' % (key, index))
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    freeze(source, destination)
+                self.assertFalse(destination.exists())
+
+    def test_observer_original_is_immutable_and_clock_is_joined_only_in_views(self):
+        from collector import execute as real_execute
+        originals = {}
+        def command(spec, context, directory, step, secrets):
+            result = real_execute(spec, context, directory, step, secrets)
+            if step == 'observe':
+                originals[context['arm']] = (directory / 'receipt.json').read_bytes()
+            return result
+        bundle, registration = self.frozen()
+        block = self.block(bundle)
+        with patch('collector.execute', side_effect=command):
+            self.assertTrue(collect(bundle, block, registration))
+        for arm in ('baseline', 'candidate'):
+            directory = bundle / 'blocks' / block / arm
+            self.assertEqual((directory / 'receipt.json').read_bytes(), originals[arm])
+            self.assertNotIn('gate_seconds', read_json(directory / 'receipt.json')['metrics'])
+            row = read_json(directory / 'trial.json')
+            self.assertEqual(row, analyzed_trial(bundle, self.manifest, order(self.manifest)[0], arm))
+            self.assertEqual(row['metrics']['gate_seconds'],
+                             read_json(directory / 'run.command.json')['seconds'])
+            self.assertEqual(row['classification'], 'complete')
+
+    def test_every_hook_boundary_protects_owned_receipts_and_originals(self):
+        from collector import execute as real_execute
+        cases = [('prepare', 'run.command.json'), ('prepare', 'trial.json'),
+                 ('observe', 'run.command.json'), ('check', 'evidence.log'),
+                 ('cleanup', 'receipt.json')]
+        for index, (when, name) in enumerate(cases):
+            source = self.source / 'boundary.json'
+            write_json(source, self.manifest)
+            bundle = self.root / ('boundary-%d' % index)
+            freeze(source, bundle)
+            registration = self.root / ('boundary-registration-%d.json' % index)
+            write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                     'order_sha256': digest(bundle / 'order.json'),
+                                     'registered_at': '2020-01-01T00:00:00Z',
+                                     'revision': 'constructed', 'public_url': 'https://example.invalid'})
+            calls = []
+            def command(spec, context, directory, step, secrets):
+                calls.append((context['arm'], step))
+                result = real_execute(spec, context, directory, step, secrets)
+                if step == when:
+                    (directory / name).write_text('hook replacement')
+                return result
+            with self.subTest(when=when, name=name), patch('collector.execute', side_effect=command):
+                with self.assertRaisesRegex(ValueError, 'refusing to reseal'):
+                    collect(bundle, self.block(bundle), registration)
+            first, second = order(self.manifest)[0]['arms']
+            self.assertIn((first, 'cleanup'), calls)
+            self.assertNotIn((second, 'prepare'), calls)
+            with self.assertRaises(ValueError):
+                verify(bundle)
+
+    def test_analysis_rebuilds_failed_accounting_without_cached_trial_rows(self):
+        m = copy.deepcopy(self.manifest)
+        for arms in m['commands'].values():
+            for commands in arms.values():
+                commands['run']['env']['RUN_EXIT'] = '4'
+        bundle, registration = self.frozen(m)
+        block = self.block(bundle)
+        collect(bundle, block, registration)
+        baseline = bundle / 'blocks' / block / 'baseline' / 'trial.json'
+        candidate = bundle / 'blocks' / block / 'candidate' / 'trial.json'
+        write_json(baseline, {'started': False, 'classification': 'complete',
+                              'metrics': {'gate_seconds': 0.001}})
+        candidate.unlink()
+        seal(bundle)  # A transport checksum is not an outcome authority.
+        result = analyze(bundle, self.root / 'reduced')
+        for arm in ('baseline', 'candidate'):
+            counts = result['accounting'][order(m)[0]['workload']][arm]
+            self.assertEqual(counts['started'], 1)
+            self.assertEqual(counts['operational_failure'], 1)
+            self.assertEqual(counts.get('complete', 0), 0)
+
+    def test_reanalysis_binds_commands_for_successes_and_failures(self):
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        collect(bundle, slot['block'], registration)
+        for arm in slot['arms']:
+            path = bundle / 'blocks' / slot['block'] / arm / 'run.command.json'
+            receipt = read_json(path)
+            receipt['argv'] = ['/invented/fast-success']
+            if arm == slot['arms'][1]:
+                receipt['exit'] = 4
+            write_json(path, receipt)
+        seal(bundle)
+        result = analyze(bundle, self.root / 'invocation-bindings')
+        for arm in slot['arms']:
+            self.assertEqual(result['accounting'][slot['workload']][arm]['quality_failure'], 1)
+        self.assertTrue(all('frozen invocation' in r for r in result['paired_missingness'][slot['block']]))
+
+    def test_nested_original_names_never_inherit_control_redaction_exemptions(self):
+        from redaction import sanitize
+        secret = b'secret-payload-value'
+        for name in ('trial.json', 'run.command.json', 'slot.json', 'redactions.json'):
+            path = self.root / 'nested' / name
+            path.parent.mkdir(exist_ok=True)
+            write_json(path, {'argv': [secret.decode()], 'metrics': {secret.decode(): 1},
+                              'collection_root': secret.decode(), 'replacements': secret.decode()})
+        sanitize(self.root, [secret])
+        for path in (self.root / 'nested').iterdir():
+            self.assertNotIn(secret, path.read_bytes())
+            self.assertIn(b'[REDACTED]', path.read_bytes())
+
+    def test_sigterm_retains_started_receipt_cleanup_and_offline_accounting(self):
+        listener = socket.socket(socket.AF_UNIX)
+        self.addCleanup(listener.close)
+        address = str(self.root / 'ready.sock')
+        listener.bind(address)
+        listener.listen(1)
+        listener.settimeout(10)
+        m = copy.deepcopy(self.manifest)
+        script = ('import socket,threading,sys; s=socket.socket(socket.AF_UNIX); '
+                  's.connect(sys.argv[1]); s.sendall(b"ready"); s.close(); threading.Event().wait()')
+        for arms in m['commands'].values():
+            for commands in arms.values():
+                commands['run']['argv'] = [sys.executable, '-c', script, address]
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        process = subprocess.Popen([sys.executable, '-B', str(HERE / 'tool.py'), 'collect',
+                                    str(bundle), '--block', slot['block'], '--registration',
+                                    str(registration)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        connection, _ = listener.accept()
+        with connection:
+            self.assertEqual(connection.recv(5), b'ready')
+        process.send_signal(signal.SIGTERM)
+        _, stderr = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 130, stderr.decode())
+        verify(bundle)
+        directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+        command = read_json(directory / 'run.command.json')
+        self.assertIs(command['started'], True)
+        self.assertIs(command['interrupted'], True)
+        self.assertIs(command['finished'], True)
+        self.assertEqual(command['exit'], -signal.SIGKILL)
+        self.assertIs(command['containment_proven'], True)
+        self.assertGreater(command['seconds'], 0)
+        row = read_json(directory / 'trial.json')
+        self.assertTrue(row['cleanup_proven'])
+        self.assertEqual(row['classification'], 'operational_failure')
+        result = analyze(bundle, self.root / 'signal-analysis')
+        self.assertEqual(result['accounting'][slot['workload']][slot['arms'][0]]['started'], 1)
+        self.assertEqual(result['accounting'][slot['workload']][slot['arms'][1]]['started'], 0)
+
+    def test_future_protocols_reuse_accounting_without_inventing_estimands(self):
+        m = copy.deepcopy(self.manifest)
+        m.update(experiment='E3', phase='registered-future', seed='future')
+        bundle, registration = self.frozen(m)
+        collect(bundle, self.block(bundle), registration)
+        result = analyze(bundle, self.root / 'future-accounting')
+        self.assertEqual(result['decision']['status'], 'accounting_only')
+        self.assertTrue(all(not values for values in result['estimates'].values()))
+        for arm in ('baseline', 'candidate'):
+            self.assertEqual(result['accounting'][order(m)[0]['workload']][arm]['complete'], 1)
+
+    def test_reanalysis_rejects_invalid_command_dates_and_sequence(self):
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        collect(bundle, slot['block'], registration)
+        directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+        path = directory / 'run.command.json'
+        original = read_json(path)
+        for index, (key, value, reason) in enumerate((
+                ('started_at', '2010-01-01T00:00:00Z', 'predates registration'),
+                ('started_at', '2099-01-01T00:00:00Z', 'command timing'),
+                ('started_at', read_json(directory / 'prepare.command.json')['started_at'], 'chronology'))):
+            write_json(path, dict(original, **{key: value}))
+            seal(bundle)
+            result = analyze(bundle, self.root / ('command-time-%d' % index))
+            self.assertTrue(any(reason in r for r in result['paired_missingness'][slot['block']]))
+
+    def test_uncontained_process_group_quarantines_despite_cleanup_receipt(self):
+        from collector import execute as real_execute
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        calls = []
+        def command(spec, context, directory, step, secrets):
+            calls.append((context['arm'], step))
+            if step != 'run':
+                return real_execute(spec, context, directory, step, secrets)
+            process = Mock(pid=123)
+            process.wait.side_effect = [subprocess.TimeoutExpired('run', 600),
+                                        subprocess.TimeoutExpired('term', 25),
+                                        subprocess.TimeoutExpired('kill', 25)]
+            with patch('execution.subprocess.Popen', return_value=process), \
+                    patch('execution.os.killpg'), patch('execution.wait_group', return_value=False):
+                return real_execute(spec, context, directory, step, secrets)
+        with patch('collector.execute', side_effect=command):
+            self.assertFalse(collect(bundle, slot['block'], registration))
+        self.assertIn((slot['arms'][0], 'cleanup'), calls)
+        self.assertNotIn((slot['arms'][1], 'prepare'), calls)
+        verify(bundle)
+        self.assertTrue((bundle / 'stopped.json').exists())
+        result = analyze(bundle, self.root / 'uncontained')
+        self.assertIn('cleanup_unproven', result['paired_missingness'][slot['block']])
+
+    def test_interruption_during_started_checkpoint_is_not_hook_tampering(self):
+        from common import write_json as real_write
+        for committed in (False, True):
+            directory = self.root / ('checkpoint-%s' % committed)
+            directory.mkdir()
+            spec = {'argv': [sys.executable, '-c', 'import threading; threading.Event().wait()'],
+                    'cwd': str(directory), 'env': {}, 'timeout_seconds': 5,
+                    'cancel_grace_seconds': 1}
+            def interrupted_write(path, value):
+                if value['started'] and not value['finished']:
+                    if committed:
+                        real_write(path, value)
+                    raise KeyboardInterrupt()
+                real_write(path, value)
+            with self.subTest(committed=committed), patch('execution.write_json', side_effect=interrupted_write):
+                with self.assertRaises(KeyboardInterrupt):
+                    execute(spec, {'redact_env': []}, directory, 'run', [])
+            command = read_json(directory / 'run.command.json')
+            self.assertTrue(command['started'])
+            self.assertTrue(command['finished'])
+            self.assertTrue(command['interrupted'])
+            self.assertTrue(command['containment_proven'])
+            self.assertEqual(command['exit'], -signal.SIGKILL)
+
+    def test_signal_during_spawn_transfers_process_ownership_before_interrupting(self):
+        from collector import execute as real_execute
+        real_popen = subprocess.Popen
+        children = []
+        def cleanup_children():
+            for process in children:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+        self.addCleanup(cleanup_children)
+        def signalled_spawn(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            children.append(process)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return process
+        def command(spec, context, directory, step, secrets):
+            if step == 'run':
+                with patch('execution.subprocess.Popen', side_effect=signalled_spawn):
+                    return real_execute(spec, context, directory, step, secrets)
+            return real_execute(spec, context, directory, step, secrets)
+        m = copy.deepcopy(self.manifest)
+        for arms in m['commands'].values():
+            for commands in arms.values():
+                commands['run']['argv'] = [sys.executable, '-c',
+                                           'import threading; threading.Event().wait()']
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        with patch('collector.execute', side_effect=command), self.assertRaises(KeyboardInterrupt):
+            collect(bundle, slot['block'], registration)
+        verify(bundle)
+        directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+        row = read_json(directory / 'trial.json')
+        self.assertTrue(row['started'])
+        self.assertTrue(row['cleanup_proven'])
+        self.assertEqual(row['exit'], -signal.SIGKILL)
+        self.assertTrue(all(p.poll() is not None for p in children))
+        self.assertEqual(row, analyzed_trial(bundle, m, slot, slot['arms'][0]))
+
     def test_fixed_order_matches_independent_hash_algorithm(self):
         m = self.manifest
         rows = order(m)
@@ -172,6 +447,16 @@ if step=='cleanup':
         shutil.copytree(bundle, moved)
         two = analyze(moved, self.root / 'two')
         self.assertEqual(one, two)
+        # Invoke the archived entry point without -B too: imports must not write
+        # bytecode into the immutable input. No checkout modules are on its path.
+        subprocess.run([sys.executable, str(moved / 'analysis/source/tool.py'),
+                        'analyze', str(moved), str(self.root / 'three')],
+                       check=True, capture_output=True)
+        verify(moved)
+        self.assertEqual((self.root / 'one/results.json').read_bytes(),
+                         (self.root / 'three/results.json').read_bytes())
+        self.assertEqual((self.root / 'one/report.md').read_bytes(),
+                         (self.root / 'three/report.md').read_bytes())
         self.assertEqual((self.root / 'one/results.json').read_bytes(),
                          (self.root / 'two/results.json').read_bytes())
         self.assertEqual(len(read_json(self.root / 'one/trials.json')), 64)
@@ -845,10 +1130,20 @@ if step=='observe':
                        'environment': {'host': 'test'}, 'resource_method': 'constructed',
                        'ci_snapshot': 'ci.json', 'evidence': {'ci.json': digest(directory / 'ci.json')}}
             write_json(directory / 'receipt.json', receipt)
-            for step in ('prepare', 'run', 'observe', 'check', 'cleanup'):
+            from execution import expand_command
+            context = dict(trial_dir=directory, campaign_dir=bundle, block_id=slot['block'],
+                           arm=arm, redact_env=[])
+            for step_index, step in enumerate(('prepare', 'run', 'observe', 'check', 'cleanup')):
+                argv, cwd, env = expand_command(m['commands'][slot['workload']][arm][step], context)
                 write_json(directory / (step + '.command.json'),
-                           {'exit': 0, 'timeout': False, 'error': None, 'seconds': 1,
-                            'started_at': data['run']['created_at']})
+                           {'step': step, 'argv': argv, 'cwd': cwd, 'env': env,
+                            'redacted_env_names': [], 'started': True, 'finished': True,
+                            'interrupted': False, 'containment_proven': True,
+                            'exit': 0, 'timeout': False, 'error': None, 'seconds': 1,
+                            'started_at': slot['date'] + 'T00:00:%02dZ' % (step_index * 2),
+                            'ended_at': slot['date'] + 'T00:00:%02dZ' % (step_index * 2 + 1)})
+            write_json(directory / 'attempt.json', {'collection_root': str(bundle),
+                       'state': 'finished', 'reason': '', 'cleanup_inputs_valid': True})
             (directory / 'cleanup.log').write_text('constructed cleanup proof')
             write_json(directory / 'cleanup.json',
                        {'proven': True, 'evidence': {'cleanup.log': digest(directory / 'cleanup.log')}})
@@ -975,8 +1270,8 @@ if step=='observe':
             process = Mock(pid=123)
             process.wait.side_effect = [OSError('constructed post-spawn error'), 4]
             processes.append(process)
-            with patch('collector.subprocess.Popen', return_value=process), \
-                    patch('collector.os.killpg') as kill, patch('collector.wait_group', return_value=True):
+            with patch('execution.subprocess.Popen', return_value=process), \
+                    patch('execution.os.killpg') as kill, patch('execution.wait_group', return_value=True):
                 result = real_execute(spec, context, directory, step, secrets)
                 kill.assert_called_once_with(123, signal.SIGKILL)
                 return result
@@ -1019,9 +1314,9 @@ if step=='observe':
         spec = self.manifest['commands']['example-fixed-replay']['baseline']['run']
         process = Mock(pid=123)
         process.wait.side_effect = [subprocess.TimeoutExpired(spec['argv'], 600), 4]
-        with patch('collector.subprocess.Popen', return_value=process), \
-                patch('collector.os.killpg', side_effect=[ProcessLookupError('constructed exit race'), None]) as kill, \
-                patch('collector.wait_group', return_value=True):
+        with patch('execution.subprocess.Popen', return_value=process), \
+                patch('execution.os.killpg', side_effect=[ProcessLookupError('constructed exit race'), None]) as kill, \
+                patch('execution.wait_group', return_value=True):
             result = execute(spec, {'trial_dir': self.root, 'block_id': 'test', 'redact_env': []},
                              self.root, 'run', [])
         self.assertTrue(result['started'])
@@ -1228,11 +1523,11 @@ if step=='observe':
         process.wait.side_effect = wait
         spec = {'argv': ['hook'], 'cwd': str(self.root), 'env': {},
                 'timeout_seconds': 1, 'cancel_grace_seconds': 25}
-        with patch('collector.subprocess.Popen', return_value=process), \
-                patch('collector.os.killpg', side_effect=kill), \
-                patch('collector.time.monotonic', return_value=10), \
-                patch('collector.time.monotonic_ns', side_effect=[0, 0, 1000000000]), \
-                patch('collector.wait_group', return_value=True), self.assertRaises(KeyboardInterrupt):
+        with patch('execution.subprocess.Popen', return_value=process), \
+                patch('execution.os.killpg', side_effect=kill), \
+                patch('execution.time.monotonic', return_value=10), \
+                patch('execution.time.monotonic_ns', side_effect=[0, 0, 1000000000]), \
+                patch('execution.wait_group', return_value=True), self.assertRaises(KeyboardInterrupt):
             execute(spec, {'redact_env': []}, self.root, 'interrupt', [])
         self.assertEqual(events, [('wait', {'timeout': 1}), ('signal', process.pid, signal.SIGTERM),
                                   ('wait', {'timeout': 25}), ('signal', process.pid, signal.SIGKILL),
@@ -1276,7 +1571,7 @@ else:
                 self.assertEqual(stream.read(5), b'ready')
             return process
         try:
-            with patch('collector.subprocess.Popen', side_effect=ready_process):
+            with patch('execution.subprocess.Popen', side_effect=ready_process):
                 result = execute(spec, {'redact_env': []}, self.root, 'descendant', [])
             descendant = int((self.root / 'descendant.pid').read_text())
             self.assertTrue(result['timeout'])
@@ -1491,7 +1786,7 @@ else:
             receipt_valid(m, row, receipt, directory)
 
     def test_overlapping_secrets_redact_longest_first_in_json(self):
-        from collector import redact_value, sanitize
+        from redaction import redact_value, sanitize
         for index, secrets in enumerate(([b'prefix', b'prefix-SUFFIX'],
                                          [b'prefix-SUFFIX', b'prefix'])):
             directory = self.root / ('overlapping-secrets-%d' % index)
@@ -1505,7 +1800,7 @@ else:
             self.assertEqual(sanitize(directory, secrets), 0)
 
     def test_marker_overlapping_secrets_fail_before_entering_a_block(self):
-        from collector import redact_value, sanitize
+        from redaction import redact_value, sanitize
         m = copy.deepcopy(self.manifest)
         m['redact_env'] = ['TEST_REDACTION_SECRET']
         bundle, registration = self.frozen(m)
@@ -1567,7 +1862,7 @@ else:
         verify(bundle)
 
     def test_unchanged_readonly_evidence_is_not_rewritten(self):
-        from collector import sanitize
+        from redaction import sanitize
         path = self.root / 'readonly.log'
         path.write_bytes(b'unchanged constructed evidence')
         path.chmod(0o444)
@@ -1680,9 +1975,9 @@ else:
         for index, setup in enumerate((30, 610)):
             process = Mock(pid=123)
             process.wait.return_value = 0
-            with patch('collector.subprocess.Popen', return_value=process), \
-                    patch('collector.time.monotonic_ns', side_effect=[0, int(setup * 1e9), int((setup + 1) * 1e9)]), \
-                    patch('collector.os.killpg') as kill, patch('collector.wait_group', return_value=True):
+            with patch('execution.subprocess.Popen', return_value=process), \
+                    patch('execution.time.monotonic_ns', side_effect=[0, int(setup * 1e9), int((setup + 1) * 1e9)]), \
+                    patch('execution.os.killpg') as kill, patch('execution.wait_group', return_value=True):
                 result = execute(spec, {'trial_dir': self.root, 'block_id': 'test', 'redact_env': []},
                                  self.root, 'spawn-delay-%d' % index, [])
             if setup == 30:
@@ -1774,8 +2069,8 @@ if step=='observe':
                 raise subprocess.TimeoutExpired('dispatch plus workflow', timeout)
             return 0
         process.wait.side_effect = wait
-        with patch('collector.subprocess.Popen', return_value=process), \
-                patch('collector.time.monotonic_ns', side_effect=[0, 0, 5410000000000]):
+        with patch('execution.subprocess.Popen', return_value=process), \
+                patch('execution.time.monotonic_ns', side_effect=[0, 0, 5410000000000]):
             result = execute(spec, {'trial_dir': self.root, 'block_id': 'test', 'redact_env': []},
                              self.root, 'run', [])
         self.assertFalse(result['timeout'])
@@ -1884,13 +2179,13 @@ if step=='observe':
             self.assertEqual(row['reason'], 'cleanup_unproven')
 
     def test_cleanup_proof_interruption_quarantines_before_all_hashes_pass(self):
-        from collector import digest as real_digest
+        from evidence import digest as real_digest
         bundle, registration = self.frozen()
         def digest_with_interruption(path):
             if Path(path).name == 'cleanup.log':
                 raise KeyboardInterrupt()
             return real_digest(path)
-        with patch('collector.digest', side_effect=digest_with_interruption), self.assertRaises(KeyboardInterrupt):
+        with patch('evidence.digest', side_effect=digest_with_interruption), self.assertRaises(KeyboardInterrupt):
             collect(bundle, self.block(bundle), registration)
         verify(bundle)
         self.assertTrue((bundle / 'stopped.json').exists())
@@ -1923,9 +2218,9 @@ if step=='observe':
                 raise subprocess.TimeoutExpired('constructed leader', timeout)
             return 0  # An unbounded wait would not enforce the failure bound.
         process.wait.side_effect = wait
-        with patch('collector.os.killpg') as kill, \
-                patch('collector.time.monotonic', side_effect=[10, 10.01]), \
-                patch('collector.wait_group', return_value=True) as group:
+        with patch('execution.os.killpg') as kill, \
+                patch('execution.time.monotonic', side_effect=[10, 10.01]), \
+                patch('execution.wait_group', return_value=True) as group:
             with self.assertRaisesRegex(OSError, 'leader.*SIGKILL'):
                 kill_group(process, 5)
         kill.assert_called_once_with(123, signal.SIGKILL)
@@ -1933,9 +2228,9 @@ if step=='observe':
         self.assertAlmostEqual(process.wait.call_args.kwargs['timeout'], 4.99)
         group.assert_not_called()
         process.wait.side_effect = None
-        with patch('collector.os.killpg'), \
-                patch('collector.time.monotonic', side_effect=[10, 10.01]), \
-                patch('collector.wait_group', return_value=False) as group:
+        with patch('execution.os.killpg'), \
+                patch('execution.time.monotonic', side_effect=[10, 10.01]), \
+                patch('execution.wait_group', return_value=False) as group:
             with self.assertRaisesRegex(OSError, 'group.*SIGKILL'):
                 kill_group(process, 5)
         group.assert_called_once_with(123, 15)
@@ -1946,9 +2241,9 @@ if step=='observe':
         process.wait.side_effect = [subprocess.TimeoutExpired('run', 600),
                                     subprocess.TimeoutExpired('term', 25),
                                     subprocess.TimeoutExpired('kill', 25)]
-        with patch('collector.subprocess.Popen', return_value=process), \
-                patch('collector.os.killpg') as kill, \
-                patch('collector.wait_group', return_value=False):
+        with patch('execution.subprocess.Popen', return_value=process), \
+                patch('execution.os.killpg') as kill, \
+                patch('execution.wait_group', return_value=False):
             result = execute(spec, {'trial_dir': self.root, 'block_id': 'test', 'redact_env': []},
                              self.root, 'run', [])
         self.assertTrue(result['started'])

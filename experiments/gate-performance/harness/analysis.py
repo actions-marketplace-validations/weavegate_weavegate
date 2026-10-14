@@ -9,7 +9,8 @@ from pathlib import Path
 
 from common import (E1_RESOURCES, E2_RESOURCES, child, counter, digest, json_equal, order,
                     read_json, sha, verify, write_csv, write_json)
-from collector import STEPS, receipt_valid, succeeded, validate_manifest, validate_registration
+from evidence import trial
+from plan import validate_manifest, validate_registration
 
 
 def quantile(values, p):
@@ -93,53 +94,13 @@ def estimate(m, workload, metric, pairs, dates):
     return result
 
 
-def trial(root, m, slot, arm):
-    directory = root / 'blocks' / slot['block'] / arm
-    path = directory / 'trial.json'
-    missing = dict(slot, arm=arm, attempt=1, started=False, classification='not_started',
-                   reason='slot_not_collected', metrics={}, facts={}, exit=None,
-                   elapsed_seconds=None, cleanup_proven=False)
-    if not path.exists():
-        missing['reason'] = 'interrupted_collection' if directory.parent.exists() else 'slot_not_collected'
-        return missing
-    row = read_json(path)
-    if any(row.get(key) != value for key, value in dict(slot, arm=arm, attempt=1).items()):
-        raise ValueError('trial identity differs from registered slot')
-    if row['classification'] == 'complete':
-        try:
-            if not row['started'] or not row['cleanup_proven']:
-                raise ValueError('completion lacks start/cleanup')
-            for step in ('prepare', 'observe', 'check', 'cleanup'):
-                if not succeeded(read_json(directory / (step + '.command.json'))):
-                    raise ValueError('command failed: ' + step)
-            run = read_json(directory / 'run.command.json')
-            if (run['timeout'] or run['error'] or run['exit'] != row['exit'] or
-                    run['exit'] not in m['expected_exit'][slot['workload']][arm] or
-                    run['seconds'] != row['elapsed_seconds']):
-                raise ValueError('run command receipt differs')
-            receipt = read_json(directory / 'receipt.json')
-            receipt_valid(m, row, receipt, directory)
-            if row['metrics'] != receipt['metrics'] or row['facts'] != receipt['facts']:
-                raise ValueError('ledger and original receipt differ')
-            if m['experiment'] == 'E1' and row['metrics'].get(
-                    'adoption_seconds' if m['phase'] == 'adoption-cold' else 'gate_seconds') != run['seconds']:
-                raise ValueError('gate duration must use collector monotonic clock')
-            proof = read_json(directory / 'cleanup.json')
-            if proof.get('proven') is not True or not proof.get('evidence'):
-                raise ValueError('missing cleanup proof')
-            for name, checksum in proof['evidence'].items():
-                if digest(child(directory, name)) != checksum:
-                    raise ValueError('cleanup evidence mismatch')
-        except (ValueError, OSError, KeyError, TypeError, AttributeError) as error:
-            row.update(classification='quality_failure', reason=str(error))
-    return row
-
-
 def analyze(root, output):
     root, output = Path(root).resolve(), Path(output).resolve()
     if output == root or root in output.parents:
         raise ValueError('analysis output must be outside the immutable input bundle')
     verify(root)
+    if read_json(root / 'analysis/dependencies.json').get('bundle_format') != 2:
+        raise ValueError('unsupported bundle format; use the bundle archived analyzer')
     m = read_json(root / 'campaign.json')
     validate_manifest(m)
     slots = order(m)
@@ -152,18 +113,11 @@ def analyze(root, output):
     blocks = defaultdict(dict)
     for row in rows:
         blocks[row['block']][row['arm']] = row
-    if any(r['started'] for r in rows):
-        from common import timestamp
+    if any(r['started'] for r in rows) or any(block_dir.glob('*/*/*.command.json')):
         reg = read_json(root / 'registration.json')
         validate_registration(reg)
         if reg['campaign_sha256'] != digest(root / 'campaign.json') or reg['order_sha256'] != digest(root / 'order.json'):
             raise ValueError('registration hash mismatch')
-        for slot in slots:
-            for arm in slot['arms']:
-                for step in STEPS:
-                    command = root / 'blocks' / slot['block'] / arm / (step + '.command.json')
-                    if command.exists() and timestamp(reg['registered_at']) >= timestamp(read_json(command)['started_at']):
-                        raise ValueError('measurement predates registration')
     pair_reasons = {}
     for block, arms in blocks.items():
         b, w = arms['baseline'], arms['candidate']
@@ -202,6 +156,8 @@ def analyze(root, output):
         if m['experiment'] == 'E1' and m['phase'] == 'adoption-cold':
             metrics.append('adoption_seconds')
         results[workload] = {}
+        if m['experiment'] not in ('E1', 'E2'):
+            continue  # Collection is reusable; future estimands are not defined here.
         for metric in sorted(set(metrics)):
             pairs = [(b['date_slot'], b['block_id'], b['metrics'][metric], w['metrics'][metric])
                      for b, w in valid if counter(b['metrics'].get(metric)) and
@@ -209,6 +165,8 @@ def analyze(root, output):
             dates = ['%02d' % i for i in range(1, len(counts) + 1)]
             results[workload][metric] = estimate(m, workload, metric, pairs, dates)
     decision = {'status': 'descriptive', 'reasons': [], 'higher_resource_cost': [], 'undefined_resource_ratios': []}
+    if m['experiment'] not in ('E1', 'E2'):
+        decision.update(status='accounting_only', reasons=['protocol_analysis_not_implemented'])
     if m['experiment'] in ('E1', 'E2') and m['phase'] == 'confirmation':
         primary = 'example-fixed-replay' if m['experiment'] == 'E1' else 'external-acceptance'
         metric = 'gate_seconds' if m['experiment'] == 'E1' else 'validation_seconds'
@@ -384,7 +342,7 @@ def analyze(root, output):
               'registered dates, environments, caches and workload. No p99, labor savings',
               'or broad application claim follows from this analysis.', '']
     (output / 'report.md').write_text('\n'.join(lines))
-    write_json(output / 'command.json', {'argv': [sys.executable, str(Path(__file__).with_name('tool.py')),
+    write_json(output / 'command.json', {'argv': [sys.executable, '-B', str(Path(__file__).with_name('tool.py')),
                                                 'analyze', str(root), str(output)]})
     from common import seal
     seal(output)

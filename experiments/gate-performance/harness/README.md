@@ -1,18 +1,15 @@
 # Experiment collector and analyzer
 
-These standalone Python 3.9+ tools implement collection/accounting shared by
-E1–E4 and the published [E1/E2 analysis](../README.md). They use only the Python
-standard library; Linux/POSIX process groups and file locks are required for
-collection. They add no engine dependency or `weavegate` subcommand.
-E3/E4 collection accepts a separately frozen protocol and explicit counts;
-there is no E3/E4 confirmatory decision rule in these tools yet.
+Standalone Python 3.9+ tools freeze a campaign, collect each assigned pair once,
+and reproduce accounting and the published [E1/E2 analysis](../README.md) from
+retained evidence. Collection requires Linux, `/proc`, POSIX process groups and
+file locks. The tools use only the standard library and add no engine dependency
+or `weavegate` subcommand. E3/E4 can reuse collection with separately registered
+protocols and counts; their statistical and holdout rules remain future work.
 
-## Try the tooling
+## Run the constructed example
 
-Run from the repository root. This runnable demo generates **constructed**
-commands, receipts and counters. It executes no product and measures no product
-performance. It exercises one of the 32 preassigned E1 pilot blocks and leaves
-all other slots explicitly missing. Choose new destination directories:
+Run from the repository root with new destination directories:
 
 ```bash
 python3 -B experiments/gate-performance/harness/demo.py /tmp/weavegate-demo
@@ -20,26 +17,61 @@ python3 -B experiments/gate-performance/harness/tool.py verify /tmp/weavegate-de
 python3 -B /tmp/weavegate-demo/campaign/analysis/source/tool.py analyze \
   /tmp/weavegate-demo/campaign /tmp/weavegate-demo-reanalysis
 cmp /tmp/weavegate-demo/analysis/results.json /tmp/weavegate-demo-reanalysis/results.json
+cmp /tmp/weavegate-demo/analysis/report.md /tmp/weavegate-demo-reanalysis/report.md
 python3 -B experiments/gate-performance/harness/test_harness.py
 ```
 
-The generated `input/manifest.json` is a complete, constructed schema example.
-Its hook's unconditional checks and artificial resource values are for this
-demo only. They are not suitable evidence for a measurement campaign.
+The demo is **constructed evidence**, not a performance observation. It runs one
+of the 32 assigned E1 pilot blocks and leaves every other slot missing. Its
+`input/manifest.json` is a complete schema example; unconditional demo checks
+and artificial counters are unsuitable for a measurement campaign.
 
-## Register and collect a real campaign
+## Design and ownership
 
-Prepare a private staging directory containing the manifest and all portable
-pins. Supply real infrastructure-specific preparation, monitoring, evidence
-validation and teardown commands before freezing. These tools do not provision
-cloud allocations, restore memory/cache snapshots, dispatch experimental
-workflows, or supply a universal cgroup monitor. Those operations depend on the
-registered infrastructure and belong in pinned campaign hooks. A campaign
-cannot pass with missing telemetry, lifecycle proofs or existing acceptance
-checks; do not replace those checks with unconditional booleans.
+| Module | Owns |
+| --- | --- |
+| `plan.py` | Manifest shapes, protocol requirements, registration syntax and live input pins |
+| `execution.py` | Exact invocation, monotonic timing, bounded process-group termination and durable command receipts |
+| `storage.py` | Collector file ownership and immutable evidence at each hook boundary |
+| `redaction.py` | Payload sanitization; control-field exemptions require explicitly owned paths |
+| `collector.py` | One-shot slot admission, ordered hooks, unconditional trusted cleanup and sealing |
+| `evidence.py` | The shared reduction from original commands, observations and cleanup to trial accounting |
+| `analysis.py` | Paired statistics, decisions and reports from the reduced evidence |
+| `ci.py` | Original-attempt provider snapshots and workflow endpoint arithmetic |
 
-The following are command templates; the manifest, public registration receipt
-and host setup must exist first:
+The design separates observations from derived views. `receipt.json` remains the
+observer's original sanitized bytes. The collector's duration is joined in
+memory; it never edits that original to insert a measurement. `trial.json` and
+the aggregate ledgers are cached views. Both collection and offline analysis
+use `evidence.trial`, including for failures, so a cached classification cannot
+create a success, hide a started attempt or supply a timing measurement.
+
+Each completed hook establishes an immutable boundary. Later hooks may add
+originals in the active arm, but cannot replace retained originals, earlier
+command receipts, another arm, campaign inputs or aggregate ledgers. Keep
+mutable monitoring state and temporary build files outside the retained arm;
+copy their final evidence into the arm when ready. The collector checks these
+boundaries before and after hooks and before sealing. An observed violation is
+permanent even if a later hook restores the bytes. Trusted cleanup is still
+attempted; the original checksum inventory is preserved and resealing refused.
+This is integrity checking among trusted hooks, not an OS security sandbox
+against processes running as the same user.
+
+The evidence layout is bundle format `2`, recorded in
+`analysis/dependencies.json`; the input manifest remains schema `1`. Earlier
+development bundles retain their own archived analyzer. This analyzer rejects
+older layouts rather than interpreting their cached trials as original evidence.
+
+## Register and collect
+
+Prepare infrastructure-specific hooks for allocation/restoration, resource
+measurement, existing acceptance checks and teardown. These tools do not supply
+cloud provisioning, experimental workflows or a universal resource monitor.
+Hooks preserve existing Oracle verdicts; campaign accounting does not judge
+business invariants. Missing telemetry or lifecycle proof cannot be replaced
+with unconditional checks.
+
+These commands are templates requiring a real manifest and registration:
 
 ```bash
 python3 -B experiments/gate-performance/harness/tool.py freeze campaign-input.json campaign
@@ -48,357 +80,226 @@ python3 -B experiments/gate-performance/harness/tool.py collect campaign \
 python3 -B campaign/analysis/source/tool.py analyze campaign campaign-analysis
 ```
 
-After `freeze` and before any `collect`, publish `campaign.json`, `order.json`,
-protocol copies and pins in a public commit or immutable archive. Create
-`registration.json` with `campaign_sha256` and `order_sha256` (SHA-256 of retained
-bytes), `registered_at` (UTC), `revision` (nonempty string) and `public_url`
-(absolute HTTP/HTTPS URL with a hostname, without credentials, whitespace or
-control characters). Collection validates provenance syntax before entering a
-block, and analysis rechecks it for started campaigns. The collector checks
-hashes and temporal precedence and retains this receipt unchanged. It does not
-authenticate an archive's timestamp or prove that the URL was public; an
-independent auditor must verify that registration evidence. The demo uses an
-explicitly constructed registration receipt.
-
-Run blocks in `order.json` order within each workload/date slot, on their
-registered UTC dates. The exact arm order is generated with the shared
-SHA-256 algorithm, including odd-date balancing. E1/E2 counts, workloads,
-seed and measurement budgets must match protocol revision 1. E1's process cap
-uses its measured CLI boundary; E2's 90-minute workflow cap uses provider run
-creation, with a separately frozen wrapper watchdog covering dispatch and
-evidence-retention overhead. Collection refuses
-an already started block, a modified live pin or collector source, an unfinished
-prior block, a changed registration receipt and a concurrent writer.
-
-Use one freshly assigned allocation for each E1 pair. Each arm's `prepare`
-restores the registered snapshot and resets counters before its measured
-invocation. Record allocation/host IDs, actual CPU/memory caps, image/cache
-receipts and date in observed evidence. Declare those facts in `compare_facts`
-and validate them in the pinned checker. Reused hosts/allocations and other
-protocol deviations must be registered under `deviations`; any such deviation
-keeps confirmation reporting descriptive. The collector does not certify cloud
-allocation independence from a local process.
-
-Both arms run despite ordinary first-arm failures, after proven cleanup. An
-unproven cleanup marks the mate not started and stops the entire campaign with
-`stopped.json`. Never remove a block directory, stopped marker or failure to
-resume/retry. Diagnostic reruns use separate tuning campaigns and never enter
-these first-attempt ledgers. Interruptions retain the entered slot and attempt;
-forcible termination may leave an unsealed bundle. Preserve that directory for
-audit rather than repairing its primary observations or replacing the block.
-
-## Manifest schema 1
-
-JSON rejects duplicate keys and nonfinite numbers, including floating-point
-exponents outside the finite range. Artifact hashes are full
-lowercase SHA-256 without a prefix. Paths in retained evidence and portable pins are
-relative, cannot traverse `..`, and cannot traverse symlinks.
+Freeze validates the complete plan and pins before creating the private campaign
+directory. It copies protocols, artifacts and executable Python sources, assigns
+all blocks using the published SHA-256 algorithm and seals the inventory.
+After freeze and before collection, publish the frozen plan, order, protocols
+and pins in a public commit or immutable archive. Supply a registration object:
 
 | Field | Contract |
 | --- | --- |
-| `schema`, `campaign_id`, `experiment`, `phase`, `protocol_revision` | Integer schema `1`, nonempty string campaign identity, `E1`–`E4`, nonempty string registered phase and positive integer revision. Booleans and floating-point versions fail before freeze; malformed phases fail before creating a bundle, including for E3/E4. E1/E2 require revision `1` and support `pilot`, `confirmation`, and E1 `adoption-cold`. |
-| `seed`, `strata`, `dates` | Nonempty string seed for E1–E4 (the published seed for E1/E2), workload-to-date-slot count arrays, distinct increasing UTC dates. All registered slots are created before measurement; malformed seeds fail before creating a campaign. |
-| `protocols` | Filename to `{path, sha256}`; E1/E2 require exact copies of the three protocol files shipped with this collector. |
-| `pins` | `{path, sha256, role}` entries copied from the manifest's directory to `pins/`. Include release checksums, binaries/JARs, inputs, dependency locks/trees, treatment diffs and hook/checker sources. |
-| `execution_pins` | `{path, sha256, role}` entries for absolute live paths checked at freeze, before collection, before the measured command and before cleanup. Pin every executable, hook, JAR and input actually used. |
-| cleanup command `execution_pins` | Optional nonempty list of unique paths referencing the manifest's live pins. Declare every input used by a separately trusted cleanup command. If omitted, cleanup depends on the entire live inventory. Unknown paths and empty selections fail before freeze; completeness remains an auditor obligation. |
-| `sources` | Collector/analyzer source commits and dependency locks, protocol commit, registration provenance. The collector also archives its actual Python sources. |
-| `arms`, `inputs`, `runtime`, `environment`, `observation` | Nonempty inventories from the shared protocol's required campaign manifest. Include all identities, build commands, settings, resource boundaries, cache policy, expected evidence and redaction policy. Their experiment-specific completeness is a checker/auditor obligation. |
-| `commands` | Workload → `baseline`/`candidate` → `prepare`, `run`, `observe`, `check`, `cleanup` command specifications. |
-| `expected_exit`, `expected_facts` | Workload → arm → nonempty lists of integer exit codes / nonempty objects of exact expected receipt facts, validated before freeze for E1–E4. Booleans and floating-point exit codes fail before freeze. Fact equality preserves JSON types recursively: booleans cannot substitute for numbers, while equal integer/float spellings are both JSON numbers. E1 enforces exit 0 for fixed workloads and exit 2 for vulnerable workloads, plus the registered `schedule_runs` and `flaky: false` expectations. E2 enforces wrapper exit 0 after existing probe assertions succeed. |
-| `compare_facts` | Receipt fact keys that must match within every pair, such as normalized evidence hashes, schedule inventory, workload counts, image/cache/resource class and allocation identity. Do not compare volatile IDs or treatment-specific identities. |
-| `quality_checks` | Required receipt checks. E1/E2 require `outcome`, `assertions`, `schedules`, `repetitions`, `normalized_evidence`, `isolation`, `lifecycle`, `resources`, `environment`; add the full campaign inventory, including acceptance-completeness checks. |
-| `resource_metrics`, `analysis_metrics` | Required resources and optional descriptive numeric endpoints, with units/provenance declared in the observation inventory. `analysis_metrics`, when present, must be a list of unique nonempty string names, validated before freeze; an empty list is allowed. Missing values remain unknown; zero is retained and its ratio is undefined. |
-| `redact_env` | Unique nonempty environment variable names without `=` or NUL; invalid names fail before freeze. Their required values are passed to hooks and removed from retained bytes and command receipts. Values are never in the manifest. Values contained in the literal `[REDACTED]` marker fail before starting a block so a replacement cannot disclose the same credential. |
-| `ci` | E2 `owner/repo`, full lowercase 40-hex common `execution_sha`, and required `tasks` mappings for both arms (below), validated before freeze; workflow/action/ruleset pins belong in the inventories. |
-| `deviations` | Optional list of strings disclosing departures from the registered design, validated before freeze; an omitted or empty list is allowed. A nonempty list prevents favorable confirmatory claims. |
+| `campaign_sha256`, `order_sha256` | SHA-256 of the retained `campaign.json` and `order.json` bytes |
+| `registered_at` | UTC timestamp preceding all collection commands |
+| `revision` | Nonempty public registration revision |
+| `public_url` | Absolute HTTP/HTTPS URL with a hostname and no credentials, whitespace or control characters |
 
-A command specification contains exact `argv` (nonempty list of strings with a
-nonempty executable at index 0), `cwd` (nonempty string working directory),
-`env` (explicit allowlisted values) and `timeout_seconds`.
-Argument strings and working directories cannot contain NUL; empty arguments
-after the executable are allowed.
-Environment names and values must be strings; names cannot contain `=`, and
-neither names nor values may contain NUL. Invalid argument lists or environments
-fail before a campaign directory is created.
-No shell is introduced by the
-collector. Tokens `{trial_dir}`, `{campaign_dir}`, `{block_id}`, `{arm}` expand
-once from the original string at execution; literal braces inside an inserted
-path are preserved and unknown tokens stay literal. Use absolute executable
-paths or explicitly supply `PATH`.
-Date slots must use canonical UTC `YYYY-MM-DD` strings; unpadded dates fail
-before a campaign directory is created.
-Protocol map names must be safe relative paths without NUL or parent traversal;
-freeze checks their destination paths before creating the bundle. E3/E4 may use
-nested relative protocol names; aliases and file/directory conflicts fail
-before bundle creation. E1/E2 retain their three fixed filenames.
-`quality_checks`, `resource_metrics`, `compare_facts` and `redact_env` must be
-lists of unique nonempty strings; only `redact_env` may be empty. Invalid
-inventories fail before freeze. The registered UTC date is rechecked before
-each arm's preparation and before its measured run. An expired slot stays
-`not_started` with reason `registered_date_expired`; any preparation receives
-normal cleanup and the pair remains incomplete without a replacement.
+The receipt cannot change after collection begins. Syntax, hashes and temporal
+precedence are checked; public availability and timestamp authenticity require
+independent audit. The demo registration is explicitly constructed.
 
-Parent environment values are not inherited except names in `redact_env`.
-Secrets must be supplied only by those environment variables, never argv,
-ordinary `env` values, pins, inventories or registration fields. Declare any
-additional sanitization in the observer; wire payloads and database DSNs are
-outside the collection contract.
+Run blocks in assigned sequence within each workload/date slot, on their UTC
+dates. Date eligibility is checked before preparation and the measured command.
+An expired date remains `not_started`; any preparation still receives cleanup.
+There is no replacement attempt. Existing blocks, unfinished prior blocks,
+changed live inputs or collector sources, concurrent collectors and stopped
+campaigns are rejected. E1 requires fresh dedicated allocations for independent
+pairs. Register allocation/host/cache/image/resource facts for paired comparison;
+independence and counter scope also require audit of the frozen hooks.
 
-JSON redaction replaces longer overlapping secret values first, independent of
-their manifest order. It works on strings and preserves numeric/boolean syntax and
-collector-owned public control fields, slot identities, paths and hash
-checkpoints. Command arguments and ordinary environment entries are public
-manifest data; required secret environment values are excluded from command
-receipts. Unknown string payloads and original JSON evidence are redacted;
-non-JSON logs still use byte redaction. Short values can collide with original
-evidence strings and invalidate their proofs, producing sanitized failed
-evidence instead of repairing hashes or corrupting collector JSON.
-Each arm's `redactions.json` accumulates replacements across observation,
-check, cleanup and final sanitization, including failed/interrupted cleanup.
-Unchanged evidence bytes are never rewritten, so read-only originals with no
-secret match remain usable. A required redaction that cannot be written fails
-instead of sealing unsanitized evidence. Bundle inventory rejects symlinks and
-every non-regular entry other than directories, including FIFOs and sockets.
+## Manifest schema 1
 
-For E2, `run.timeout_seconds` is a wrapper watchdog and must be greater than
-5,400 seconds. Freeze a value that reserves the hook's dispatch/retention
-overhead in addition to the provider cap; no universal overhead allowance is
-supplied. This watchdog does not extend the workflow's 5,400-second cap from
-`run.created_at`, which collection and analysis validate from provider evidence.
-Pinned dispatch/wait hooks enforce cancellation at that provider deadline;
-their cleanup must prove teardown when the watchdog or provider cap is hit.
+JSON rejects duplicate keys and nonfinite numbers. Versions, counts and exit
+codes are integers, not booleans. Hashes are lowercase 64-character SHA-256.
+Portable paths are relative, without parent traversal, NUL or symlinks.
 
-`run` is the whole CLI invocation for warm E1, or the end-to-end adoption wrapper
-for `adoption-cold`. For cold adoption the collector records `adoption_seconds`
-from the wrapper, and the observer must retain separate actual
-checkout/build/install/gate/upload spans. Its `gate_seconds` requires a separate
-`gate_timer` receipt with `source: "monotonic"`, `boundary: "cli_spawn_to_exit"`,
-numeric `seconds` equal to that metric (a boolean is rejected) and `evidence`
-naming a hashed original timer
-file. The wrapper's duration is never relabeled as the nested CLI duration.
-E2's `run` is a pinned observer/dispatch wrapper for one complete workflow.
-The 600/1,800/5,400-second observation budgets never modify product timeouts.
-Each command's watchdog starts with the recorded monotonic start before process
-creation; waiting uses only its remaining budget. Spawn setup that consumes the
-budget cannot yield a complete observation. E2's provider cap still has its
-separate provider origin.
-On expiration the process group receives TERM, followed by KILL if any live
-member remains after the registered `cancel_grace_seconds` (default 25).
-The grace deadline covers the whole group even when its leader exits first.
-Linux `/proc` liveness polling excludes exited zombies; it observes termination
-only and does not coordinate measured workloads. After KILL, the leader is reaped
-and group death is checked within one further grace bound shared by leader
-reaping and remaining group members. A leader surviving KILL produces an
-explicit command error without restarting that bound or waiting indefinitely.
-Cleanup still
-runs, and the attempt is incomplete. Grace/teardown beyond the cap remains in
-the command/event receipts. A process exit does not establish resource cleanup.
-An interruption during the termination grace wait also kills and reaps the
-command's process group before control reaches cleanup.
-Command receipts record `started` as true once process creation succeeds;
-later execution errors retain this status, elapsed time and the trial's started
-denominator. A failed spawn remains unstarted with reason `spawn_failed`;
-post-spawn errors use `execution_failed`, or `budget_expired` after a timeout.
+| Field | Contract |
+| --- | --- |
+| `schema`, `campaign_id`, `experiment`, `phase`, `protocol_revision` | Schema `1`, nonempty identity/phase, `E1`–`E4` and positive protocol revision; E1/E2 use revision `1` |
+| `seed`, `strata`, `dates` | Nonempty seed; workload-to-positive-count arrays; distinct increasing canonical UTC dates (`YYYY-MM-DD`). E1/E2 use the published seed, counts and workloads |
+| `arms`, `inputs`, `runtime`, `environment`, `observation`, `sources` | Nonempty inventory objects covering the [shared protocol](../README.md#required-campaign-manifest); completeness and accuracy require audit |
+| `protocols` | Retained filename to `{path, sha256}`; E1/E2 require exact copies of the three published protocol files |
+| `pins` | Unique `{path, sha256, role}` entries copied relative to the manifest into `pins/` |
+| `execution_pins` | Unique `{path, sha256, role}` entries for absolute live inputs; pin every executable, hook, JAR and input used |
+| `commands` | Every workload, both `baseline`/`candidate` arms, and all five hook specifications |
+| `expected_exit`, `expected_facts` | Every workload and arm: nonempty integer exit lists and nonempty expected-fact objects |
+| `quality_checks`, `resource_metrics`, `compare_facts` | Unique nonempty string lists; E1/E2 include the published quality/resource inventory |
+| `analysis_metrics` | Optional unique nonempty metric names for descriptive E1/E2 estimates |
+| `redact_env` | Unique environment variable names whose secret values must be supplied at collection; may be empty |
+| `deviations` | Optional string list; any entry prevents a favorable confirmatory claim |
+| `ci` | E2 `repository` (`owner/repo`), common lowercase 40-hex `execution_sha`, and logical task mappings for both arms |
 
-## Hook evidence
+A command has `argv` (nonempty string array with a nonempty executable), `cwd`
+(nonempty string), `env` (explicit string-to-string allowlist), positive
+`timeout_seconds` and optional positive `cancel_grace_seconds` (default 25).
+Environment names must be nonempty and cannot contain `=`; arguments, cwd,
+environment names and values cannot contain NUL. No shell is introduced.
+`{trial_dir}`, `{campaign_dir}`, `{block_id}` and `{arm}` expand once. Unknown
+tokens and braces inside inserted paths remain literal. Supply an absolute
+executable or explicit `PATH`; the parent environment is otherwise not inherited.
 
-`observe` writes original product run directories, logs, resource-counter
-receipts, environment identities and `receipt.json` under `{trial_dir}`. It
-must retain the existing Oracle's outputs; it must not decide business verdicts.
-`check` invokes pinned existing acceptance checkers and validates the frozen
-expectations against those originals, including repeats, schedule IDs,
-assertion rows, flakiness, normalized evidence and lifecycle obligations.
-Its successful exit and actual logs are retained. A `receipt.json` contains:
+The five hooks run in this order:
 
-- `checks`: required check names mapped to boolean `true` only after their
-  actual validations succeed.
-- `facts`: observed contract values, including every expected and paired fact.
-- `metrics`: numeric values in the frozen units. E1 requires `cpu_seconds`,
-  `peak_memory_bytes`, `containers_created`, `peak_containers`,
-  `disk_write_bytes`, `artifact_bytes`, `cache_bytes`; E2 requires
-  `runner_minutes`, `peak_runner_concurrency`.
-- `environment`: a nonempty object of observed host/allocation/runtime/cache
-  identities.
-- `resource_method`: a nonempty description string giving counter scope,
-  reset/timer boundaries and collection
-  overhead; include CLI descendants and MySQL, with the protocol's 100 ms
-  cadence and sampled-peak limitation if sampling memory.
-- `evidence`: relative file paths mapped to hashes of sanitized retained bytes.
-  Include all original logs, product artifacts, counter receipts and manifests.
-- `ci_snapshot`: E2's retained provider snapshot path.
+| Hook | Boundary |
+| --- | --- |
+| `prepare` | Restore the registered allocation/cache state and reset counters |
+| `run` | Whole E1 CLI invocation, cold-adoption wrapper, or E2 dispatch/retention wrapper |
+| `observe` | Retain original product evidence, counters, environment and `receipt.json` |
+| `check` | Run pinned existing acceptance checks and validate the frozen expectations |
+| `cleanup` | Prove teardown/restoration with `cleanup.json` and original evidence |
 
-The collector supplies E1's primary duration from its own monotonic clock and
-checks evidence hashes. The analyzer rechecks receipts, original evidence,
-commands and cleanup rather than trusting the derived trial classification.
-Integers outside the finite float range are invalid counters, without aborting
-collection. Required invalid readings produce quality failure; original values
-remain in the retained receipt and missing derived readings remain unknown.
-Both collection and analysis reject scalar environment inventories and
-non-string or blank resource descriptions as quality failures. The frozen
-checker and independent auditor still validate experiment-specific identities,
-scope, units and boundary completeness; structural validation cannot certify
-an honest or complete measurement method.
-The quality interface composes campaign checkers; a boolean alone does not
-establish the underlying Oracle, isolation or telemetry semantics.
-Non-object observation JSON remains retained as failed evidence. It supplies
-no environment inventory entry, but cleanup, sealing, analysis and subsequent
-preassigned blocks still proceed when cleanup is proven.
+E1 warm `run.timeout_seconds` is 600; cold adoption is 1,800. E2's wrapper
+watchdog must exceed 5,400 to reserve dispatch/retention overhead; its provider
+cap remains 5,400 seconds from workflow creation. Hooks must enforce that
+provider deadline and cancellation. Product timeouts remain unchanged.
 
-`cleanup` runs after prepare/run/observe/check failures when its registered
-execution inputs still match. A frozen cleanup-specific pin selection allows
-trusted teardown after unrelated live input drift; without one, the full
-inventory remains required. A changed cleanup dependency must never execute.
-Any live pin drift still quarantines the allocation and stops the campaign,
-even if the separate teardown succeeds and retains original proof. Cleanup
-writes `cleanup.json` with `proven: true` and `evidence` path/hash entries for
-observed teardown/restoration. Exit 0 alone is insufficient. Missing proof,
-checker/pin drift or corrupted cleanup evidence quarantines the allocation and
-stops collection. Redaction runs before retention hashes are sealed. If it
-changes evidence bytes whose receipt hashes were not already sanitized, the
-observation is incomplete, rather than silently repairing its semantic proof.
-Keep public data synthetic. Review the sanitized private bundle before upload.
-Cleanup interruptions, including `KeyboardInterrupt` and `SystemExit`, also
-record unproven cleanup and sanitize retained hook output before sealing.
-If sanitization fails, sealing is refused and the unsealed private bundle must
-be preserved for audit.
+Live pins are checked before each non-cleanup hook. Cleanup may declare its own
+nonempty `execution_pins` subset of registered paths; without it, all live pins
+are required. This permits trusted teardown after unrelated input drift. Any
+live drift still prevents allocation reuse and stops the campaign. Changed
+cleanup dependencies are never executed.
 
-## E2 provider boundaries
+## Receipts and failure behavior
 
-Use the helper in the pinned observer after the workflow ends. This command
-requires authenticated GitHub CLI and reads only the explicit original attempt:
+An observation `receipt.json` contains:
+
+| Field | Required evidence |
+| --- | --- |
+| `checks` | Required quality names mapped to boolean `true` after actual validation |
+| `facts` | Frozen expected facts and paired comparison facts; nested booleans differ from numbers |
+| `metrics` | Numeric nonnegative finite counters in frozen units; invalid or absent readings stay unknown |
+| `environment` | Nonempty object of observed host/allocation/runtime/cache identities |
+| `resource_method` | Nonblank description of counter scope, reset/timer boundaries and collection overhead |
+| `evidence` | Nonempty relative-path-to-hash map of sanitized retained originals |
+| `ci_snapshot` | E2 provider snapshot path, included in `evidence` |
+
+E1 resources are `cpu_seconds`, `peak_memory_bytes`, `containers_created`,
+`peak_containers`, `disk_write_bytes`, `artifact_bytes` and `cache_bytes`.
+E2 resources are `runner_minutes` and `peak_runner_concurrency`.
+For cold adoption, the collector supplies `adoption_seconds`; the observer's
+separate `gate_seconds` requires `gate_timer` with `source: "monotonic"`,
+`boundary: "cli_spawn_to_exit"`, matching numeric `seconds` and a hashed original
+`evidence` path. The wrapper duration cannot substitute for the nested CLI timer.
+
+Cleanup requires successful command execution plus `cleanup.json` with
+`proven: true` and a nonempty `evidence` path/hash map. Exit 0 alone is inadequate.
+Malformed observations, operational exits and timeouts remain failed attempts;
+the mate still runs after proven cleanup. Unproven cleanup leaves the mate not
+started, writes `stopped.json` and prohibits further collection.
+
+Command receipts persist `started` after successful process creation and retain
+`finished`, `interrupted`, exit, error, timestamps and elapsed seconds. The
+collector defers cancellation during spawn until it owns the child handle;
+the child does not inherit a blocked signal mask. Collection runs on the main
+Python thread. Interrupted atomic start checkpoints accept either owned version.
+The
+watchdog starts before spawn and waits only its remaining budget. Timeout sends
+TERM to the process group, waits one grace bound, then KILL with one further
+shared bound for leader reaping and group death. A normally exiting leader with
+live descendants also fails and triggers termination. `/proc` polling observes
+termination only; it does not coordinate workloads. Processes that detach from
+the group and external resources still require the registered cleanup proof.
+An unproven process-group termination quarantines the campaign even if a hook
+supplies a successful cleanup receipt.
+
+SIGINT/SIGTERM interrupt collection through cleanup and sanitization; the CLI
+returns 130 after preserving evidence. Failed spawn stays unstarted; an
+interrupted running command stays started with its actual elapsed time. Atomic
+JSON replacement preserves complete checkpoints. SIGKILL, power loss or failed
+sanitization can leave an unsealed bundle: preserve it for audit, do not repair
+or rerun it as a primary observation. No claim of crash recovery is made.
+
+## Sanitization and bundle layout
+
+Secrets belong only in `redact_env` values, never public manifests, ordinary
+`env`, argv, pins or registration. Empty values and values contained in the
+literal `[REDACTED]` marker fail before entering a slot. Longer overlapping
+values are replaced first. JSON string redaction preserves numeric/boolean
+syntax; non-JSON payloads receive byte redaction, including JSON-escaped forms.
+No payload is exempt merely because its filename resembles a control file.
+Only the collector's exact owned paths retain public identity/control fields.
+Additional payload encodings and domain-specific sanitization belong in hooks.
+
+Sanitization precedes evidence checkpoints. Unchanged bytes are not rewritten.
+If replacement changes a proof's original bytes, its old hash fails; the tool
+never repairs the semantic proof to manufacture validity. `redactions.json`
+accumulates replacements across hooks. A redaction that cannot be written
+prevents sealing. Symlinks, FIFOs, sockets and other non-regular entries cannot
+be sealed. Review the private sanitized bundle before publishing it.
+
+Frozen files are `campaign.json`, `order.json`/`order.csv`, `protocol/`, `pins/`
+and `analysis/source/`. Each `blocks/<block>/<arm>/` retains original hook files
+alongside collector-owned `attempt.json`, `trial.json`, `redactions.json` and
+`<step>.command.json`/`.stdout`/`.stderr` for the five steps. These control names
+are reserved at the arm root; nested originals are ordinary payloads.
+`attempt.json` stores admission/interruption and cleanup-input state.
+`trials.csv`, `commands.jsonl`, `events.jsonl` and `environments.jsonl` inventory
+all planned arms and actual commands. `collection.lock` prevents concurrent
+local writers. `SHA256SUMS` is a JSON path-to-hash inventory of every other file.
+
+## E2 provider evidence
+
+A pinned observer can retain the original completed attempt with:
 
 ```bash
 python3 -B experiments/gate-performance/harness/tool.py ci-snapshot \
   --repository weavegate/weavegate --run-id 123 --attempt 1 --output ci.json
 ```
 
-`123` is a placeholder, not an observed run. The helper retains run metadata
-and every jobs/steps JSON page in one snapshot. The observer separately retains
-logs, XML, workflow files, cache/resource receipts and same-run acceptance
-manifests; API success cannot substitute for `--require-complete` or upload.
-Provider request failures return exit 1 with a concise `campaign tooling:`
-diagnostic and leave no partial snapshot.
+`123` is a placeholder. Authenticated GitHub CLI is required for this helper.
+Retain logs, XML, workflow files and same-run acceptance manifests separately;
+provider success cannot replace the existing `--require-complete` checks.
 
-`ci.tasks.baseline` and `.candidate` map logical task names `go`, `java`,
-`explore`, `replay`, `rollback`, `death`, `cancellation`, `accounting`, `upload`
-to exact `{job, step}` names in the frozen workflow. Additional required logical
-tasks are allowed. Every mapping must contain nonempty string `job` and `step`
-names; malformed or incomplete inventories fail before freeze.
-Provider calculation rejects incomplete/duplicated pages,
-wrong attempt/run/revision, failed/skipped required jobs or steps and missing
-runner end times. Every started non-skipped job requires a positive integer
-runner ID; missing identity makes telemetry incomplete rather than omitting
-that job's timing or cost. Required jobs must have a start timestamp.
-It derives `validation_seconds`, `queue_inclusive_seconds`,
-`initial_queue_seconds`, `runner_minutes`, `peak_runner_concurrency` from UTC
-provider timestamps. Both queue endpoints always appear in E2 analysis and
-reports, even when optional `analysis_metrics` is omitted, so improved validation
-time retains its observed queue effects. Failed and matrix jobs contribute runner cost; skipped
-jobs do not. Concurrency uses half-open intervals and does not sum parallel
-jobs as wall time. It validates all derived receipt values exactly.
-The 90-minute outer cap starts at run creation and covers the latest started-job
-completion and the completed run's `updated_at` metadata, as well as the
-acceptance bundle. GitHub exposes no workflow `completed_at`; `updated_at` is
-used conservatively for the outer bound. Exceeding the cap invalidates the
-observation even when the acceptance bundle finished earlier. The primary and
-queue-inclusive endpoints still end at acceptance-bundle completion.
+`ci.tasks.baseline` and `.candidate` map `go`, `java`, `explore`, `replay`,
+`rollback`, `death`, `cancellation`, `accounting`, `upload` and any extra required
+tasks to exact nonempty `{job, step}` names. All pages, original attempt 1,
+revision, required successful jobs/steps, started-job runner identities and end
+times must be present. Failed/matrix jobs contribute runner cost; skipped jobs
+do not. Concurrency uses half-open intervals, not summed parallel wall time.
 
-Receipt facts `ci_created_at` and `ci_completed_at` must match each workflow's
-retained provider boundaries: `run.created_at` and the later of `run.updated_at`
-or any started non-skipped job's completion. Equivalent UTC string spellings
-identify the same instant. These facts are validated during collection and
-revalidated by analysis; acceptance-bundle completion cannot substitute for
-workflow completion. The analyzer requires the second run's creation to follow
-the first run's completion by at most 300 seconds. Missing, malformed,
-non-string or inconsistent timestamps invalidate the evidence without
-aborting campaign analysis; all planned slots and failure reasons remain
-in the output. Register required image,
-cache and resource-class facts for paired equality and validate workflow hashes
-and run IDs in the campaign checker. Merge-ready and evidence-ready timings
-need their separate frozen ruleset/step mappings in the observer; the tool does
-not rename the primary endpoint as either.
+Provider timestamps derive `validation_seconds`, `queue_inclusive_seconds`,
+`initial_queue_seconds`, `runner_minutes` and `peak_runner_concurrency`; supplied
+metrics must agree exactly. The primary ends at the last required job's
+completion. The outer cap also includes the later of run `updated_at` and any
+started job completion; GitHub exposes no workflow `completed_at`.
+`ci_created_at` and `ci_completed_at` facts must match these provider boundaries.
+The second workflow must begin within 300 seconds after the first completes.
+Both queue metrics always appear in E2 reports. Merge-ready/evidence-ready
+endpoints require separately frozen mappings and cannot rename the primary.
 
-## Bundle and deterministic analysis
+## Reproduce analysis
 
-`campaign.json`, `order.json`/`order.csv`, `protocol/`, `pins/`, and
-`analysis/source/` are frozen. `blocks/<block>/<arm>/` retains command receipts,
-stdout/stderr, trial rows, observer/checker originals and cleanup proofs.
-The five reserved `<step>.command.json` names correspond to prepare, run,
-observe, check and cleanup. Other originals ending in `.command.json` remain
-ordinary evidence: their strings are sanitized and analysis does not require
-collector timestamps from them.
-`trials.csv`, `commands.jsonl`, `events.jsonl`, `environments.jsonl` inventory all
-slots and actual commands. A private `collection.lock` prevents concurrent
-local writers. `SHA256SUMS` is a sorted JSON path-to-hash inventory of every
-other bundle file; JSON preserves unusual filenames unambiguously.
-Each hook's return and final sealing check the entry hashes of preexisting
-evidence and frozen files. Before starting the mate, collection snapshots the
-completed arm's hashes in `completed-arm-hashes.json` and protects its files
-and membership. Hooks may add/change files only in their active arm and the
-regenerated aggregate ledgers. Changes to a completed arm, prior evidence, the checksum
-inventory or other protected paths stop collection and refuse resealing. The
-current block retains `integrity-error.json`; the damaged bundle and original
-checksum inventory remain for audit. Preserve them rather than repairing them
-into replacement primary evidence.
-`stopped.json` is collector-owned; hooks cannot create or replace it. A detected
-integrity violation remains fatal to sealing even if a later hook restores the
-original bytes.
+Analyze into a **new directory outside the input bundle**. Analysis verifies
+inventory, plan, order and registration, then reconstructs every trial from
+original command/observation/cleanup evidence. Commands must match frozen argv,
+cwd and public environment, their registered UTC date and watchdog. The bundle
+can move: command verification uses its retained original execution location.
+No live checkout, executable pin or provider connection is needed for analysis.
+The archived entry point disables bytecode writes so importing its modules does
+not change the input. Reproduction command receipts also specify `-B`.
+For E3/E4 the output is `accounting_only`, with no statistical estimates until
+their protocols and corresponding analyzers are implemented.
 
-Analyze into a **new directory outside the input bundle**. `results.json`
-contains every planned/started/completion/failure denominator, reason counts,
-paired missingness, per-date estimates, medians/IQRs, geometric paired ratios,
-absolute differences and deterministic 10,000-replicate date-stratified
-bootstrap intervals. `trials.json`/`trials.csv` retain every planned slot and
-failed attempt's elapsed duration/exit. `report.md` is a concise derived table.
-Output also retains the analyzer source, exact command and input inventory hash.
-Moving the input bundle does not change the numeric tables.
-`report.md` shows ratio, improvement (`1 - ratio`) and absolute-difference
-estimates and 95% bootstrap intervals, both arm medians and IQRs (`[Q1, Q3]`),
-and each planned date's ratio/difference estimates beside planned/valid counts.
-Missing dates remain visible with zero valid pairs and N/A estimates; undefined
-ratios also leave improvement undefined. Interval limitations remain explicit.
-E1/E2 confirmation
-reports also show the primary ratio/interval, fixed threshold, upper-bound rule
-and decision reasons. Pilot estimates remain descriptive.
-The report also includes registered arms, quality inventory, planned/started
-and every outcome denominator by workload/arm, failure-reason counts, excluded
-blocks with pair reasons, registered deviations and stopped-campaign status.
-Entered failed attempts also show their started state, exit, measured run/spawn
-elapsed time and every retained or registered resource/descriptive metric.
-Missing readings are N/A and observed zeroes remain zero. These readings may
-have invalid quality/provenance and are excluded from paired estimates.
-Custom metric names are escaped in every Markdown table. Campaign identity and
-phase use inline-code delimiters longer than any contained backtick run, with
-line breaks displayed as spaces. JSON retains exact registered names and
-metadata, including delimiters and line breaks.
+`results.json` and `report.md` show every planned/started/outcome denominator,
+reason, excluded pair, registered deviation and failed-attempt cost. E1/E2
+estimates include per-date effects, arm medians/IQRs, paired geometric ratios,
+absolute differences and deterministic 10,000-replicate date-stratified bootstrap
+intervals. Missing durations are never zero, workloads/phases are never pooled,
+and fewer than two valid pairs on any planned date suppresses the interval.
+Zero resource counters remain observed, with an undefined ratio. Extreme finite
+values retain their differences and counts if a ratio cannot be represented;
+unrepresentable bootstrap ratios suppress the whole ratio interval.
 
-No missing duration is zero, no attempt is replaced, and phases/workloads are
-never pooled. Fewer than two valid pairs in any planned date suppresses the
-interval. Zero counters retain their absolute differences and an N/A ratio.
-All planned confirmation pairs, resources and quality evidence must be complete
-before the E1 0.85 / E2 0.80 ratio threshold and upper interval bound `< 1`
-can produce a favorable decision. E1 checks all seven required resource ratios
-for higher-cost disclosure; E2 checks runner-minutes. Ratios above 1.10 are disclosed
-in `higher_resource_cost` and beside the decision in `report.md`, naming the
-metrics. A favorable E1 timing result is qualified as "faster with higher
-measured resource cost"; E2 uses "faster feedback with higher runner cost."
-The qualification applies strictly above 1.10 and does not turn a failed timing
-decision into an improvement. Undefined ratios appear in
-`undefined_resource_ratios` and in the report and prevent a resource-efficiency
-claim; present zero counters do not invalidate the timing estimate.
-Secondary endpoints remain descriptive. There are
-no p99, productivity, general Spring population or proven resource-equivalence
-claims. E2 remains conditional on hosted-runner dates/cache/hardware pool.
-Finite observations whose geometric ratio cannot be represented in floating
-point retain counts, arm/date summaries and absolute differences, with an N/A
-ratio/improvement and an explicit reason. If any of the 10,000 bootstrap ratios
-is unrepresentable, the whole ratio/improvement interval is N/A; all difference
-replicates remain. Finite means and difference quantiles avoid intermediate
-overflow. Undefined primary ratios/intervals cannot satisfy confirmation.
+Confirmation requires every planned pair and required quality/resource evidence,
+primary ratio at most E1 0.85 / E2 0.80, and upper 95% ratio bound below 1.
+Registered deviations prevent a favorable claim. Resource ratios above 1.10
+qualify an improvement with higher measured cost (all seven E1 resources; E2
+runner-minutes). Undefined ratios prevent resource-efficiency claims, without
+turning observed zero counters into missing measurements. Secondary endpoints
+remain descriptive. There are no p99, productivity or general Spring-population
+claims; E2 remains conditional on the registered hosted-runner pool/dates/cache.
 
-Checksums detect changes, not dishonest observations or an incomplete checker.
-Independent audit of frozen hooks, inventories, registration and original
-receipts remains necessary. Correcting analysis retains old inputs and outputs
-and records the new analyzer source; changing the experiment requires a new
-campaign. Publish unfavorable, incomplete and stopped campaigns too.
+Outputs also retain every trial, analyzer source, exact command and input hash.
+Corrected analyses retain old input/output and disclose the new source; a changed
+experiment requires a new campaign. Checksums cannot establish honest telemetry
+or a complete checker: audit the hooks, inventory, registration and originals,
+and publish unfavorable, incomplete and stopped campaigns too.
