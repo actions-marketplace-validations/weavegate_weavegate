@@ -99,7 +99,7 @@ def analyze(root, output):
     if output == root or root in output.parents:
         raise ValueError('analysis output must be outside the immutable input bundle')
     verify(root)
-    if read_json(root / 'analysis/dependencies.json').get('bundle_format') != 3:
+    if read_json(root / 'analysis/dependencies.json').get('bundle_format') != 4:
         raise ValueError('unsupported bundle format; use the bundle archived analyzer')
     m = read_json(root / 'campaign.json')
     validate_manifest(m)

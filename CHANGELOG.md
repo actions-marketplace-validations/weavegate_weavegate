@@ -26,7 +26,10 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   collection. Failed, interrupted and missing attempts remain in the accounting;
   interruptions and unproven cleanup stop further collection. Bundles authenticate
   empty directories, reject secret-bearing evidence paths and validate retained
-  registrations before measurements begin. Retained analyzer sources reproduce
+  registrations before measurements begin. Original evidence excludes collector
+  metadata, cleanup requires newly retained proof, and command output replacement
+  prevents sealing. Sanitization preserves external hard-linked originals.
+  Retained analyzer sources reproduce
   tables without a live checkout. See
   `experiments/gate-performance/harness/README.md`; its runnable demo is
   constructed evidence, not a performance result.

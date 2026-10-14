@@ -123,6 +123,134 @@ if step=='cleanup':
     def block(self, bundle):
         return read_json(bundle / 'order.json')[0]['block']
 
+    def test_collector_owned_paths_are_not_original_evidence(self):
+        from evidence import hashes_valid
+        from storage import COMMAND_FILES, CONTROL
+        directory = self.root / 'originals'
+        directory.mkdir()
+        for name in sorted(COMMAND_FILES | CONTROL):
+            path = directory / name
+            path.write_text('constructed collector metadata')
+            for reference in (name, './' + name):
+                with self.subTest(name=reference), self.assertRaisesRegex(ValueError, 'collector-owned'):
+                    hashes_valid(directory, {reference: digest(path)})
+            nested = directory / 'originals' / name
+            nested.parent.mkdir(exist_ok=True)
+            nested.write_text('constructed product evidence')
+            hashes_valid(directory, {str(nested.relative_to(directory)): digest(nested)})
+
+    def test_observation_rejects_collector_receipts(self):
+        self.hook.write_text(self.hook.read_text() + '''
+if step=='observe':
+ receipt=json.loads((p/'receipt.json').read_text())
+ receipt['evidence']={'prepare.command.json':hashlib.sha256((p/'prepare.command.json').read_bytes()).hexdigest()}
+ (p/'receipt.json').write_text(json.dumps(receipt))
+ (p/'evidence.log').unlink()
+''')
+        m = self.make_manifest()
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        self.assertTrue(collect(bundle, slot['block'], registration))
+        verify(bundle)
+        for arm in slot['arms']:
+            row = read_json(bundle / 'blocks' / slot['block'] / arm / 'trial.json')
+            self.assertEqual(row['classification'], 'quality_failure')
+            self.assertIn('collector-owned', row['reason'])
+            self.assertEqual(row, analyzed_trial(bundle, m, slot, arm))
+
+    def assert_cleanup_rejects_old_evidence(self, name):
+        self.hook.write_text(self.hook.read_text() + '''
+if step=='cleanup':
+ name=%r
+ (p/'cleanup.json').write_text(json.dumps({'proven':True,
+ 'evidence':{name:hashlib.sha256((p/name).read_bytes()).hexdigest()}}))
+ (p/'cleanup.log').unlink()
+''' % name)
+        m = self.make_manifest()
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        self.assertFalse(collect(bundle, slot['block'], registration))
+        verify(bundle)
+        first, second = slot['arms']
+        row = read_json(bundle / 'blocks' / slot['block'] / first / 'trial.json')
+        self.assertFalse(row['cleanup_proven'])
+        self.assertEqual(row['reason'], 'cleanup_unproven')
+        self.assertEqual(row, analyzed_trial(bundle, m, slot, first))
+        self.assertFalse(analyzed_trial(bundle, m, slot, second)['started'])
+
+    def test_cleanup_rejects_collector_receipts(self):
+        self.assert_cleanup_rejects_old_evidence('prepare.command.json')
+
+    def test_cleanup_rejects_prior_evidence(self):
+        self.assert_cleanup_rejects_old_evidence('./evidence.log')
+
+    def test_cleanup_rejects_proof_retained_before_teardown(self):
+        self.hook.write_text(self.hook.read_text().replace("if step=='cleanup':", "if step=='observe':"))
+        m = self.make_manifest()
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        self.assertFalse(collect(bundle, slot['block'], registration))
+        verify(bundle)
+        for arm in slot['arms']:
+            self.assertFalse(analyzed_trial(bundle, m, slot, arm)['cleanup_proven'])
+
+    def test_redacting_hardlinks_preserves_external_originals(self):
+        from redaction import sanitize
+        directory = self.root / 'retained'
+        directory.mkdir()
+        for suffix, data in (('.log', b'constructed-secret'),
+                             ('.json', b'{"value": "constructed-secret"}\n')):
+            source = self.root / ('external' + suffix)
+            source.write_bytes(data)
+            paths = [directory / ('copy-%d' % index + suffix) for index in range(2)]
+            for path in paths:
+                os.link(source, path)
+            with self.subTest(suffix=suffix):
+                self.assertEqual(sanitize(directory, [b'constructed-secret']), 2)
+                self.assertEqual(source.read_bytes(), data)
+                for path in paths:
+                    self.assertIn(b'[REDACTED]', path.read_bytes())
+                    self.assertNotIn(b'constructed-secret', path.read_bytes())
+                    self.assertFalse(os.path.samestat(source.stat(), path.stat()))
+
+    def test_hooks_cannot_replace_current_command_outputs(self):
+        from collector import execute as real_execute
+        for suffix in ('.stdout', '.stderr'):
+            for mutation in ('replace', 'remove', 'same_bytes'):
+                m = self.make_manifest()
+                slot = order(m)[0]
+                script = ("import os; from pathlib import Path; "
+                          "p=Path('{trial_dir}')/" + repr('run' + suffix) + "; "
+                          "os.write(%d, b'original output'); p.unlink(); " %
+                          (1 if suffix == '.stdout' else 2))
+                if mutation != 'remove':
+                    script += "p.write_bytes(%r)" % (b'original output' if mutation == 'same_bytes' else b'forged')
+                m['commands'][slot['workload']][slot['arms'][0]]['run']['argv'] = [sys.executable, '-c', script]
+                source = self.source / 'output-replacement.json'
+                write_json(source, m)
+                bundle = self.root / (suffix[1:] + '-' + mutation)
+                freeze(source, bundle)
+                registration = self.root / 'output-registration.json'
+                write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                         'order_sha256': digest(bundle / 'order.json'),
+                                         'registered_at': '2020-01-01T00:00:00Z',
+                                         'revision': 'constructed', 'public_url': 'https://example.invalid'})
+                original_seal = []
+                def command(spec, context, directory, step, secrets):
+                    if step == 'run':
+                        original_seal.append((bundle / 'SHA256SUMS').read_bytes())
+                    return real_execute(spec, context, directory, step, secrets)
+                with self.subTest(suffix=suffix, mutation=mutation):
+                    with patch('collector.execute', side_effect=command), \
+                            self.assertRaisesRegex(ValueError, 'refusing to reseal'):
+                        collect(bundle, slot['block'], registration)
+                    directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+                    self.assertTrue((directory / 'cleanup.command.json').exists())
+                    self.assertTrue((directory.parent / 'integrity-error.json').exists())
+                    self.assertEqual((bundle / 'SHA256SUMS').read_bytes(), original_seal[0])
+                    with self.assertRaises(ValueError):
+                        verify(bundle)
+
     def test_relative_working_directories_fail_before_freeze(self):
         for index, cwd in enumerate(('.', 'relative/path', '{arm}', '{block_id}/work',
                                      '{unknown}/work', '{trial_dir}suffix')):
@@ -1311,6 +1439,8 @@ if step=='observe':
                             'ended_at': slot['date'] + 'T00:00:%02dZ' % (step_index * 2 + 1)})
             write_json(directory / 'attempt.json', {'collection_root': str(bundle),
                        'state': 'finished', 'reason': '', 'cleanup_inputs_valid': True})
+            from common import bundle_inventory
+            write_json(directory / 'cleanup-inputs.json', bundle_inventory(directory))
             (directory / 'cleanup.log').write_text('constructed cleanup proof')
             write_json(directory / 'cleanup.json',
                        {'proven': True, 'evidence': {'cleanup.log': digest(directory / 'cleanup.log')}})
@@ -1641,7 +1771,7 @@ if step=='observe':
         bundle, registration = self.frozen()
         collect(bundle, self.block(bundle), registration)
         directory = bundle / 'blocks' / self.block(bundle) / 'baseline'
-        for name in ('receipt.json', 'evidence.log', 'cleanup.log'):
+        for name in ('receipt.json', 'evidence.log', 'cleanup.log', 'cleanup-inputs.json'):
             path = directory / name
             original = path.read_bytes()
             path.write_text('{}')
@@ -2037,7 +2167,7 @@ else:
         path.chmod(0o444)
         original = path.stat().st_mtime_ns
         # Model a write denial even for privileged UIDs, which bypass mode bits.
-        with patch.object(Path, 'write_bytes', autospec=True, side_effect=PermissionError) as write:
+        with patch('redaction.write_bytes', side_effect=PermissionError) as write:
             for secrets in ([], [b'absent-secret']):
                 self.assertEqual(sanitize(directory, secrets), 0)
                 self.assertEqual(path.stat().st_mtime_ns, original)

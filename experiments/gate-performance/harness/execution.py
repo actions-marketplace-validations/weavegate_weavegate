@@ -17,7 +17,17 @@ class GroupTerminationError(OSError):
 
 
 class ReceiptIntegrityError(ValueError):
-    """A hook changed the collector's in-progress command receipt."""
+    """A hook changed the collector's in-progress receipt or output paths."""
+
+
+def verify_output(path, stream):
+    """Authenticate the path against the still-open collector descriptor."""
+    try:
+        if os.path.samestat(os.fstat(stream.fileno()), os.stat(path, follow_symlinks=False)):
+            return
+    except OSError:
+        pass
+    raise ReceiptIntegrityError('hook replaced or removed command output: ' + path.name)
 
 
 def expand_command(spec, context):
@@ -158,6 +168,9 @@ def execute(spec, context, directory, step, secrets):
                     result['exit'] = kill_group(process, spec.get('cancel_grace_seconds', 25))
                     result['containment_proven'] = True
                 raise
+            finally:
+                verify_output(directory / (step + '.stdout'), out)
+                verify_output(directory / (step + '.stderr'), err)
     except OSError as error:
         result['error'] = str(error)
     except BaseException:

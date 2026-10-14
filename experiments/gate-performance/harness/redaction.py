@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from common import canonical, entries, files, read_json
+from common import canonical, entries, files, read_json, write_bytes
 from plan import STEPS
 
 REDACTION_MARKER = b'[REDACTED]'
@@ -29,7 +29,7 @@ def sanitize(root, secrets, owned=()):
                 replacements = [0]
                 redacted = redact_metadata(value, secrets, path.name if path in owned else '', replacements)
                 if replacements[0]:
-                    path.write_bytes(canonical(redacted))
+                    write_bytes(path, canonical(redacted))
                 removed += replacements[0]
                 continue
         original = data
@@ -41,7 +41,7 @@ def sanitize(root, secrets, owned=()):
             removed += data.count(value)
             data = data.replace(value, REDACTION_MARKER)
         if data != original:
-            path.write_bytes(data)
+            write_bytes(path, data)
     return removed
 
 
@@ -59,7 +59,8 @@ def redact_metadata(value, secrets, filename, replacements=None):
     """Keep numeric types and collector-owned public identity/control fields."""
     if not isinstance(value, dict):
         return redact_value(value, secrets, replacements)
-    if filename in ('slot.json', 'collection-command.json', 'completed-arm-hashes.json'):
+    if filename in ('slot.json', 'collection-command.json', 'completed-arm-hashes.json',
+                    'cleanup-inputs.json'):
         return value  # Protected collector-owned public audit identifiers.
     if filename == 'attempt.json':
         public = {'collection_root', 'cleanup_inputs_valid', 'state'}

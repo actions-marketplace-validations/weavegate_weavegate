@@ -61,9 +61,13 @@ def read_json(path):
 
 
 def write_json(path, value):
+    write_bytes(path, canonical(value))
+
+
+def write_bytes(path, data):
     # A reader sees either the previous complete checkpoint or the next one.
+    # Replacement also detaches hard-linked retained copies from external files.
     path = Path(path)
-    data = canonical(value)
     descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
     try:
         with os.fdopen(descriptor, 'wb') as stream:

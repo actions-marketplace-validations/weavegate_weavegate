@@ -9,7 +9,7 @@ from common import bundle_inventory, child, digest, write_json
 from plan import STEPS
 from redaction import validate_paths
 
-CONTROL = {'attempt.json', 'trial.json', 'redactions.json'}
+CONTROL = {'attempt.json', 'trial.json', 'redactions.json', 'cleanup-inputs.json'}
 COMMAND_FILES = {step + suffix for step in STEPS
                  for suffix in ('.command.json', '.stdout', '.stderr')}
 

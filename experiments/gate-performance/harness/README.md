@@ -57,7 +57,7 @@ attempted; the original checksum inventory is preserved and resealing refused.
 This is integrity checking among trusted hooks, not an OS security sandbox
 against processes running as the same user.
 
-The evidence layout is bundle format `3`, recorded in
+The evidence layout is bundle format `4`, recorded in
 `analysis/dependencies.json`; the input manifest remains schema `1`. Earlier
 development bundles retain their own archived analyzer. This analyzer rejects
 older layouts rather than interpreting their cached trials as original evidence.
@@ -184,6 +184,11 @@ separate `gate_seconds` requires `gate_timer` with `source: "monotonic"`,
 
 Cleanup requires successful command execution plus `cleanup.json` with
 `proven: true` and a nonempty `evidence` path/hash map. Exit 0 alone is inadequate.
+Observation and cleanup evidence cannot reference the collector's exact control
+or command paths at the arm root; nested originals with those names remain valid.
+The collector records `cleanup-inputs.json` immediately before teardown. Both
+`cleanup.json` and every referenced cleanup original must be newly retained by
+that step; earlier product evidence cannot substitute for teardown evidence.
 Malformed observations, operational exits and timeouts remain failed attempts;
 the mate still runs after proven cleanup. Unproven cleanup leaves the mate not
 started, writes `stopped.json` and prohibits further collection.
@@ -193,6 +198,9 @@ Command receipts persist `started` after successful process creation and retain
 collector defers cancellation during spawn until it owns the child handle;
 the child does not inherit a blocked signal mask. Collection runs on the main
 Python thread. Interrupted atomic start checkpoints accept either owned version.
+Before closing command output descriptors, the collector verifies that each
+stdout/stderr path still identifies the file it opened. Removal or replacement,
+even with identical bytes, is a permanent integrity failure and prevents sealing.
 The
 watchdog starts before spawn and waits only its remaining budget. Timeout sends
 TERM to the process group, waits one grace bound, then KILL with one further
@@ -229,6 +237,8 @@ name, cleanup is attempted and resealing remains forbidden even if cleanup
 removes that path. Collector-owned public control paths remain exempt.
 
 Sanitization precedes evidence checkpoints. Unchanged bytes are not rewritten.
+Changed payloads use an atomic temporary-file replacement, preserving external
+originals when a hook retained hard links. Each retained link is sanitized separately.
 If replacement changes a proof's original bytes, its old hash fails; the tool
 never repairs the semantic proof to manufacture validity. `redactions.json`
 accumulates replacements across hooks. A redaction that cannot be written
@@ -237,7 +247,8 @@ be sealed. Review the private sanitized bundle before publishing it.
 
 Frozen files are `campaign.json`, `order.json`/`order.csv`, `protocol/`, `pins/`
 and `analysis/source/`. Each `blocks/<block>/<arm>/` retains original hook files
-alongside collector-owned `attempt.json`, `trial.json`, `redactions.json` and
+alongside collector-owned `attempt.json`, `trial.json`, `redactions.json`,
+`cleanup-inputs.json` and
 `<step>.command.json`/`.stdout`/`.stderr` for the five steps. These control names
 are reserved at the arm root; nested originals are ordinary payloads.
 `attempt.json` stores admission/interruption and cleanup-input state.

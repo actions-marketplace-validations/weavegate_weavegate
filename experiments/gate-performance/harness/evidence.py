@@ -4,6 +4,7 @@ from pathlib import Path
 from common import (child, counter, digest, json_equal, positive, read_json, timestamp)
 from execution import expand_command, succeeded
 from plan import STEPS
+from storage import COMMAND_FILES, CONTROL
 
 
 def receipt_valid(m, row, receipt, directory):
@@ -55,10 +56,14 @@ def receipt_valid(m, row, receipt, directory):
 
 
 def hashes_valid(directory, evidence):
+    directory = Path(directory)
     if not isinstance(evidence, dict) or not evidence:
         raise ValueError('missing original evidence')
     for name, expected in evidence.items():
-        if not isinstance(expected, str) or digest(child(directory, name)) != expected:
+        path = child(directory, name)
+        if path.parent == directory and path.name in CONTROL | COMMAND_FILES:
+            raise ValueError('collector-owned file is not original evidence: ' + name)
+        if not isinstance(expected, str) or digest(path) != expected:
             raise ValueError('retained evidence hash mismatch: ' + str(name))
 
 
@@ -70,6 +75,12 @@ def cleanup_valid(directory):
     if not isinstance(proof, dict) or proof.get('proven') is not True:
         raise ValueError('missing cleanup proof')
     hashes_valid(directory, proof.get('evidence'))
+    inputs = read_json(directory / 'cleanup-inputs.json')
+    if not isinstance(inputs, dict) or not inputs:
+        raise ValueError('missing cleanup input inventory')
+    if 'cleanup.json' in inputs or any(
+            str(child(directory, name).relative_to(directory)) in inputs for name in proof['evidence']):
+        raise ValueError('cleanup proof must retain originals created by cleanup')
 
 
 EVIDENCE_ERRORS = (ValueError, OSError, KeyError, TypeError, AttributeError)
