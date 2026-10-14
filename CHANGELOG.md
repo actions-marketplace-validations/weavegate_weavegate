@@ -20,6 +20,10 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Fixed
 
+- Experiment JSON redaction masks overlapping secrets in full regardless of
+  their manifest order, and cold-adoption timer receipts reject booleans in
+  place of numeric durations. See
+  `experiments/gate-performance/harness/README.md`.
 - Experiment reports qualify higher costs for all seven E1 resources. E2
   provider-derived measurements reject boolean/number substitutions. Redaction
   preserves collector JSON types and public slot identities for short secrets;

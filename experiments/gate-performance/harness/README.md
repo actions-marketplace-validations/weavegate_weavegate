@@ -142,7 +142,8 @@ ordinary `env` values, pins, inventories or registration fields. Declare any
 additional sanitization in the observer; wire payloads and database DSNs are
 outside the collection contract.
 
-JSON redaction works on strings and preserves numeric/boolean syntax and
+JSON redaction replaces longer overlapping secret values first, independent of
+their manifest order. It works on strings and preserves numeric/boolean syntax and
 collector-owned public control fields, slot identities, paths and hash
 checkpoints. Command arguments and ordinary environment entries are public
 manifest data; required secret environment values are excluded from command
@@ -164,7 +165,8 @@ for `adoption-cold`. For cold adoption the collector records `adoption_seconds`
 from the wrapper, and the observer must retain separate actual
 checkout/build/install/gate/upload spans. Its `gate_seconds` requires a separate
 `gate_timer` receipt with `source: "monotonic"`, `boundary: "cli_spawn_to_exit"`,
-`seconds` equal to that metric and `evidence` naming a hashed original timer
+numeric `seconds` equal to that metric (a boolean is rejected) and `evidence`
+naming a hashed original timer
 file. The wrapper's duration is never relabeled as the nested CLI duration.
 E2's `run` is a pinned observer/dispatch wrapper for one complete workflow.
 The 600/1,800/5,400-second observation budgets never modify product timeouts.

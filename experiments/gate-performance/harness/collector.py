@@ -350,7 +350,7 @@ def receipt_valid(m, row, receipt, directory):
     if m['experiment'] == 'E1' and m['phase'] == 'adoption-cold':
         timer = receipt.get('gate_timer', {})
         if (timer.get('source') != 'monotonic' or timer.get('boundary') != 'cli_spawn_to_exit'
-                or timer.get('seconds') != receipt['metrics'].get('gate_seconds')
+                or not json_equal(timer.get('seconds'), receipt['metrics'].get('gate_seconds'))
                 or timer.get('evidence') not in evidence):
             raise ValueError('cold adoption requires a separate nested CLI timer receipt')
     if not positive(receipt['metrics'].get(metric)):
@@ -667,7 +667,7 @@ def redact_metadata(value, secrets, filename, replacements=None):
 
 def redact_value(value, secrets, replacements=None):
     if isinstance(value, str):
-        for secret in secrets:
+        for secret in sorted(secrets, key=len, reverse=True):
             if replacements is not None:
                 replacements[0] += value.count(secret.decode())
             value = value.replace(secret.decode(), '[REDACTED]')

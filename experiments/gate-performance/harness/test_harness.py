@@ -1377,6 +1377,38 @@ else:
         receipt_valid(m, row, receipt, directory)
         self.assertNotEqual(receipt['metrics']['gate_seconds'], receipt['metrics']['adoption_seconds'])
 
+    def test_cold_timer_rejects_boolean_numeric_alias(self):
+        m = self.make_manifest(phase='adoption-cold')
+        directory = self.root / 'cold-timer-types'
+        directory.mkdir()
+        (directory / 'timer.log').write_text('constructed nested monotonic timer')
+        receipt = {'checks': dict.fromkeys(QUALITY, True),
+                   'facts': dict(m['expected_facts']['example-fixed-replay']['baseline'], host='test'),
+                   'metrics': dict(dict.fromkeys(E1_RESOURCES, 1), gate_seconds=1),
+                   'environment': {'host': 'test'}, 'resource_method': 'constructed',
+                   'evidence': {'timer.log': digest(directory / 'timer.log')},
+                   'gate_timer': {'source': 'monotonic', 'boundary': 'cli_spawn_to_exit',
+                                  'seconds': 1.0, 'evidence': 'timer.log'}}
+        row = {'workload': 'example-fixed-replay', 'arm': 'baseline'}
+        receipt_valid(m, row, receipt, directory)
+        receipt['gate_timer']['seconds'] = True
+        with self.assertRaisesRegex(ValueError, 'separate nested CLI timer'):
+            receipt_valid(m, row, receipt, directory)
+
+    def test_overlapping_secrets_redact_longest_first_in_json(self):
+        from collector import redact_value, sanitize
+        for index, secrets in enumerate(([b'prefix', b'prefix-SUFFIX'],
+                                         [b'prefix-SUFFIX', b'prefix'])):
+            directory = self.root / ('overlapping-secrets-%d' % index)
+            directory.mkdir()
+            value = {'prefix-SUFFIX': ['prefix-SUFFIX', 'prefix', 1, True]}
+            expected = {'[REDACTED]': ['[REDACTED]', '[REDACTED]', 1, True]}
+            write_json(directory / 'original.json', value)
+            self.assertEqual(redact_value(value, secrets), expected)
+            self.assertEqual(sanitize(directory, secrets), 3)
+            self.assertEqual(read_json(directory / 'original.json'), expected)
+            self.assertEqual(sanitize(directory, secrets), 0)
+
 
     def test_all_e1_resources_receive_higher_cost_disclosure(self):
         m = self.make_manifest(phase='confirmation')
