@@ -42,6 +42,11 @@ def json_equal(left, right):
 
 
 def read_json(path):
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError('nonfinite JSON number: ' + value)
+        return number
     def pairs(items):
         result = {}
         for key, value in items:
@@ -49,7 +54,7 @@ def read_json(path):
                 raise ValueError('duplicate JSON key: ' + key)
             result[key] = value
         return result
-    return json.loads(Path(path).read_text(), object_pairs_hook=pairs,
+    return json.loads(Path(path).read_text(), object_pairs_hook=pairs, parse_float=finite_float,
                       parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
 
 

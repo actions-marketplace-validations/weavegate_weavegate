@@ -86,7 +86,8 @@ audit rather than repairing its primary observations or replacing the block.
 
 ## Manifest schema 1
 
-JSON rejects duplicate keys and nonfinite numbers. Artifact hashes are full
+JSON rejects duplicate keys and nonfinite numbers, including floating-point
+exponents outside the finite range. Artifact hashes are full
 lowercase SHA-256 without a prefix. Paths in retained evidence and portable pins are
 relative, cannot traverse `..`, and cannot traverse symlinks.
 
@@ -104,7 +105,7 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 | `compare_facts` | Receipt fact keys that must match within every pair, such as normalized evidence hashes, schedule inventory, workload counts, image/cache/resource class and allocation identity. Do not compare volatile IDs or treatment-specific identities. |
 | `quality_checks` | Required receipt checks. E1/E2 require `outcome`, `assertions`, `schedules`, `repetitions`, `normalized_evidence`, `isolation`, `lifecycle`, `resources`, `environment`; add the full campaign inventory, including acceptance-completeness checks. |
 | `resource_metrics`, `analysis_metrics` | Required resources and optional descriptive numeric endpoints, with units/provenance declared in the observation inventory. `analysis_metrics`, when present, must be a list of unique nonempty string names, validated before freeze; an empty list is allowed. Missing values remain unknown; zero is retained and its ratio is undefined. |
-| `redact_env` | Environment variable names whose required values are passed to hooks and removed from retained bytes and command receipts. Values are never in the manifest. |
+| `redact_env` | Unique nonempty environment variable names without `=` or NUL; invalid names fail before freeze. Their required values are passed to hooks and removed from retained bytes and command receipts. Values are never in the manifest. |
 | `ci` | E2 `owner/repo`, full lowercase 40-hex common `execution_sha`, and required `tasks` mappings for both arms (below), validated before freeze; workflow/action/ruleset pins belong in the inventories. |
 | `deviations` | Optional list of strings disclosing departures from the registered design, validated before freeze; an omitted or empty list is allowed. A nonempty list prevents favorable confirmatory claims. |
 
@@ -121,6 +122,10 @@ collector. Tokens `{trial_dir}`, `{campaign_dir}`, `{block_id}`, `{arm}` expand
 at execution. Use absolute executable paths or explicitly supply `PATH`.
 Date slots must use canonical UTC `YYYY-MM-DD` strings; unpadded dates fail
 before a campaign directory is created.
+Protocol map names must be safe relative paths without NUL or parent traversal;
+freeze checks their destination paths before creating the bundle. E3/E4 may use
+nested relative protocol names; aliases and file/directory conflicts fail
+before bundle creation. E1/E2 retain their three fixed filenames.
 `quality_checks`, `resource_metrics`, `compare_facts` and `redact_env` must be
 lists of unique nonempty strings; only `redact_env` may be empty. Invalid
 inventories fail before freeze. The registered UTC date is rechecked before
@@ -148,8 +153,10 @@ member remains after the registered `cancel_grace_seconds` (default 25).
 The grace deadline covers the whole group even when its leader exits first.
 Linux `/proc` liveness polling excludes exited zombies; it observes termination
 only and does not coordinate measured workloads. After KILL, the leader is reaped
-and group death is checked within a further grace bound; surviving members
-produce an explicit command error. Cleanup still
+and group death is checked within one further grace bound shared by leader
+reaping and remaining group members. A leader surviving KILL produces an
+explicit command error without restarting that bound or waiting indefinitely.
+Cleanup still
 runs, and the attempt is incomplete. Grace/teardown beyond the cap remains in
 the command/event receipts. A process exit does not establish resource cleanup.
 An interruption during the termination grace wait also kills and reaps the
@@ -208,6 +215,10 @@ stops collection. Redaction runs before retention hashes are sealed. If it
 changes evidence bytes whose receipt hashes were not already sanitized, the
 observation is incomplete, rather than silently repairing its semantic proof.
 Keep public data synthetic. Review the sanitized private bundle before upload.
+Cleanup interruptions, including `KeyboardInterrupt` and `SystemExit`, also
+record unproven cleanup and sanitize retained hook output before sealing.
+If sanitization fails, sealing is refused and the unsealed private bundle must
+be preserved for audit.
 
 ## E2 provider boundaries
 
@@ -301,6 +312,10 @@ and decision reasons. Pilot estimates remain descriptive.
 The report also includes registered arms, quality inventory, planned/started
 and every outcome denominator by workload/arm, failure-reason counts, excluded
 blocks with pair reasons, registered deviations and stopped-campaign status.
+Entered failed attempts also show their started state, exit, measured run/spawn
+elapsed time and every retained or registered resource/descriptive metric.
+Missing readings are N/A and observed zeroes remain zero. These readings may
+have invalid quality/provenance and are excluded from paired estimates.
 Custom metric names are escaped in every Markdown table. Campaign identity and
 phase use inline-code delimiters longer than any contained backtick run, with
 line breaks displayed as spaces. JSON retains exact registered names and
@@ -322,6 +337,12 @@ claim; present zero counters do not invalidate the timing estimate.
 Secondary endpoints remain descriptive. There are
 no p99, productivity, general Spring population or proven resource-equivalence
 claims. E2 remains conditional on hosted-runner dates/cache/hardware pool.
+Finite observations whose geometric ratio cannot be represented in floating
+point retain counts, arm/date summaries and absolute differences, with an N/A
+ratio/improvement and an explicit reason. If any of the 10,000 bootstrap ratios
+is unrepresentable, the whole ratio/improvement interval is N/A; all difference
+replicates remain. Finite means and difference quantiles avoid intermediate
+overflow. Undefined primary ratios/intervals cannot satisfy confirmation.
 
 Checksums detect changes, not dishonest observations or an incomplete checker.
 Independent audit of frozen hooks, inventories, registration and original

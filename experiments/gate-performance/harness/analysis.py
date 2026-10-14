@@ -4,6 +4,7 @@ import math
 import re
 import sys
 from collections import Counter, defaultdict
+from fractions import Fraction
 from pathlib import Path
 
 from common import (E1_RESOURCES, E2_RESOURCES, child, counter, digest, json_equal, order,
@@ -16,7 +17,28 @@ def quantile(values, p):
     index = (len(values) - 1) * p
     low = math.floor(index)
     high = math.ceil(index)
-    return values[low] + (values[high] - values[low]) * (index - low)
+    weight = index - low
+    delta = values[high] - values[low]
+    if not math.isfinite(delta):
+        return values[low] * (1 - weight) + values[high] * weight
+    return values[low] + delta * weight
+
+
+def mean(values):
+    try:
+        return math.fsum(values) / len(values)
+    except OverflowError:
+        # A finite mean can have an overflowing intermediate sum. Use exact
+        # arithmetic only on that exceptional path, retaining every observation.
+        return float(sum(Fraction(value) for value in values) / len(values))
+
+
+def ratio_from_logs(logs):
+    try:
+        ratio = math.exp(mean(logs))
+    except OverflowError:
+        return None
+    return ratio if ratio > 0 else None  # Underflow must not invent a zero ratio.
 
 
 def estimate(m, workload, metric, pairs, dates):
@@ -27,19 +49,21 @@ def estimate(m, workload, metric, pairs, dates):
     ratio_defined = all(b > 0 and w > 0 for _, _, b, w in pairs)
     logs = [math.log(w) - math.log(b) for _, _, b, w in pairs] if ratio_defined else []
     differences = [w - b for _, _, b, w in pairs]
-    result = {'n': len(pairs), 'ratio': math.exp(math.fsum(logs) / len(logs)) if logs else None,
-              'difference': math.fsum(differences) / len(differences), 'interval': None}
+    result = {'n': len(pairs), 'ratio': ratio_from_logs(logs) if logs else None,
+              'difference': mean(differences), 'interval': None}
+    if logs and result['ratio'] is None:
+        result['ratio_reason'] = 'unrepresentable_ratio'
     for arm, offset in [('baseline', 2), ('candidate', 3)]:
         values = [p[offset] for p in pairs]
         result[arm] = {'median': quantile(values, .5),
                        'q1': quantile(values, .25), 'q3': quantile(values, .75)}
-    result['improvement'] = 1 - result['ratio'] if ratio_defined else None
+    result['improvement'] = 1 - result['ratio'] if result['ratio'] is not None else None
     strata = {date: [p for p in pairs if p[0] == date] for date in dates}
     result['by_date'] = {
-        date: {'n': len(ps), 'ratio': math.exp(math.fsum(math.log(w) - math.log(b)
-                 for _, _, b, w in ps) / len(ps)) if ps and all(b > 0 and w > 0
+        date: {'n': len(ps), 'ratio': ratio_from_logs([math.log(w) - math.log(b)
+                 for _, _, b, w in ps]) if ps and all(b > 0 and w > 0
                  for _, _, b, w in ps) else None,
-               'difference': math.fsum(w - b for _, _, b, w in ps) / len(ps) if ps else None}
+               'difference': mean([w - b for _, _, b, w in ps]) if ps else None}
         for date, ps in strata.items()}
     if any(len(ps) < 2 for ps in strata.values()):
         result['interval_reason'] = 'fewer_than_two_valid_blocks_in_planned_date'
@@ -54,13 +78,16 @@ def estimate(m, workload, metric, pairs, dates):
                 index = int(sha(key.encode()), 16) * len(ps) // (1 << 256)
                 sample.append(ps[index])
         if ratio_defined:
-            ratios.append(math.exp(math.fsum(math.log(w) - math.log(b) for _, _, b, w
-                                             in sample) / len(sample)))
-        diffs.append(math.fsum(w - b for _, _, b, w in sample) / len(sample))
+            ratio = ratio_from_logs([math.log(w) - math.log(b) for _, _, b, w in sample])
+            if ratio is not None:
+                ratios.append(ratio)
+        diffs.append(mean([w - b for _, _, b, w in sample]))
     result['interval'] = {'ratio': [quantile(ratios, .025), quantile(ratios, .975)]
-                          if ratios else None,
+                          if len(ratios) == 10000 else None,
                           'difference': [quantile(diffs, .025), quantile(diffs, .975)]}
-    if ratios:
+    if ratio_defined and len(ratios) != 10000:
+        result['ratio_interval_reason'] = 'unrepresentable_bootstrap_ratio'
+    if result['interval']['ratio']:
         lo, hi = result['interval']['ratio']
         result['interval']['improvement'] = [1 - hi, 1 - lo]
     return result
@@ -235,7 +262,7 @@ def analyze(root, output):
         if not value.get('interval'):
             return value.get('interval_reason', 'no_valid_pairs' if not value['n'] else 'interval_unavailable')
         if value['interval'].get('ratio') is None:
-            return 'undefined_ratio'
+            return value.get('ratio_interval_reason', 'undefined_ratio')
         return ''
     if 'threshold' in decision:
         lines += ['Primary endpoint: `%s` / `%s`.' % (primary, metric), '',
@@ -285,6 +312,28 @@ def analyze(root, output):
                 lines.append('| %s | %s | %s | %d |' % (cell(workload), arm, cell(reason), count))
     if not any(counts['reasons'] for arms in accounting.values() for counts in arms.values()):
         lines += ['| — | — | none | 0 |']
+    failures = [row for row in rows if row['classification'] != 'complete' and
+                (row['classification'] != 'not_started' or row['started'] or
+                 (root / 'blocks' / row['block'] / row['arm']).exists())]
+    lines += ['', 'Retained failed-attempt evidence (excluded from paired estimates):', '',
+              '| Block | Workload | Arm | Outcome | Reason | Started | Exit | Elapsed seconds (run/spawn) |',
+              '| --- | --- | --- | --- | --- | --- | ---: | ---: |']
+    for row in failures:
+        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s |' %
+                     (cell(row['block']), cell(row['workload']), row['arm'], row['classification'],
+                      cell(row['reason']), str(row['started']).lower(), display(row['exit']),
+                      display(row['elapsed_seconds'])))
+    if not failures:
+        lines.append('| — | — | — | none | — | — | N/A | N/A |')
+    lines += ['', '| Block | Arm | Retained metric (quality may be invalid) | Observed value |',
+              '| --- | --- | --- | ---: |']
+    for row in failures:
+        names = set(m['resource_metrics']) | set(m.get('analysis_metrics', [])) | set(row['metrics'])
+        for name in sorted(names):
+            lines.append('| %s | %s | %s | %s |' %
+                         (cell(row['block']), row['arm'], cell(name), display(row['metrics'].get(name))))
+    if not failures:
+        lines.append('| — | — | none | N/A |')
     lines += ['', '| Excluded block | Pair reasons |', '| --- | --- |']
     for block, reasons in sorted(pair_reasons.items()):
         if reasons:

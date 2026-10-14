@@ -16,9 +16,9 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from analysis import analyze, estimate, quantile, trial as analyzed_trial
+from analysis import analyze, estimate, mean, quantile, trial as analyzed_trial
 from ci import TASKS, endpoint, snapshot
-from collector import collect, execute, freeze, receipt_valid, validate_manifest
+from collector import collect, execute, freeze, kill_group, receipt_valid, validate_manifest
 from common import (E1_RESOURCES, E2_RESOURCES, PROTOCOLS, QUALITY, SEED, canonical,
                     digest, order, read_json, sampling, seal, sha, verify, write_json)
 
@@ -1134,11 +1134,13 @@ if step=='observe':
         spec = {'argv': ['hook'], 'cwd': str(self.root), 'env': {},
                 'timeout_seconds': 1, 'cancel_grace_seconds': 25}
         with patch('collector.subprocess.Popen', return_value=process), \
-                patch('collector.os.killpg', side_effect=kill), self.assertRaises(KeyboardInterrupt):
+                patch('collector.os.killpg', side_effect=kill), \
+                patch('collector.time.monotonic', return_value=10), \
+                patch('collector.wait_group', return_value=True), self.assertRaises(KeyboardInterrupt):
             execute(spec, {'redact_env': []}, self.root, 'interrupt', [])
         self.assertEqual(events, [('wait', {'timeout': 1}), ('signal', process.pid, signal.SIGTERM),
                                   ('wait', {'timeout': 25}), ('signal', process.pid, signal.SIGKILL),
-                                  ('wait', {})])
+                                  ('wait', {'timeout': 25})])
 
     def test_timeout_kills_descendants_after_leader_exits(self):
         import ctypes
@@ -1375,6 +1377,220 @@ else:
         self.assertNotEqual(receipt['metrics']['gate_seconds'], receipt['metrics']['adoption_seconds'])
 
 
+    def test_freeze_rejects_unspawnable_redaction_names(self):
+        for index, name in enumerate(('BAD=NAME', 'BAD\0NAME')):
+            m = copy.deepcopy(self.manifest)
+            m['redact_env'] = [name]
+            source = self.source / 'redaction-name.json'
+            write_json(source, m)
+            destination = self.root / ('redaction-name-%d' % index)
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    subprocess.Popen([sys.executable, '-c', 'pass'], env={name: 'constructed'})
+                with self.assertRaises(ValueError):
+                    freeze(source, destination)
+                self.assertFalse(destination.exists())
+        m['redact_env'] = ['TEST_REDACTION_SECRET']
+        self.frozen(m)
+
+    def test_future_protocol_names_fail_before_bundle_creation(self):
+        for index, name in enumerate(('../future.md', '/tmp/future.md', '',
+                                     'nested/../../future.md', 'bad\0name.md')):
+            m = copy.deepcopy(self.manifest)
+            m['experiment'] = 'E3'
+            m['protocols'] = {name: self.manifest['protocols']['README.md']}
+            source = self.source / 'protocol-name.json'
+            write_json(source, m)
+            destination = self.root / ('protocol-name-%d' % index)
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    freeze(source, destination)
+                self.assertFalse(destination.exists())
+        m['protocols'] = {'future/v1.md': self.manifest['protocols']['README.md']}
+        for index, names in enumerate((('future', 'future/v1.md'), ('future/v1.md', 'future/./v1.md'))):
+            bad = dict(m, protocols={name: self.manifest['protocols']['README.md'] for name in names})
+            write_json(source, bad)
+            destination = self.root / ('protocol-layout-%d' % index)
+            with self.subTest(names=names), self.assertRaisesRegex(ValueError, 'conflicting'):
+                freeze(source, destination)
+            self.assertFalse(destination.exists())
+        bundle, _ = self.frozen(m)
+        self.assertEqual((bundle / 'protocol/future/v1.md').read_bytes(),
+                         (self.source / 'README.md').read_bytes())
+
+    def test_cleanup_interruption_sanitizes_before_sealing(self):
+        from collector import execute as real_execute
+        secret = sha(b'cleanup-interruption-regression')
+        m = copy.deepcopy(self.manifest)
+        m['redact_env'] = ['TEST_REDACTION_SECRET']
+        for index, interruption in enumerate((KeyboardInterrupt, SystemExit)):
+            source = self.source / 'cleanup-interrupt.json'
+            write_json(source, m)
+            bundle = self.root / ('cleanup-interrupt-%d' % index)
+            freeze(source, bundle)
+            registration = self.root / ('cleanup-registration-%d.json' % index)
+            write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                     'order_sha256': digest(bundle / 'order.json'),
+                                     'registered_at': '2020-01-01T00:00:00Z',
+                                     'revision': 'constructed', 'public_url': 'https://example.invalid/constructed'})
+            def command(spec, context, directory, step, secrets):
+                if step != 'cleanup':
+                    return real_execute(spec, context, directory, step, secrets)
+                (directory / 'cleanup.stdout').write_text(secret + '\n' + json.dumps(secret))
+                write_json(directory / 'cleanup-original.json', {'value': secret})
+                raise interruption()
+            with self.subTest(interruption=interruption), \
+                    patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}), \
+                    patch('collector.execute', side_effect=command):
+                with self.assertRaises(interruption):
+                    collect(bundle, self.block(bundle), registration)
+            verify(bundle)
+            self.assertTrue((bundle / 'stopped.json').exists())
+            paths = [path for path in bundle.rglob('*') if path.is_file()]
+            for path in paths:
+                self.assertFalse(secret.encode() in path.read_bytes(), str(path.relative_to(bundle)))
+            retained = b''.join(path.read_bytes() for path in paths)
+            self.assertIn(b'[REDACTED]', retained)
+            slot = order(m)[0]
+            row = read_json(bundle / 'blocks' / slot['block'] / slot['arms'][0] / 'trial.json')
+            self.assertTrue(row['started'])
+            self.assertFalse(row['cleanup_proven'])
+            self.assertEqual(row['reason'], 'cleanup_unproven')
+
+    def test_cleanup_proof_interruption_quarantines_before_all_hashes_pass(self):
+        from collector import digest as real_digest
+        bundle, registration = self.frozen()
+        def digest_with_interruption(path):
+            if Path(path).name == 'cleanup.log':
+                raise KeyboardInterrupt()
+            return real_digest(path)
+        with patch('collector.digest', side_effect=digest_with_interruption), self.assertRaises(KeyboardInterrupt):
+            collect(bundle, self.block(bundle), registration)
+        verify(bundle)
+        self.assertTrue((bundle / 'stopped.json').exists())
+        slot = order(self.manifest)[0]
+        row = read_json(bundle / 'blocks' / slot['block'] / slot['arms'][0] / 'trial.json')
+        self.assertTrue(row['started'])
+        self.assertFalse(row['cleanup_proven'])
+        self.assertEqual(row['reason'], 'cleanup_unproven')
+
+    def test_nonfinite_json_exponents_fail_before_bundle_creation(self):
+        for index, number in enumerate(('1e400', '-1e400', 'NaN', 'Infinity')):
+            source = self.source / 'nonfinite.json'
+            # Unknown inventory values also must obey the global JSON contract.
+            write_json(source, self.manifest)
+            source.write_text(source.read_text().replace('"test only"', number))
+            destination = self.root / ('nonfinite-%d' % index)
+            with self.subTest(number=number):
+                with self.assertRaises(ValueError):
+                    read_json(source)
+                with self.assertRaises(ValueError):
+                    freeze(source, destination)
+            self.assertFalse(destination.exists())
+        source.write_text('{"value": 1e308}')
+        self.assertEqual(read_json(source), {'value': 1e308})
+
+    def test_sigkill_leader_reaping_uses_shared_deadline(self):
+        process = Mock(pid=123)
+        def wait(timeout=None):
+            if timeout is not None:
+                raise subprocess.TimeoutExpired('constructed leader', timeout)
+            return 0  # An unbounded wait would not enforce the failure bound.
+        process.wait.side_effect = wait
+        with patch('collector.os.killpg') as kill, \
+                patch('collector.time.monotonic', side_effect=[10, 10.01]), \
+                patch('collector.wait_group', return_value=True) as group:
+            with self.assertRaisesRegex(OSError, 'leader.*SIGKILL'):
+                kill_group(process, 5)
+        kill.assert_called_once_with(123, signal.SIGKILL)
+        process.wait.assert_called_once()
+        self.assertAlmostEqual(process.wait.call_args.kwargs['timeout'], 4.99)
+        group.assert_not_called()
+        process.wait.side_effect = None
+        with patch('collector.os.killpg'), \
+                patch('collector.time.monotonic', side_effect=[10, 10.01]), \
+                patch('collector.wait_group', return_value=False) as group:
+            with self.assertRaisesRegex(OSError, 'group.*SIGKILL'):
+                kill_group(process, 5)
+        group.assert_called_once_with(123, 15)
+
+    def test_surviving_sigkill_leader_becomes_one_bounded_command_error(self):
+        spec = self.manifest['commands']['example-fixed-replay']['baseline']['run']
+        process = Mock(pid=123)
+        process.wait.side_effect = [subprocess.TimeoutExpired('run', 600),
+                                    subprocess.TimeoutExpired('term', 25),
+                                    subprocess.TimeoutExpired('kill', 25)]
+        with patch('collector.subprocess.Popen', return_value=process), \
+                patch('collector.os.killpg') as kill, \
+                patch('collector.wait_group', return_value=False):
+            result = execute(spec, {'trial_dir': self.root, 'block_id': 'test', 'redact_env': []},
+                             self.root, 'run', [])
+        self.assertTrue(result['started'])
+        self.assertTrue(result['timeout'])
+        self.assertIn('leader', result['error'])
+        self.assertEqual(process.wait.call_count, 3)
+        self.assertTrue(all('timeout' in call.kwargs for call in process.wait.call_args_list))
+        self.assertEqual([call.args for call in kill.call_args_list],
+                         [(123, signal.SIGTERM), (123, signal.SIGKILL)])
+        self.assertEqual(read_json(self.root / 'run.command.json'), result)
+
+    def test_report_exposes_failed_attempt_elapsed_and_resource_cost(self):
+        self.hook.write_text(self.hook.read_text() + '''
+if step=='observe':
+ receipt=json.loads((p/'receipt.json').read_text())
+ receipt['metrics']['failed|counter']=0
+ (p/'receipt.json').write_text(json.dumps(receipt))
+''')
+        m = self.make_manifest()
+        m['resource_metrics'].append('failed|counter')
+        m['analysis_metrics'] = ['unobserved']
+        for arms in m['commands'].values():
+            for specs in arms.values():
+                specs['run']['env']['RUN_EXIT'] = '4'
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        collect(bundle, slot['block'], registration)
+        result = analyze(bundle, self.root / 'failed-cost')
+        report = (self.root / 'failed-cost/report.md').read_text()
+        self.assertIn('Elapsed seconds (run/spawn)', report)
+        for arm in slot['arms']:
+            row = read_json(bundle / 'blocks' / slot['block'] / arm / 'trial.json')
+            self.assertIn('| %s | %s | %s | operational_failure | unexpected_exit | true | 4 | %.9g |' %
+                          (slot['block'], slot['workload'], arm, row['elapsed_seconds']), report)
+            self.assertIn('| %s | %s | cpu_seconds | 2 |' % (slot['block'], arm), report)
+            self.assertIn('| %s | %s | failed&#124;counter | 0 |' % (slot['block'], arm), report)
+            self.assertIn('| %s | %s | unobserved | N/A |' % (slot['block'], arm), report)
+        self.assertEqual(result['estimates'][slot['workload']]['cpu_seconds']['n'], 0)
+
+    def test_analysis_retains_extreme_finite_metrics_without_aborting(self):
+        m = self.e2_manifest()
+        m['analysis_metrics'] = ['extreme_counter']
+        bundle, registration = self.frozen(m)
+        shutil.copyfile(registration, bundle / 'registration.json')
+        seal(bundle)
+        def constructed_row(root, manifest, slot, arm):
+            value = 2 if arm == 'baseline' else 1
+            return dict(slot, arm=arm, attempt=1, started=True, cleanup_proven=True,
+                        classification='complete', reason='', exit=0, elapsed_seconds=1,
+                        metrics={'validation_seconds': value, 'runner_minutes': value,
+                                 'peak_runner_concurrency': value, 'queue_inclusive_seconds': value,
+                                 'initial_queue_seconds': value,
+                                 'extreme_counter': 1e-308 if arm == 'baseline' else 1e308},
+                        facts={'schedule': 'sch_constructed', 'host': 'test',
+                               'ci_created_at': '2026-10-13T00:00:00Z',
+                               'ci_completed_at': '2026-10-13T00:00:00Z'})
+        with patch('analysis.trial', side_effect=constructed_row):
+            result = analyze(bundle, self.root / 'extreme-analysis')
+        extreme = result['estimates']['external-acceptance']['extreme_counter']
+        self.assertEqual(extreme['n'], 6)
+        self.assertIsNone(extreme['ratio'])
+        self.assertEqual(extreme['difference'], 1e308)
+        self.assertEqual(result['estimates']['external-acceptance']['validation_seconds']['ratio'], .5)
+        self.assertEqual(result['accounting']['external-acceptance']['baseline']['complete'], 6)
+        self.assertIn('unrepresentable', (self.root / 'extreme-analysis/report.md').read_text())
+        self.assertEqual(read_json(self.root / 'extreme-analysis/results.json'), result)
+
+
 class StatisticsTests(unittest.TestCase):
     def setUp(self):
         self.m = {'seed': SEED, 'experiment': 'E2', 'phase': 'confirmation'}
@@ -1419,6 +1635,32 @@ class StatisticsTests(unittest.TestCase):
         self.assertIsNone(result['ratio'])
         self.assertEqual(result['difference'], -2.5)
         self.assertEqual(result['n'], 2)
+
+
+    def test_extreme_finite_ratios_do_not_abort_point_or_date_estimates(self):
+        self.assertEqual(mean([sys.float_info.max] * 7), sys.float_info.max)
+        for baseline, candidate in ((1e-308, 1e308), (1e308, 1e-308)):
+            pairs = [('01', '001', baseline, candidate), ('01', '002', baseline, candidate)]
+            result = estimate(self.m, 'w', 'm', pairs, ['01'])
+            self.assertEqual(result['n'], 2)
+            self.assertIsNone(result['ratio'])
+            self.assertIsNone(result['improvement'])
+            self.assertIsNone(result['by_date']['01']['ratio'])
+            self.assertIsNone(result['interval']['ratio'])
+            self.assertTrue(math.isfinite(result['difference']))
+            self.assertEqual(result['ratio_reason'], 'unrepresentable_ratio')
+            canonical(result)  # No infinity/NaN is emitted as JSON.
+
+    def test_unrepresentable_bootstrap_ratios_keep_all_difference_replicates(self):
+        pairs = [('01', '001', 1e-308, 1e308), ('01', '002', 1e308, 1e-308)]
+        result = estimate(self.m, 'w', 'm', pairs, ['01'])
+        self.assertEqual(result['ratio'], 1)
+        self.assertEqual(result['difference'], 0)
+        self.assertIsNone(result['interval']['ratio'])
+        self.assertEqual(result['interval']['difference'], [-1e308, 1e308])
+        self.assertEqual(result['ratio_interval_reason'], 'unrepresentable_bootstrap_ratio')
+        self.assertEqual(quantile([-1e308, 1e308], .5), 0)
+        canonical(result)
 
 
 class CITests(unittest.TestCase):

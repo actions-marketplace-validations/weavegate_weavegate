@@ -21,6 +21,10 @@ from common import (E1_RESOURCES, E2_RESOURCES, INVENTORIES, PROTOCOLS, QUALITY,
 STEPS = ('prepare', 'run', 'observe', 'check', 'cleanup')
 
 
+class GroupTerminationError(OSError):
+    """An owned command group did not terminate within its KILL deadline."""
+
+
 def string_inventory(value, name, allow_empty=False):
     if (not isinstance(value, list) or (not value and not allow_empty) or
             any(not isinstance(item, str) or not item.strip() for item in value) or
@@ -45,6 +49,8 @@ def validate_manifest(m):
         raise ValueError('protocol and artifact pins required')
     for name in ('quality_checks', 'resource_metrics', 'compare_facts', 'redact_env'):
         string_inventory(m.get(name), name, allow_empty=name == 'redact_env')
+    if any('=' in name or '\0' in name for name in m['redact_env']):
+        raise ValueError('invalid redaction environment name')
     string_inventory(m.get('analysis_metrics', []), 'analysis_metrics', allow_empty=True)
     deviations = m.get('deviations', [])
     if not isinstance(deviations, list) or any(not isinstance(value, str) for value in deviations):
@@ -142,6 +148,9 @@ def freeze(source, destination):
             raise ValueError('duplicate pin: ' + pin['path'])
         contents[name] = data
     for name, pin in m['protocols'].items():
+        if '\0' in name:
+            raise ValueError('invalid protocol filename')
+        child(destination / 'protocol', name)  # Check output paths before creating any bundle.
         data = child(source.parent, pin['path']).read_bytes()
         if sha(data) != pin['sha256']:
             raise ValueError('protocol pin mismatch: ' + name)
@@ -150,6 +159,11 @@ def freeze(source, destination):
             if data != current.read_bytes():
                 raise ValueError('protocol differs from this collector revision: ' + name)
         contents['protocol/' + name] = data
+    targets = {child(destination, name) for name in contents}
+    if len(targets) != len(contents) or any(parent in targets for path in targets for parent in path.parents):
+        raise ValueError('conflicting retained artifact paths')
+    rows = order(m)
+    campaign_bytes = canonical(m)
     destination.mkdir(mode=0o700)  # Never overwrite or extend a frozen campaign.
     for name, data in contents.items():
         path = child(destination, name)
@@ -158,8 +172,7 @@ def freeze(source, destination):
     (destination / 'collection.lock').touch(mode=0o600)
     write_json(destination / 'freeze-command.json', {'argv': [sys.executable,
                str(Path(__file__).with_name('tool.py')), 'freeze', str(source), str(destination.resolve())]})
-    write_json(destination / 'campaign.json', m)
-    rows = order(m)
+    (destination / 'campaign.json').write_bytes(campaign_bytes)
     write_json(destination / 'order.json', rows)
     write_csv(destination / 'order.csv', [dict(r, arms=','.join(r['arms'])) for r in rows],
               ['block', 'block_id', 'workload', 'date_slot', 'date', 'arms'])
@@ -214,13 +227,17 @@ def wait_group(group, deadline):
 
 
 def kill_group(process, grace):
+    deadline = time.monotonic() + grace
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    process.wait()
-    if not wait_group(process.pid, time.monotonic() + grace):
-        raise OSError('command process group remains alive after SIGKILL')
+    try:
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        raise GroupTerminationError('command process group leader remains alive after SIGKILL') from None
+    if not wait_group(process.pid, deadline):
+        raise GroupTerminationError('command process group remains alive after SIGKILL')
 
 
 def execute(spec, context, directory, step, secrets):
@@ -261,7 +278,9 @@ def execute(spec, context, directory, step, secrets):
                         pass
                     if not wait_group(process.pid, deadline):
                         kill_group(process, grace)
-                    result['exit'] = process.wait()
+                    result['exit'] = process.wait(timeout=0)
+            except GroupTerminationError:
+                raise  # The KILL deadline has already expired; do not restart its budget.
             except BaseException:
                 kill_group(process, spec.get('cancel_grace_seconds', 25))
                 raise
@@ -497,14 +516,21 @@ def collect_locked(root, block, registration):
                                 safe = False
                 except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     safe = False
-                row['cleanup_proven'] = safe
-                if not safe:
-                    row.update(classification='quality_failure', reason='cleanup_unproven')
-                sanitize(directory, secrets)
-                write_json(directory / 'trial.json', redact_value(row, secrets))
+                except BaseException:
+                    safe = False
+                    raise
+                finally:
+                    row['cleanup_proven'] = safe
+                    if not safe:
+                        row.update(classification='quality_failure', reason='cleanup_unproven')
+                    sanitize(directory, secrets)
+                    write_json(directory / 'trial.json', redact_value(row, secrets))
     finally:
         if not safe:
             write_json(root / 'stopped.json', {'reason': 'cleanup_unproven', 'block': block})
+        # BaseException paths must never seal unsanitized hook output. A failed
+        # sanitization leaves the bundle unsealed rather than publishing raw bytes.
+        sanitize(pair_dir, secrets)
         try:
             protect()
         except (OSError, ValueError) as error:

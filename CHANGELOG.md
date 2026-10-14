@@ -20,6 +20,12 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Fixed
 
+- Interrupted experiment cleanup sanitizes retained output before sealing, and
+  post-KILL reaping uses a bounded deadline. Campaigns reject invalid redaction
+  variable names and protocol paths before freeze. Reports show failed-attempt
+  time/resource costs and retain finite observations with unrepresentable ratios
+  as N/A rather than aborting analysis. See
+  `experiments/gate-performance/harness/README.md`.
 - Experiment campaigns reject malformed E3/E4 phases and unspawnable executable,
   argument and working-directory strings before freeze, and classify malformed
   environment/resource provenance as quality failures during collection and
