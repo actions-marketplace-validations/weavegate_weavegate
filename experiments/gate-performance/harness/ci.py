@@ -31,7 +31,7 @@ def validate_inventory(inventory):
 
 
 def snapshot(repository, run_id, attempt, output):
-    if attempt != 1:
+    if type(attempt) is not int or attempt != 1:
         raise ValueError('primary collection accepts original attempt 1 only')
     def api(path):
         try:
@@ -66,7 +66,8 @@ def workflow_bounds(snapshot):
 
 def endpoint(snapshot, inventory):
     run = snapshot['run']
-    if (run.get('status') != 'completed' or run['run_attempt'] != 1 or run['head_sha'] != inventory['execution_sha'] or
+    if (run.get('status') != 'completed' or type(run.get('run_attempt')) is not int
+            or run['run_attempt'] != 1 or run['head_sha'] != inventory['execution_sha'] or
             snapshot['repository'] != inventory['repository']):
         raise ValueError('CI attempt/repository/revision mismatch')
     pages = snapshot['pages']
@@ -75,7 +76,7 @@ def endpoint(snapshot, inventory):
     jobs = [job for page in pages for job in page['jobs']]
     if len(jobs) != pages[0]['total_count'] or len({j['id'] for j in jobs}) != len(jobs):
         raise ValueError('missing or duplicated jobs pages')
-    if any(j['run_id'] != run['id'] or j['run_attempt'] != 1 or
+    if any(j['run_id'] != run['id'] or type(j.get('run_attempt')) is not int or j['run_attempt'] != 1 or
            j['head_sha'] != inventory['execution_sha'] for j in jobs):
         raise ValueError('jobs belong to another run/attempt/revision')
     if not set(TASKS) <= set(inventory['tasks']):

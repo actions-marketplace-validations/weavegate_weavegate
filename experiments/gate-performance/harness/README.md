@@ -101,6 +101,7 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 | `protocols` | Filename to `{path, sha256}`; E1/E2 require exact copies of the three protocol files shipped with this collector. |
 | `pins` | `{path, sha256, role}` entries copied from the manifest's directory to `pins/`. Include release checksums, binaries/JARs, inputs, dependency locks/trees, treatment diffs and hook/checker sources. |
 | `execution_pins` | `{path, sha256, role}` entries for absolute live paths checked at freeze, before collection, before the measured command and before cleanup. Pin every executable, hook, JAR and input actually used. |
+| cleanup command `execution_pins` | Optional nonempty list of unique paths referencing the manifest's live pins. Declare every input used by a separately trusted cleanup command. If omitted, cleanup depends on the entire live inventory. Unknown paths and empty selections fail before freeze; completeness remains an auditor obligation. |
 | `sources` | Collector/analyzer source commits and dependency locks, protocol commit, registration provenance. The collector also archives its actual Python sources. |
 | `arms`, `inputs`, `runtime`, `environment`, `observation` | Nonempty inventories from the shared protocol's required campaign manifest. Include all identities, build commands, settings, resource boundaries, cache policy, expected evidence and redaction policy. Their experiment-specific completeness is a checker/auditor obligation. |
 | `commands` | Workload → `baseline`/`candidate` → `prepare`, `run`, `observe`, `check`, `cleanup` command specifications. |
@@ -151,6 +152,8 @@ receipts. Unknown string payloads and original JSON evidence are redacted;
 non-JSON logs still use byte redaction. Short values can collide with original
 evidence strings and invalidate their proofs, producing sanitized failed
 evidence instead of repairing hashes or corrupting collector JSON.
+Each arm's `redactions.json` accumulates replacements across observation,
+check, cleanup and final sanitization, including failed/interrupted cleanup.
 
 For E2, `run.timeout_seconds` is a wrapper watchdog and must be greater than
 5,400 seconds. Freeze a value that reserves the hook's dispatch/retention
@@ -236,7 +239,12 @@ Non-object observation JSON remains retained as failed evidence. It supplies
 no environment inventory entry, but cleanup, sealing, analysis and subsequent
 preassigned blocks still proceed when cleanup is proven.
 
-`cleanup` always runs, including after prepare/run/observe/check failures. It
+`cleanup` runs after prepare/run/observe/check failures when its registered
+execution inputs still match. A frozen cleanup-specific pin selection allows
+trusted teardown after unrelated live input drift; without one, the full
+inventory remains required. A changed cleanup dependency must never execute.
+Any live pin drift still quarantines the allocation and stops the campaign,
+even if the separate teardown succeeds and retains original proof. Cleanup
 writes `cleanup.json` with `proven: true` and `evidence` path/hash entries for
 observed teardown/restoration. Exit 0 alone is insufficient. Missing proof,
 checker/pin drift or corrupted cleanup evidence quarantines the allocation and

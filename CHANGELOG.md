@@ -20,6 +20,11 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Fixed
 
+- Experiment cleanup can use separately frozen input pins to attempt trusted
+  teardown after unrelated pin drift, while drift still stops the campaign.
+  Redaction counts include check, cleanup and final passes; original CI attempt
+  numbers must be integers. See
+  `experiments/gate-performance/harness/README.md`.
 - Experiment JSON redaction masks overlapping secrets in full regardless of
   their manifest order, and cold-adoption timer receipts reject booleans in
   place of numeric durations. See

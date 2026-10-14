@@ -1080,6 +1080,100 @@ if step=='observe':
         with self.assertRaises(ValueError):
             analyze(bundle, self.root / 'bad')
 
+    def test_trusted_cleanup_runs_after_unrelated_execution_pin_drift(self):
+        from collector import execute as real_execute
+        other = self.source / 'checker-input.txt'
+        other.write_text('registered input')
+        m = copy.deepcopy(self.manifest)
+        m['execution_pins'].append({'path': str(other), 'sha256': digest(other), 'role': 'checker input'})
+        for arms in m['commands'].values():
+            for commands in arms.values():
+                commands['cleanup']['execution_pins'] = [str(self.hook)]
+        for changed_step in ('prepare', 'run', 'observe', 'check'):
+            other.write_text('registered input')
+            source = self.source / 'pin-drift-manifest.json'
+            write_json(source, m)
+            bundle = self.root / ('pin-drift-' + changed_step)
+            freeze(source, bundle)
+            registration = self.root / ('pin-registration-' + changed_step + '.json')
+            write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                     'order_sha256': digest(bundle / 'order.json'),
+                                     'registered_at': '2020-01-01T00:00:00Z',
+                                     'revision': 'constructed', 'public_url': 'https://example.invalid'})
+            slot = order(m)[0]
+            calls = []
+            def command(spec, context, directory, step, secrets):
+                calls.append((context['arm'], step))
+                result = real_execute(spec, context, directory, step, secrets)
+                if step == changed_step:
+                    other.write_text('changed input after allocation')
+                return result
+            with self.subTest(step=changed_step), patch('collector.execute', side_effect=command):
+                self.assertFalse(collect(bundle, slot['block'], registration))
+            directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+            self.assertIn((slot['arms'][0], 'cleanup'), calls)
+            self.assertTrue(read_json(directory / 'cleanup.json')['proven'])
+            self.assertEqual(read_json(directory / 'trial.json')['classification'], 'quality_failure')
+            self.assertTrue((bundle / 'stopped.json').exists())
+            self.assertNotIn((slot['arms'][1], 'prepare'), calls)
+            verify(bundle)
+
+    def test_cleanup_pin_selection_requires_registered_nonempty_inputs(self):
+        for index, selected in enumerate(([], [str(self.hook), str(self.hook)],
+                                          [str(self.source / 'unregistered.py')],
+                                          [True], str(self.hook))):
+            m = copy.deepcopy(self.manifest)
+            m['commands']['example-fixed-replay']['baseline']['cleanup']['execution_pins'] = selected
+            source = self.source / 'cleanup-selection.json'
+            write_json(source, m)
+            bundle = self.root / ('cleanup-selection-%d' % index)
+            with self.subTest(selected=selected), self.assertRaises(ValueError):
+                freeze(source, bundle)
+            self.assertFalse(bundle.exists())
+
+    def test_changed_cleanup_execution_pin_prevents_untrusted_teardown(self):
+        from collector import execute as real_execute
+        m = copy.deepcopy(self.manifest)
+        for arms in m['commands'].values():
+            for commands in arms.values():
+                commands['cleanup']['execution_pins'] = [str(self.hook)]
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        calls = []
+        def command(spec, context, directory, step, secrets):
+            calls.append(step)
+            result = real_execute(spec, context, directory, step, secrets)
+            if step == 'prepare':
+                self.hook.write_text('untrusted replacement')
+            return result
+        with patch('collector.execute', side_effect=command):
+            self.assertFalse(collect(bundle, slot['block'], registration))
+        self.assertNotIn('cleanup', calls)
+        self.assertTrue((bundle / 'stopped.json').exists())
+        verify(bundle)
+
+    def test_post_check_and_cleanup_redactions_are_counted(self):
+        from collector import execute as real_execute
+        secret = 'constructed-secret-for-late-redaction'
+        m = copy.deepcopy(self.manifest)
+        m['redact_env'] = ['TEST_REDACTION_SECRET']
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        def command(spec, context, directory, step, secrets):
+            result = real_execute(spec, context, directory, step, secrets)
+            if step in ('check', 'cleanup'):
+                (directory / (step + '-private.log')).write_text(secret + '\n')
+            return result
+        with patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}), \
+                patch('collector.execute', side_effect=command):
+            self.assertTrue(collect(bundle, slot['block'], registration))
+        for arm in slot['arms']:
+            directory = bundle / 'blocks' / slot['block'] / arm
+            self.assertEqual(read_json(directory / 'redactions.json')['replacements'], 4)
+            for step in ('check', 'cleanup'):
+                self.assertEqual((directory / (step + '-private.log')).read_text(), '[REDACTED]\n')
+        verify(bundle)
+
     def test_missing_or_corrupt_evidence_cannot_complete(self):
         bundle, registration = self.frozen()
         collect(bundle, self.block(bundle), registration)
@@ -1972,6 +2066,21 @@ class CITests(unittest.TestCase):
     def test_diagnostic_rerun_not_primary(self):
         with self.assertRaises(ValueError):
             snapshot('owner/repo', 1, 2, Path('/unused'))
+
+    def test_original_attempt_requires_integer_run_and_job_provenance(self):
+        for target in ('run', 'job'):
+            for attempt in (True, 1.0, '1', None):
+                data, inventory = self.data()
+                value = data['run'] if target == 'run' else data['pages'][0]['jobs'][0]
+                value['run_attempt'] = attempt
+                with self.subTest(target=target, attempt=attempt), self.assertRaises(ValueError):
+                    endpoint(data, inventory)
+        data, inventory = self.data()
+        endpoint(data, inventory)
+        for attempt in (True, 1.0):
+            with patch('ci.subprocess.run') as api, self.assertRaises(ValueError):
+                snapshot('owner/repo', 1, attempt, Path('/unused'))
+            api.assert_not_called()
 
     def test_outer_cap_includes_workflow_and_nonrequired_job_completion(self):
         for late in ('workflow', 'job'):

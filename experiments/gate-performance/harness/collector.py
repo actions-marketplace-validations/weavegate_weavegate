@@ -102,6 +102,11 @@ def validate_manifest(m):
             if not isinstance(expected, dict) or not expected:
                 raise ValueError('expected facts must be nonempty objects')
             for step, spec in commands.items():
+                if 'execution_pins' in spec:
+                    string_inventory(spec['execution_pins'], 'cleanup execution_pins')
+                    if (step != 'cleanup' or not set(spec['execution_pins']) <=
+                            {pin['path'] for pin in m['execution_pins']}):
+                        raise ValueError('cleanup execution_pins must reference registered live inputs')
                 if (not isinstance(spec.get('argv'), list) or not spec['argv']
                         or not all(isinstance(a, str) and '\0' not in a for a in spec['argv'])
                         or not spec['argv'][0]
@@ -462,6 +467,12 @@ def collect_locked(root, block, registration):
         protect()
         return result
     safe = True
+    redaction_counts = {}
+    def retain_redactions(directory, removed):
+        redaction_counts[directory] = redaction_counts.get(directory, 0) + removed
+        write_json(directory / 'redactions.json', {'replacements': redaction_counts[directory]})
+    def sanitize_arm(directory):
+        retain_redactions(directory, sanitize(directory, secrets))
     try:
         for arm in slot['arms']:
             if active_directory is not None:
@@ -508,8 +519,7 @@ def collect_locked(root, block, registration):
                     row.update(started=run['started'], exit=run['exit'], elapsed_seconds=run['seconds'],
                                reason='unexpected_exit')
                     observed = command(commands['observe'], context, directory, 'observe')
-                    redactions = sanitize(directory, secrets)
-                    write_json(directory / 'redactions.json', {'replacements': redactions})
+                    sanitize_arm(directory)
                     checked = command(commands['check'], context, directory, 'check')
                     evidence = None
                     try:
@@ -542,9 +552,16 @@ def collect_locked(root, block, registration):
                 # Cleanup is independent of run exit, timeout, receipt parsing and Ctrl-C.
                 safe = False
                 try:
-                    verify_execution_pins(m)
+                    pins_match = True
+                    try:
+                        verify_execution_pins(m)
+                    except (OSError, ValueError):
+                        pins_match = False
+                    # A separately registered teardown can still release resources
+                    # after unrelated inputs drift. Drift never permits reuse.
+                    verify_execution_pins(m, commands['cleanup'].get('execution_pins'))
                     cleanup = command(commands['cleanup'], context, directory, 'cleanup')
-                    sanitize(directory, secrets)
+                    sanitize_arm(directory)
                     proof = read_json(directory / 'cleanup.json')
                     safe = succeeded(cleanup) and proof.get('proven') is True
                     if safe:
@@ -553,6 +570,7 @@ def collect_locked(root, block, registration):
                         for name, checksum in proof.get('evidence', {}).items():
                             if digest(child(directory, name)) != checksum:
                                 safe = False
+                    safe = safe and pins_match
                 except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     safe = False
                 except BaseException:
@@ -562,8 +580,10 @@ def collect_locked(root, block, registration):
                     row['cleanup_proven'] = safe
                     if not safe:
                         row.update(classification='quality_failure', reason='cleanup_unproven')
-                    sanitize(directory, secrets)
-                    write_json(directory / 'trial.json', redact_metadata(row, secrets, 'trial.json'))
+                    sanitize_arm(directory)
+                    replacements = [0]
+                    write_json(directory / 'trial.json', redact_metadata(row, secrets, 'trial.json', replacements))
+                    retain_redactions(directory, replacements[0])
     finally:
         if not safe:
             if (root / 'stopped.json').exists():
@@ -574,7 +594,9 @@ def collect_locked(root, block, registration):
                 allowed.add('stopped.json')
         # BaseException paths must never seal unsanitized hook output. A failed
         # sanitization leaves the bundle unsealed rather than publishing raw bytes.
-        sanitize(pair_dir, secrets)
+        removed = sanitize(pair_dir, secrets)
+        if active_directory is not None:
+            retain_redactions(active_directory, removed)
         try:
             protect()
         except (OSError, ValueError) as error:
@@ -621,8 +643,10 @@ def inventory(root, m):
             json.dumps(item, sort_keys=True, allow_nan=False) + '\n' for item in items))
 
 
-def verify_execution_pins(m):
+def verify_execution_pins(m, selected=None):
     for pin in m['execution_pins']:
+        if selected is not None and pin['path'] not in selected:
+            continue
         path = Path(pin['path'])
         if not path.is_absolute() or not pin.get('role') or digest(path) != pin['sha256']:
             raise ValueError('live execution pin mismatch: ' + pin['path'])
