@@ -7,6 +7,7 @@ import math
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -1502,6 +1503,99 @@ else:
             self.assertEqual(sanitize(directory, secrets), 3)
             self.assertEqual(read_json(directory / 'original.json'), expected)
             self.assertEqual(sanitize(directory, secrets), 0)
+
+    def test_marker_overlapping_secrets_fail_before_entering_a_block(self):
+        from collector import redact_value, sanitize
+        m = copy.deepcopy(self.manifest)
+        m['redact_env'] = ['TEST_REDACTION_SECRET']
+        bundle, registration = self.frozen(m)
+        for secret in ('REDACTED', '[REDACTED]', '[', 'D'):
+            with self.subTest(secret=secret), patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}):
+                with self.assertRaisesRegex(ValueError, 'redaction marker'):
+                    collect(bundle, self.block(bundle), registration)
+                self.assertFalse((bundle / 'blocks').exists())
+                with self.assertRaisesRegex(ValueError, 'redaction marker'):
+                    redact_value(secret, [secret.encode()])
+                with self.assertRaisesRegex(ValueError, 'redaction marker'):
+                    sanitize(bundle, [secret.encode()])
+                verify(bundle)
+        with patch.dict(os.environ, {'TEST_REDACTION_SECRET': 'credential-containing-REDACTED'}):
+            self.assertTrue(collect(bundle, self.block(bundle), registration))
+        verify(bundle)
+
+    def test_original_command_named_evidence_is_not_a_collector_receipt(self):
+        from collector import execute as real_execute
+        secret = 'original-command-evidence-secret'
+        m = copy.deepcopy(self.manifest)
+        m['redact_env'] = ['TEST_REDACTION_SECRET']
+        bundle, registration = self.frozen(m)
+        def command(spec, context, directory, step, secrets):
+            result = real_execute(spec, context, directory, step, secrets)
+            if step == 'observe':
+                write_json(directory / 'original.command.json',
+                           {'original': 'constructed product evidence', 'argv': [secret]})
+            return result
+        with patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}), \
+                patch('collector.execute', side_effect=command):
+            self.assertTrue(collect(bundle, self.block(bundle), registration))
+        verify(bundle)
+        result = analyze(bundle, self.root / 'original-command-evidence')
+        workload = order(self.manifest)[0]['workload']
+        for arm in ('baseline', 'candidate'):
+            self.assertEqual(result['accounting'][workload][arm]['complete'], 1)
+            original = read_json(bundle / 'blocks' / self.block(bundle) / arm / 'original.command.json')
+            self.assertEqual(original['argv'], ['[REDACTED]'])
+
+    def test_expanded_paths_preserve_literal_placeholder_segments(self):
+        source = self.source / 'literal-path-manifest.json'
+        write_json(source, self.manifest)
+        bundle = self.root / '{arm}' / 'campaign'
+        bundle.parent.mkdir()
+        freeze(source, bundle)
+        registration = self.root / 'literal-path-registration.json'
+        write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                 'order_sha256': digest(bundle / 'order.json'),
+                                 'registered_at': '2020-01-01T00:00:00Z',
+                                 'revision': 'constructed', 'public_url': 'https://example.invalid'})
+        self.assertTrue(collect(bundle, self.block(bundle), registration))
+        slot = order(self.manifest)[0]
+        for arm in slot['arms']:
+            directory = bundle / 'blocks' / slot['block'] / arm
+            command = read_json(directory / 'run.command.json')
+            self.assertEqual(command['argv'][3], str(directory))
+            self.assertEqual(read_json(directory / 'trial.json')['classification'], 'complete')
+        verify(bundle)
+
+    def test_unchanged_readonly_evidence_is_not_rewritten(self):
+        from collector import sanitize
+        path = self.root / 'readonly.log'
+        path.write_bytes(b'unchanged constructed evidence')
+        path.chmod(0o444)
+        original = path.stat().st_mtime_ns
+        for secrets in ([], [b'absent-secret']):
+            self.assertEqual(sanitize(self.root, secrets), 0)
+            self.assertEqual(path.stat().st_mtime_ns, original)
+        # A required redaction still fails rather than publishing raw bytes.
+        with self.assertRaises(PermissionError):
+            sanitize(self.root, [b'constructed'])
+        self.assertEqual(path.read_bytes(), b'unchanged constructed evidence')
+
+    def test_nonregular_entries_cannot_be_sealed_or_verified(self):
+        for kind in ('fifo', 'socket'):
+            directory = self.root / kind
+            directory.mkdir()
+            (directory / 'evidence.log').write_text('constructed regular evidence')
+            seal(directory)
+            path = directory / 'untracked'
+            with socket.socket(socket.AF_UNIX) as endpoint_socket:
+                if kind == 'fifo':
+                    os.mkfifo(path)
+                else:
+                    endpoint_socket.bind(str(path))
+                with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, 'non-regular'):
+                    seal(directory)
+                with self.assertRaisesRegex(ValueError, 'non-regular'):
+                    verify(directory)
 
 
     def test_all_e1_resources_receive_higher_cost_disclosure(self):

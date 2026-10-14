@@ -109,7 +109,7 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 | `compare_facts` | Receipt fact keys that must match within every pair, such as normalized evidence hashes, schedule inventory, workload counts, image/cache/resource class and allocation identity. Do not compare volatile IDs or treatment-specific identities. |
 | `quality_checks` | Required receipt checks. E1/E2 require `outcome`, `assertions`, `schedules`, `repetitions`, `normalized_evidence`, `isolation`, `lifecycle`, `resources`, `environment`; add the full campaign inventory, including acceptance-completeness checks. |
 | `resource_metrics`, `analysis_metrics` | Required resources and optional descriptive numeric endpoints, with units/provenance declared in the observation inventory. `analysis_metrics`, when present, must be a list of unique nonempty string names, validated before freeze; an empty list is allowed. Missing values remain unknown; zero is retained and its ratio is undefined. |
-| `redact_env` | Unique nonempty environment variable names without `=` or NUL; invalid names fail before freeze. Their required values are passed to hooks and removed from retained bytes and command receipts. Values are never in the manifest. |
+| `redact_env` | Unique nonempty environment variable names without `=` or NUL; invalid names fail before freeze. Their required values are passed to hooks and removed from retained bytes and command receipts. Values are never in the manifest. Values contained in the literal `[REDACTED]` marker fail before starting a block so a replacement cannot disclose the same credential. |
 | `ci` | E2 `owner/repo`, full lowercase 40-hex common `execution_sha`, and required `tasks` mappings for both arms (below), validated before freeze; workflow/action/ruleset pins belong in the inventories. |
 | `deviations` | Optional list of strings disclosing departures from the registered design, validated before freeze; an omitted or empty list is allowed. A nonempty list prevents favorable confirmatory claims. |
 
@@ -123,7 +123,9 @@ neither names nor values may contain NUL. Invalid argument lists or environments
 fail before a campaign directory is created.
 No shell is introduced by the
 collector. Tokens `{trial_dir}`, `{campaign_dir}`, `{block_id}`, `{arm}` expand
-at execution. Use absolute executable paths or explicitly supply `PATH`.
+once from the original string at execution; literal braces inside an inserted
+path are preserved and unknown tokens stay literal. Use absolute executable
+paths or explicitly supply `PATH`.
 Date slots must use canonical UTC `YYYY-MM-DD` strings; unpadded dates fail
 before a campaign directory is created.
 Protocol map names must be safe relative paths without NUL or parent traversal;
@@ -154,6 +156,10 @@ evidence strings and invalidate their proofs, producing sanitized failed
 evidence instead of repairing hashes or corrupting collector JSON.
 Each arm's `redactions.json` accumulates replacements across observation,
 check, cleanup and final sanitization, including failed/interrupted cleanup.
+Unchanged evidence bytes are never rewritten, so read-only originals with no
+secret match remain usable. A required redaction that cannot be written fails
+instead of sealing unsanitized evidence. Bundle inventory rejects symlinks and
+every non-regular entry other than directories, including FIFOs and sockets.
 
 For E2, `run.timeout_seconds` is a wrapper watchdog and must be greater than
 5,400 seconds. Freeze a value that reserves the hook's dispatch/retention
@@ -318,6 +324,10 @@ not rename the primary endpoint as either.
 `campaign.json`, `order.json`/`order.csv`, `protocol/`, `pins/`, and
 `analysis/source/` are frozen. `blocks/<block>/<arm>/` retains command receipts,
 stdout/stderr, trial rows, observer/checker originals and cleanup proofs.
+The five reserved `<step>.command.json` names correspond to prepare, run,
+observe, check and cleanup. Other originals ending in `.command.json` remain
+ordinary evidence: their strings are sanitized and analysis does not require
+collector timestamps from them.
 `trials.csv`, `commands.jsonl`, `events.jsonl`, `environments.jsonl` inventory all
 slots and actual commands. A private `collection.lock` prevents concurrent
 local writers. `SHA256SUMS` is a sorted JSON path-to-hash inventory of every

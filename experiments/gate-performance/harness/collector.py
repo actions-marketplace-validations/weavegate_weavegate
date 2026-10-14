@@ -19,6 +19,7 @@ from common import (E1_RESOURCES, E2_RESOURCES, INVENTORIES, PROTOCOLS, QUALITY,
                     verify, write_csv, write_json)
 
 STEPS = ('prepare', 'run', 'observe', 'check', 'cleanup')
+REDACTION_MARKER = b'[REDACTED]'
 
 
 class GroupTerminationError(OSError):
@@ -193,8 +194,14 @@ def freeze(source, destination):
     seal(destination)
 
 
+def validate_redaction_secrets(secrets):
+    if any(not secret or secret in REDACTION_MARKER for secret in secrets):
+        raise ValueError('secret must be nonempty and absent from the redaction marker')
+
+
 def sanitize(root, secrets):
     """Sanitize retained bytes before computing evidence hashes."""
+    validate_redaction_secrets(secrets)
     removed = 0
     for path in files(root):
         data = path.read_bytes()
@@ -210,14 +217,16 @@ def sanitize(root, secrets):
                     path.write_bytes(canonical(redacted))
                 removed += replacements[0]
                 continue
+        original = data
         variants = set(secrets)
         for value in secrets:
             variants.add(json.dumps(value.decode(), ensure_ascii=True)[1:-1].encode())
             variants.add(json.dumps(value.decode(), ensure_ascii=False)[1:-1].encode())
         for value in sorted(variants, key=len, reverse=True):
             removed += data.count(value)
-            data = data.replace(value, b'[REDACTED]')
-        path.write_bytes(data)
+            data = data.replace(value, REDACTION_MARKER)
+        if data != original:
+            path.write_bytes(data)
     return removed
 
 
@@ -259,10 +268,10 @@ def kill_group(process, grace):
 
 
 def execute(spec, context, directory, step, secrets):
+    validate_redaction_secrets(secrets)
     def expand(value):
-        for key, replacement in context.items():
-            value = value.replace('{' + key + '}', str(replacement))
-        return value
+        return re.sub(r'\{([^{}]+)\}',
+                      lambda match: str(context.get(match[1], match[0])), value)
     argv = [expand(a) for a in spec['argv']]
     cwd = expand(spec['cwd'])
     env = {key: expand(value) for key, value in spec['env'].items()}
@@ -425,6 +434,7 @@ def collect_locked(root, block, registration):
     if any(not os.environ.get(name) for name in redaction_env_names):
         raise ValueError('missing required redaction environment variable')
     secrets = [os.environ[name].encode() for name in redaction_env_names]
+    validate_redaction_secrets(secrets)
     pair_dir = root / 'blocks' / block
     pair_dir.parent.mkdir(exist_ok=True)
     pair_dir.mkdir(mode=0o700)  # Existing or interrupted blocks cannot be rerun.
@@ -676,7 +686,7 @@ def redact_metadata(value, secrets, filename, replacements=None):
                   'attempt', 'classification', 'collection_root', 'metrics', 'started',
                   'exit', 'elapsed_seconds', 'cleanup_proven'}
         known = public | {'reason', 'facts'}
-    elif filename.endswith('.command.json'):
+    elif filename in {step + '.command.json' for step in STEPS}:
         public = {'step', 'argv', 'cwd', 'env', 'redacted_env_names', 'started_at',
                   'ended_at', 'started', 'exit', 'timeout', 'seconds'}
         known = public | {'error'}
@@ -690,11 +700,12 @@ def redact_metadata(value, secrets, filename, replacements=None):
 
 
 def redact_value(value, secrets, replacements=None):
+    validate_redaction_secrets(secrets)
     if isinstance(value, str):
         for secret in sorted(secrets, key=len, reverse=True):
             if replacements is not None:
                 replacements[0] += value.count(secret.decode())
-            value = value.replace(secret.decode(), '[REDACTED]')
+            value = value.replace(secret.decode(), REDACTION_MARKER.decode())
         return value
     if isinstance(value, list):
         return [redact_value(item, secrets, replacements) for item in value]

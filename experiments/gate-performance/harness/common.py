@@ -95,6 +95,8 @@ def files(root):
             raise ValueError('symlink in bundle: ' + str(path))
         if path.is_file():
             result.append(path)
+        elif not path.is_dir():
+            raise ValueError('non-regular entry in bundle: ' + str(path))
     return result
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from common import (E1_RESOURCES, E2_RESOURCES, child, counter, digest, json_equal, order,
                     read_json, sha, verify, write_csv, write_json)
-from collector import receipt_valid, succeeded, validate_manifest, validate_registration
+from collector import STEPS, receipt_valid, succeeded, validate_manifest, validate_registration
 
 
 def quantile(values, p):
@@ -158,9 +158,12 @@ def analyze(root, output):
         validate_registration(reg)
         if reg['campaign_sha256'] != digest(root / 'campaign.json') or reg['order_sha256'] != digest(root / 'order.json'):
             raise ValueError('registration hash mismatch')
-        for command in root.glob('blocks/*/*/*.command.json'):
-            if timestamp(reg['registered_at']) >= timestamp(read_json(command)['started_at']):
-                raise ValueError('measurement predates registration')
+        for slot in slots:
+            for arm in slot['arms']:
+                for step in STEPS:
+                    command = root / 'blocks' / slot['block'] / arm / (step + '.command.json')
+                    if command.exists() and timestamp(reg['registered_at']) >= timestamp(read_json(command)['started_at']):
+                        raise ValueError('measurement predates registration')
     pair_reasons = {}
     for block, arms in blocks.items():
         b, w = arms['baseline'], arms['candidate']

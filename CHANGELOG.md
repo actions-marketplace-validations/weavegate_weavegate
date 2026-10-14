@@ -20,6 +20,12 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Fixed
 
+- Experiment collection rejects secrets contained in its replacement marker
+  before starting a block, expands command placeholders only once, preserves
+  unchanged read-only evidence and rejects non-regular bundle entries.
+  Reanalysis recognizes only the five collector command receipts, keeping
+  similarly named original evidence usable and sanitized. See
+  `experiments/gate-performance/harness/README.md`.
 - Experiment cleanup can use separately frozen input pins to attempt trusted
   teardown after unrelated pin drift, while drift still stops the campaign.
   Redaction counts include check, cleanup and final passes; original CI attempt
