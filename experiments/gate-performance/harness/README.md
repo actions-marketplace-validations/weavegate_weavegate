@@ -63,7 +63,10 @@ explicitly constructed registration receipt.
 Run blocks in `order.json` order within each workload/date slot, on their
 registered UTC dates. The exact arm order is generated with the shared
 SHA-256 algorithm, including odd-date balancing. E1/E2 counts, workloads,
-seed and outer run budgets must match protocol revision 1. Collection refuses
+seed and measurement budgets must match protocol revision 1. E1's process cap
+uses its measured CLI boundary; E2's 90-minute workflow cap uses provider run
+creation, with a separately frozen wrapper watchdog covering dispatch and
+evidence-retention overhead. Collection refuses
 an already started block, a modified live pin or collector source, an unfinished
 prior block, a changed registration receipt and a concurrent writer.
 
@@ -139,6 +142,14 @@ ordinary `env` values, pins, inventories or registration fields. Declare any
 additional sanitization in the observer; wire payloads and database DSNs are
 outside the collection contract.
 
+For E2, `run.timeout_seconds` is a wrapper watchdog and must be greater than
+5,400 seconds. Freeze a value that reserves the hook's dispatch/retention
+overhead in addition to the provider cap; no universal overhead allowance is
+supplied. This watchdog does not extend the workflow's 5,400-second cap from
+`run.created_at`, which collection and analysis validate from provider evidence.
+Pinned dispatch/wait hooks enforce cancellation at that provider deadline;
+their cleanup must prove teardown when the watchdog or provider cap is hit.
+
 `run` is the whole CLI invocation for warm E1, or the end-to-end adoption wrapper
 for `adoption-cold`. For cold adoption the collector records `adoption_seconds`
 from the wrapper, and the observer must retain separate actual
@@ -196,6 +207,9 @@ Its successful exit and actual logs are retained. A `receipt.json` contains:
 The collector supplies E1's primary duration from its own monotonic clock and
 checks evidence hashes. The analyzer rechecks receipts, original evidence,
 commands and cleanup rather than trusting the derived trial classification.
+Integers outside the finite float range are invalid counters, without aborting
+collection. Required invalid readings produce quality failure; original values
+remain in the retained receipt and missing derived readings remain unknown.
 Both collection and analysis reject scalar environment inventories and
 non-string or blank resource descriptions as quality failures. The frozen
 checker and independent auditor still validate experiment-specific identities,
@@ -286,8 +300,10 @@ slots and actual commands. A private `collection.lock` prevents concurrent
 local writers. `SHA256SUMS` is a sorted JSON path-to-hash inventory of every
 other bundle file; JSON preserves unusual filenames unambiguously.
 Each hook's return and final sealing check the entry hashes of preexisting
-evidence and frozen files. Hooks may add/change files only in the current block
-and the regenerated aggregate ledgers. Changes to prior evidence, the checksum
+evidence and frozen files. Before starting the mate, collection snapshots the
+completed arm's hashes in `completed-arm-hashes.json` and protects its files
+and membership. Hooks may add/change files only in their active arm and the
+regenerated aggregate ledgers. Changes to a completed arm, prior evidence, the checksum
 inventory or other protected paths stop collection and refuse resealing. The
 current block retains `integrity-error.json`; the damaged bundle and original
 checksum inventory remain for audit. Preserve them rather than repairing them

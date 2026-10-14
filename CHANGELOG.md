@@ -20,6 +20,11 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Fixed
 
+- Experiment hooks cannot replace a completed arm's evidence while running its
+  mate, and oversized integer counters become quality failures without aborting
+  collection. E2 keeps the provider-based 90-minute cap separate from its
+  wrapper's dispatch/retention watchdog. See
+  `experiments/gate-performance/harness/README.md`.
 - Interrupted experiment cleanup sanitizes retained output before sealing, and
   post-KILL reaping uses a bounded deadline. Campaigns reject invalid redaction
   variable names and protocol paths before freeze. Reports show failed-attempt

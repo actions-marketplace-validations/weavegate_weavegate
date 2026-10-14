@@ -114,9 +114,10 @@ def validate_manifest(m):
                         or not positive(spec.get('cancel_grace_seconds', 25))):
                     raise ValueError('invalid command: ' + step)
                 if m['experiment'] in ('E1', 'E2') and step == 'run':
-                    cap = 5400 if m['experiment'] == 'E2' else (
-                        1800 if m['phase'] == 'adoption-cold' else 600)
-                    if spec['timeout_seconds'] != cap:
+                    if m['experiment'] == 'E2':
+                        if spec['timeout_seconds'] <= 5400:
+                            raise ValueError('E2 wrapper watchdog must reserve overhead beyond the provider cap')
+                    elif spec['timeout_seconds'] != (1800 if m['phase'] == 'adoption-cold' else 600):
                         raise ValueError('run observation budget differs from protocol')
             if m['experiment'] == 'E1':
                 expected_code = 2 if 'vulnerable' in workload else 0
@@ -416,8 +417,10 @@ def collect_locked(root, block, registration):
     aggregates = {'trials.csv', 'commands.jsonl', 'events.jsonl', 'environments.jsonl'}
     protected = {name: checksum for name, checksum in entry_hashes.items() if name not in aggregates}
     protected['registration.json'] = digest(receipt_path)
+    protected.update({str(path.relative_to(root)): digest(path) for path in files(pair_dir)})
     checksum_inventory = digest(root / 'SHA256SUMS')
     allowed = set(protected) | aggregates | {'SHA256SUMS', 'stopped.json'}
+    active_directory = None
     def protect():
         if digest(root / 'SHA256SUMS') != checksum_inventory:
             raise ValueError('sealed checksum inventory changed during collection')
@@ -427,7 +430,7 @@ def collect_locked(root, block, registration):
                 raise ValueError('protected evidence changed during collection: ' + name)
         for path in files(root):
             name = str(path.relative_to(root))
-            if name not in allowed and pair_dir not in path.parents:
+            if name not in allowed and (active_directory is None or active_directory not in path.parents):
                 raise ValueError('unregistered evidence added during collection: ' + name)
     def command(spec, context, directory, step):
         result = execute(spec, context, directory, step, secrets)
@@ -436,7 +439,18 @@ def collect_locked(root, block, registration):
     safe = True
     try:
         for arm in slot['arms']:
+            if active_directory is not None:
+                protect()
+                snapshot = {str(path.relative_to(root)): digest(path) for path in files(active_directory)}
+                protected.update(snapshot)
+                allowed.update(snapshot)
+                checkpoint = pair_dir / 'completed-arm-hashes.json'
+                write_json(checkpoint, snapshot)
+                name = str(checkpoint.relative_to(root))
+                protected[name] = digest(checkpoint)
+                allowed.add(name)
             directory = pair_dir / arm
+            active_directory = directory
             directory.mkdir(mode=0o700)
             row = dict(slot, arm=arm, attempt=1, classification='not_started',
                        reason='cleanup_unproven', exit=None, elapsed_seconds=None,

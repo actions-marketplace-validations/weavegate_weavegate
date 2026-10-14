@@ -112,7 +112,7 @@ if step=='cleanup':
                                    for task in TASKS} for arm in ('baseline', 'candidate')}}
         for workload, arms in m['commands'].items():
             for arm, specs in arms.items():
-                specs['run']['timeout_seconds'] = 5400
+                specs['run']['timeout_seconds'] = 5700
                 m['expected_exit'][workload][arm] = [0]
         return m
 
@@ -1376,6 +1376,102 @@ else:
         receipt_valid(m, row, receipt, directory)
         self.assertNotEqual(receipt['metrics']['gate_seconds'], receipt['metrics']['adoption_seconds'])
 
+
+    def test_mate_hooks_cannot_replace_completed_arm_evidence(self):
+        for index, mutation in enumerate(('overwrite', 'delete', 'add')):
+            m = self.make_manifest()
+            slot = order(m)[0]
+            first, second = slot['arms']
+            specs = m['commands'][slot['workload']][second]
+            source = self.source / 'mate-mutation.json'
+            script = ("from pathlib import Path; p=Path('{campaign_dir}')/'blocks'/'{block_id}'/" +
+                      repr(first) + "; ")
+            script += { 'overwrite': "(p/'trial.json').write_text('{}')",
+                        'delete': "(p/'receipt.json').unlink()",
+                        'add': "(p/'replacement.log').write_text('replacement')"}[mutation]
+            specs['prepare']['argv'] = [sys.executable, '-c', script]
+            write_json(source, m)
+            bundle = self.root / ('mate-mutation-%d' % index)
+            freeze(source, bundle)
+            registration = self.root / ('mate-registration-%d.json' % index)
+            write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                     'order_sha256': digest(bundle / 'order.json'),
+                                     'registered_at': '2020-01-01T00:00:00Z',
+                                     'revision': 'constructed', 'public_url': 'https://example.invalid/constructed'})
+            with self.subTest(mutation=mutation):
+                with self.assertRaisesRegex(ValueError, 'refusing to reseal'):
+                    collect(bundle, slot['block'], registration)
+                self.assertTrue((bundle / 'blocks' / slot['block'] / 'integrity-error.json').exists())
+                self.assertTrue((bundle / 'blocks' / slot['block'] / second / 'cleanup.stdout').exists())
+                self.assertFalse((bundle / 'blocks' / slot['block'] / second / 'run.command.json').exists())
+                with self.assertRaises(ValueError):
+                    verify(bundle)
+
+    def test_oversized_integer_metrics_are_quality_failures_not_tracebacks(self):
+        self.hook.write_text(self.hook.read_text() + '''
+if step=='observe':
+ receipt=json.loads((p/'receipt.json').read_text())
+ receipt['metrics']['cpu_seconds']=10**309
+ (p/'receipt.json').write_text(json.dumps(receipt))
+''')
+        m = self.make_manifest()
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        self.assertTrue(collect(bundle, slot['block'], registration))
+        verify(bundle)
+        result = analyze(bundle, self.root / 'oversized-counter')
+        for arm in slot['arms']:
+            row = read_json(bundle / 'blocks' / slot['block'] / arm / 'trial.json')
+            self.assertTrue(row['started'])
+            self.assertTrue(row['cleanup_proven'])
+            self.assertEqual(row['classification'], 'quality_failure')
+            self.assertEqual(row['reason'], 'missing/invalid resource measurements')
+            self.assertNotIn('cpu_seconds', row['metrics'])
+            original = read_json(bundle / 'blocks' / slot['block'] / arm / 'receipt.json')
+            self.assertEqual(original['metrics']['cpu_seconds'], 10**309)
+            self.assertEqual(result['accounting'][slot['workload']][arm]['quality_failure'], 1)
+
+    def test_e2_wrapper_watchdog_reserves_overhead_without_changing_provider_cap(self):
+        m = self.e2_manifest()
+        for arms in m['commands'].values():
+            for spec in arms.values():
+                spec['run']['timeout_seconds'] = 5700
+        bundle, _ = self.frozen(m)
+        spec = m['commands']['external-acceptance']['baseline']['run']
+        process = Mock(pid=123)
+        def wait(timeout):
+            # 30 seconds before creation plus a valid 5,380-second workflow.
+            if timeout < 5410:
+                raise subprocess.TimeoutExpired('dispatch plus workflow', timeout)
+            return 0
+        process.wait.side_effect = wait
+        with patch('collector.subprocess.Popen', return_value=process):
+            result = execute(spec, {'trial_dir': self.root, 'block_id': 'test', 'redact_env': []},
+                             self.root, 'run', [])
+        self.assertFalse(result['timeout'])
+        self.assertIsNone(result['error'])
+        process.wait.assert_called_once_with(timeout=5700)
+        data, inventory = CITests().data()
+        origin = datetime.fromisoformat(data['run']['created_at'].replace('Z', '+00:00'))
+        for duration in (5380, 5401):
+            end = (origin + timedelta(seconds=duration)).isoformat()
+            data['run']['updated_at'] = end
+            for job in data['pages'][0]['jobs']:
+                if job['conclusion'] == 'skipped':
+                    continue
+                job['completed_at'] = end
+                for step in job['steps']:
+                    step['completed_at'] = end
+            if duration == 5380:
+                self.assertEqual(endpoint(data, inventory)['queue_inclusive_seconds'], 5380)
+            else:
+                with self.assertRaisesRegex(ValueError, 'capped'):
+                    endpoint(data, inventory)
+        for bad in (5399, 5400):
+            m['commands']['external-acceptance']['baseline']['run']['timeout_seconds'] = bad
+            with self.subTest(watchdog=bad), self.assertRaises(ValueError):
+                validate_manifest(m)
+        verify(bundle)
 
     def test_freeze_rejects_unspawnable_redaction_names(self):
         for index, name in enumerate(('BAD=NAME', 'BAD\0NAME')):
