@@ -218,6 +218,147 @@ if step=='cleanup':
                     self.assertFalse(destination.exists())
         self.frozen()  # Valid argv lists still freeze.
 
+    def test_freeze_rejects_unspawnable_environments(self):
+        for step in ('prepare', 'run', 'observe', 'check', 'cleanup'):
+            for index, env in enumerate(({'BAD=NAME': 'x'}, {'BAD\0NAME': 'x'},
+                                         {'NAME': 'bad\0value'})):
+                with self.subTest(step=step, env=env):
+                    with self.assertRaises(ValueError):
+                        subprocess.Popen([sys.executable, '-c', 'pass'], env=env)
+                    m = copy.deepcopy(self.manifest)
+                    m['commands']['example-fixed-replay']['baseline'][step]['env'] = env
+                    source = self.source / 'env-manifest.json'
+                    write_json(source, m)
+                    destination = self.root / ('env-%s-%d' % (step, index))
+                    with self.assertRaises(ValueError):
+                        freeze(source, destination)
+                    self.assertFalse(destination.exists())
+        self.frozen()
+
+    def test_freeze_requires_integer_versions(self):
+        for field in ('schema', 'protocol_revision'):
+            for index, value in enumerate((True, False, 1.0, '1', None, 0, -1)):
+                m = copy.deepcopy(self.manifest)
+                m[field] = value
+                source = self.source / 'version-manifest.json'
+                write_json(source, m)
+                destination = self.root / ('version-%s-%d' % (field, index))
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(ValueError):
+                        freeze(source, destination)
+                    self.assertFalse(destination.exists())
+        self.frozen()
+
+    def test_future_protocol_freeze_requires_string_seed(self):
+        for experiment in ('E3', 'E4'):
+            for index, seed in enumerate((1, True, None, [], {}, '', '   ')):
+                m = copy.deepcopy(self.manifest)
+                m.update(experiment=experiment, seed=seed)
+                source = self.source / 'seed-manifest.json'
+                write_json(source, m)
+                destination = self.root / ('seed-%s-%d' % (experiment, index))
+                with self.subTest(experiment=experiment, seed=seed):
+                    with self.assertRaises(ValueError):
+                        freeze(source, destination)
+                    self.assertFalse(destination.exists())
+            m.update(seed='future-protocol-seed', protocol_revision=2)
+            write_json(source, m)
+            bundle = self.root / ('valid-seed-' + experiment)
+            freeze(source, bundle)
+            self.assertEqual(read_json(bundle / 'order.json'), order(m))
+            analyze(bundle, self.root / ('future-analysis-' + experiment))
+
+    def test_collection_rejects_malformed_registration_before_entering_slot(self):
+        bundle, registration = self.frozen()
+        valid = read_json(registration)
+        bad_urls = (True, 1, {}, [], None, '', '   ', 'relative/path',
+                    'ftp://example.invalid/archive', 'https:///archive',
+                    'https://', 'https://example.invalid:bad/archive',
+                    'https://example.invalid/a\nb', 'https://user:pass@example.invalid/archive')
+        for field, values in (('public_url', bad_urls),
+                              ('revision', (True, 1, {}, [], None, '', '   '))):
+            for value in values:
+                reg = dict(valid, **{field: value})
+                write_json(registration, reg)
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(ValueError):
+                        collect(bundle, self.block(bundle), registration)
+                    self.assertFalse((bundle / 'blocks').exists())
+                    self.assertFalse((bundle / 'registration.json').exists())
+                    verify(bundle)
+        write_json(registration, valid)
+        self.assertTrue(collect(bundle, self.block(bundle), registration))
+        write_json(bundle / 'registration.json', dict(valid, public_url=True))
+        seal(bundle)
+        with self.assertRaisesRegex(ValueError, 'registration'):
+            analyze(bundle, self.root / 'invalid-registration-analysis')
+        self.assertFalse((self.root / 'invalid-registration-analysis').exists())
+
+    def test_report_preserves_campaign_metadata_without_markdown_injection(self):
+        m = copy.deepcopy(self.manifest)
+        m.update(experiment='E3', campaign_id='campaign`\n# injected <tag>|**bold**',
+                 phase='phase``\r\n## injected')
+        bundle, _ = self.frozen(m)
+        result = analyze(bundle, self.root / 'metadata')
+        report = (self.root / 'metadata/report.md').read_text()
+        self.assertEqual(result['campaign'], m['campaign_id'])
+        self.assertEqual(result['phase'], m['phase'])
+        header = report.splitlines()[2]
+        self.assertEqual(header, 'Campaign: `` campaign` # injected <tag>|**bold** `` '
+                         '(E3 / ``` phase``  ## injected ```).')
+        self.assertNotIn('\n# injected', report)
+        self.assertNotIn('\n## injected', report)
+
+    def test_report_includes_arm_distributions_and_every_planned_date(self):
+        m = self.e2_manifest()
+        bundle, registration = self.frozen(m)
+        shutil.copyfile(registration, bundle / 'registration.json')
+        seal(bundle)
+        state = {'missing_second_date': False}
+        def constructed_row(root, manifest, slot, arm):
+            index = int(slot['block_id'])
+            baseline = (10 if slot['date_slot'] == '01' else 20) + index
+            value = baseline if arm == 'baseline' else baseline / (2 if slot['date_slot'] == '01' else 4)
+            missing = state['missing_second_date'] and slot['date_slot'] == '02'
+            return dict(slot, arm=arm, attempt=1, started=not missing, cleanup_proven=not missing,
+                        classification='not_started' if missing else 'complete',
+                        reason='slot_not_collected' if missing else '', exit=0, elapsed_seconds=1,
+                        metrics={'validation_seconds': value, 'runner_minutes': value,
+                                 'peak_runner_concurrency': 0},
+                        facts={'schedule': 'sch_constructed', 'host': 'test',
+                               'ci_created_at': '2026-10-13T00:00:00Z',
+                               'ci_completed_at': '2026-10-13T00:00:00Z'})
+        for missing in (False, True):
+            state['missing_second_date'] = missing
+            output = self.root / ('distributions-' + str(missing))
+            with patch('analysis.trial', side_effect=constructed_row):
+                result = analyze(bundle, output)
+            report = (output / 'report.md').read_text()
+            self.assertIn('Improvement 95% interval', report)
+            self.assertIn('Baseline median', report)
+            self.assertIn('Candidate median', report)
+            self.assertIn('IQR [Q1, Q3]', report)
+            endpoint = result['estimates']['external-acceptance']['validation_seconds']
+            display = lambda v: 'N/A' if v is None else '%.9g' % v
+            self.assertIn('| validation_seconds | %d | %s | %s |' %
+                          (endpoint['n'], display(endpoint['improvement']),
+                           '[%s, %s]' % tuple(map(display, endpoint['interval']['improvement']))
+                           if endpoint['interval'] else 'N/A'), report)
+            for arm in ('baseline', 'candidate'):
+                summary = endpoint[arm]
+                self.assertIn('%s | [%s, %s]' % (display(summary['median']),
+                              display(summary['q1']), display(summary['q3'])), report)
+            for slot, date in enumerate(m['dates'], 1):
+                summary = endpoint['by_date']['%02d' % slot]
+                self.assertIn('| external-acceptance | validation_seconds | %02d | %s | 3 | %d | %s | %s |' %
+                              (slot, date, summary['n'], display(summary['ratio']),
+                               display(summary['difference'])), report)
+            self.assertIn('| peak_runner_concurrency |', report)
+            if missing:
+                self.assertIn('| validation_seconds | 3 | 0.5 | N/A |', report)
+            else:
+                self.assertIsNone(result['estimates']['external-acceptance']['peak_runner_concurrency']['improvement'])
+
     def test_freeze_requires_deviation_string_lists(self):
         for index, deviations in enumerate((1, True, None, 'deviation', {},
                                             [1], [True], [None], [{}], [[]])):
@@ -253,10 +394,14 @@ if step=='cleanup':
         self.assertNotIn('custom\nrow', report)
         for metrics in result['estimates'].values():
             self.assertTrue(set(names) <= set(metrics))
-        table = report.split('| Workload | Metric |', 1)[1]
-        for line in table.splitlines():
-            if line.startswith('| example-') or line.startswith('| spring-'):
-                self.assertEqual(line.count('|'), 9)
+        tables = [section for section in report.split('\n\n')
+                  if section.startswith('| Workload | Metric |')]
+        self.assertEqual(len(tables), 3)
+        for table, separators in zip(tables, (9, 10, 9)):
+            self.assertIn('| latency&#124;p95 |', table)
+            self.assertIn('| custom<br>row&lt;value&gt;&amp; |', table)
+            for line in table.splitlines():
+                self.assertEqual(line.count('|'), separators)
 
     def test_freeze_requires_lowercase_execution_sha(self):
         m = self.e2_manifest()

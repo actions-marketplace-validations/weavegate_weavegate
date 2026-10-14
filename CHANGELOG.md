@@ -20,6 +20,11 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Fixed
 
+- Experiment campaigns reject unspawnable environments, non-integer versions,
+  malformed seeds and registration provenance before consuming an assigned
+  block. Markdown reports safely display campaign metadata and include
+  improvement intervals, both arm medians/IQRs and all planned date estimates.
+  See `experiments/gate-performance/harness/README.md`.
 - Experiment campaigns reject malformed command argument lists and deviations
   before freeze, count started attempts despite later execution errors, and
   escape custom metric names in Markdown reports. See

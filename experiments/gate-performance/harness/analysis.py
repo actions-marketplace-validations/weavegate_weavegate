@@ -1,13 +1,14 @@
 """Rebuild accounting and paired estimates from a sanitized, sealed bundle."""
 import json
 import math
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
 from common import (E1_RESOURCES, E2_RESOURCES, child, counter, digest, json_equal, order,
                     read_json, sha, verify, write_csv, write_json)
-from collector import receipt_valid, succeeded, validate_manifest
+from collector import receipt_valid, succeeded, validate_manifest, validate_registration
 
 
 def quantile(values, p):
@@ -127,6 +128,7 @@ def analyze(root, output):
     if any(r['started'] for r in rows):
         from common import timestamp
         reg = read_json(root / 'registration.json')
+        validate_registration(reg)
         if reg['campaign_sha256'] != digest(root / 'campaign.json') or reg['order_sha256'] != digest(root / 'order.json'):
             raise ValueError('registration hash mismatch')
         for command in root.glob('blocks/*/*/*.command.json'):
@@ -215,8 +217,12 @@ def analyze(root, output):
               'attempt', 'started', 'classification', 'reason', 'exit', 'elapsed_seconds')}
               for r in rows], ['block', 'workload', 'date_slot', 'arm', 'attempt', 'started',
                                'classification', 'reason', 'exit', 'elapsed_seconds'])
-    lines = ['# Campaign analysis', '', 'Campaign: `%s` (%s / %s).' %
-             (m['campaign_id'], m['experiment'], m['phase']), '',
+    def inline_code(value):
+        text = str(value).replace('\n', ' ').replace('\r', ' ')
+        fence = '`' * (max((len(run) for run in re.findall(r'`+', text)), default=0) + 1)
+        return fence + ' ' + text + ' ' + fence
+    lines = ['# Campaign analysis', '', 'Campaign: %s (%s / %s).' %
+             (inline_code(m['campaign_id']), m['experiment'], inline_code(m['phase'])), '',
              'Decision: **%s**.' % decision['status'], '']
     def display(number):
         return 'N/A' if number is None else '%.9g' % number
@@ -295,8 +301,31 @@ def analyze(root, output):
                          (cell(workload), cell(metric), value['n'], display(value['ratio']),
                           interval_display(value, 'ratio'), display(value['difference']),
                           interval_display(value, 'difference'), interval_reason(value)))
-    lines += ['', 'Full intervals, per-date estimates, arm summaries, all failure counts and',
-              'pair reasons are in `results.json`; every planned slot is in `trials.csv`.',
+    lines += ['', '| Workload | Metric | Pairs | Improvement (1 - ratio) | Improvement 95% interval | Baseline median | Baseline IQR [Q1, Q3] | Candidate median | Candidate IQR [Q1, Q3] |',
+              '| --- | --- | ---: | ---: | --- | ---: | --- | ---: | --- |']
+    for workload, metrics in results.items():
+        for metric, value in metrics.items():
+            def arm_summary(arm):
+                summary = value.get(arm, {})
+                return (display(summary.get('median')), '[%s, %s]' %
+                        (display(summary['q1']), display(summary['q3'])) if summary else 'N/A')
+            lines.append('| %s | %s | %d | %s | %s | %s | %s | %s | %s |' %
+                         (cell(workload), cell(metric), value['n'], display(value.get('improvement')),
+                          interval_display(value, 'improvement'), *arm_summary('baseline'),
+                          *arm_summary('candidate')))
+    lines += ['', '| Workload | Metric | Date slot | UTC date | Planned pairs | Valid pairs | Geometric ratio | Mean difference |',
+              '| --- | --- | --- | --- | ---: | ---: | ---: | ---: |']
+    for workload, metrics in results.items():
+        for metric, value in metrics.items():
+            for index, planned in enumerate(m['strata'][workload]):
+                slot = '%02d' % (index + 1)
+                summary = value.get('by_date', {}).get(slot, {})
+                lines.append('| %s | %s | %s | %s | %d | %d | %s | %s |' %
+                             (cell(workload), cell(metric), slot, m['dates'][index], planned,
+                              summary.get('n', 0), display(summary.get('ratio')),
+                              display(summary.get('difference'))))
+    lines += ['', 'Exact estimates, intervals, arm summaries, date estimates, all failure counts',
+              'and pair reasons are also in `results.json`; every planned slot is in `trials.csv`.',
               '', 'Secondary endpoints are descriptive. Results are conditional on the',
               'registered dates, environments, caches and workload. No p99, labor savings',
               'or broad application claim follows from this analysis.', '']

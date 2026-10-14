@@ -51,7 +51,10 @@ python3 -B campaign/analysis/source/tool.py analyze campaign campaign-analysis
 After `freeze` and before any `collect`, publish `campaign.json`, `order.json`,
 protocol copies and pins in a public commit or immutable archive. Create
 `registration.json` with `campaign_sha256` and `order_sha256` (SHA-256 of retained
-bytes), `registered_at` (UTC), `revision` and `public_url`. The collector checks
+bytes), `registered_at` (UTC), `revision` (nonempty string) and `public_url`
+(absolute HTTP/HTTPS URL with a hostname, without credentials, whitespace or
+control characters). Collection validates provenance syntax before entering a
+block, and analysis rechecks it for started campaigns. The collector checks
 hashes and temporal precedence and retains this receipt unchanged. It does not
 authenticate an archive's timestamp or prove that the URL was public; an
 independent auditor must verify that registration evidence. The demo uses an
@@ -89,8 +92,8 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 
 | Field | Contract |
 | --- | --- |
-| `schema`, `campaign_id`, `experiment`, `phase`, `protocol_revision` | Schema `1`, unique campaign identity, `E1`–`E4`, registered phase/revision. E1/E2 support `pilot`, `confirmation`, and E1 `adoption-cold`. |
-| `seed`, `strata`, `dates` | Published seed for E1/E2, workload-to-date-slot count arrays, distinct increasing UTC dates. All registered slots are created before measurement. |
+| `schema`, `campaign_id`, `experiment`, `phase`, `protocol_revision` | Integer schema `1`, nonempty string campaign identity, `E1`–`E4`, registered phase and positive integer revision. Booleans and floating-point versions fail before freeze. E1/E2 require revision `1` and support `pilot`, `confirmation`, and E1 `adoption-cold`. |
+| `seed`, `strata`, `dates` | Nonempty string seed for E1–E4 (the published seed for E1/E2), workload-to-date-slot count arrays, distinct increasing UTC dates. All registered slots are created before measurement; malformed seeds fail before creating a campaign. |
 | `protocols` | Filename to `{path, sha256}`; E1/E2 require exact copies of the three protocol files shipped with this collector. |
 | `pins` | `{path, sha256, role}` entries copied from the manifest's directory to `pins/`. Include release checksums, binaries/JARs, inputs, dependency locks/trees, treatment diffs and hook/checker sources. |
 | `execution_pins` | `{path, sha256, role}` entries for absolute live paths checked at freeze, before collection, before the measured command and before cleanup. Pin every executable, hook, JAR and input actually used. |
@@ -107,7 +110,9 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 
 A command specification contains exact `argv` (nonempty list of strings), `cwd` (nonempty string
 working directory), `env` (explicit allowlisted values) and `timeout_seconds`.
-Invalid argument lists fail before a campaign directory is created.
+Environment names and values must be strings; names cannot contain `=`, and
+neither names nor values may contain NUL. Invalid argument lists or environments
+fail before a campaign directory is created.
 No shell is introduced by the
 collector. Tokens `{trial_dir}`, `{campaign_dir}`, `{block_id}`, `{arm}` expand
 at execution. Use absolute executable paths or explicitly supply `PATH`.
@@ -273,15 +278,21 @@ bootstrap intervals. `trials.json`/`trials.csv` retain every planned slot and
 failed attempt's elapsed duration/exit. `report.md` is a concise derived table.
 Output also retains the analyzer source, exact command and input inventory hash.
 Moving the input bundle does not change the numeric tables.
-`report.md` shows ratio and absolute-difference 95% bootstrap intervals with
-each estimate, including reasons for unavailable intervals. E1/E2 confirmation
+`report.md` shows ratio, improvement (`1 - ratio`) and absolute-difference
+estimates and 95% bootstrap intervals, both arm medians and IQRs (`[Q1, Q3]`),
+and each planned date's ratio/difference estimates beside planned/valid counts.
+Missing dates remain visible with zero valid pairs and N/A estimates; undefined
+ratios also leave improvement undefined. Interval limitations remain explicit.
+E1/E2 confirmation
 reports also show the primary ratio/interval, fixed threshold, upper-bound rule
 and decision reasons. Pilot estimates remain descriptive.
 The report also includes registered arms, quality inventory, planned/started
 and every outcome denominator by workload/arm, failure-reason counts, excluded
 blocks with pair reasons, registered deviations and stopped-campaign status.
-Custom metric names are escaped in the Markdown table; JSON retains the exact
-registered names, including delimiters and line breaks.
+Custom metric names are escaped in every Markdown table. Campaign identity and
+phase use inline-code delimiters longer than any contained backtick run, with
+line breaks displayed as spaces. JSON retains exact registered names and
+metadata, including delimiters and line breaks.
 
 No missing duration is zero, no attempt is replaced, and phases/workloads are
 never pooled. Fewer than two valid pairs in any planned date suppresses the

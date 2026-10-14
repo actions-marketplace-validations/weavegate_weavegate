@@ -11,6 +11,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from common import (E1_RESOURCES, E2_RESOURCES, INVENTORIES, PROTOCOLS, QUALITY,
                     SEED, canonical, child, counter, digest, files, json_equal, order,
@@ -28,10 +29,13 @@ def string_inventory(value, name, allow_empty=False):
 
 
 def validate_manifest(m):
-    if m.get('schema') != 1 or m.get('experiment') not in ('E1', 'E2', 'E3', 'E4'):
+    if type(m.get('schema')) is not int or m['schema'] != 1 or m.get('experiment') not in ('E1', 'E2', 'E3', 'E4'):
         raise ValueError('expected schema 1 and E1/E2/E3/E4')
-    if not m.get('campaign_id') or not m.get('protocol_revision'):
+    if (not isinstance(m.get('campaign_id'), str) or not m['campaign_id'].strip()
+            or type(m.get('protocol_revision')) is not int or m['protocol_revision'] < 1):
         raise ValueError('campaign identity and protocol revision required')
+    if not isinstance(m.get('seed'), str) or not m['seed'].strip():
+        raise ValueError('seed must be a nonempty string')
     for name in INVENTORIES:
         if not isinstance(m.get(name), dict) or not m[name]:
             raise ValueError('missing inventory: ' + name)
@@ -95,7 +99,9 @@ def validate_manifest(m):
                         or not isinstance(spec.get('cwd'), str) or not spec['cwd']
                         or not positive(spec.get('timeout_seconds'))
                         or not isinstance(spec.get('env'), dict)
-                        or not all(isinstance(k, str) and isinstance(v, str) for k, v in spec['env'].items())
+                        or not all(isinstance(k, str) and isinstance(v, str)
+                                   and '=' not in k and '\0' not in k and '\0' not in v
+                                   for k, v in spec['env'].items())
                         or not positive(spec.get('cancel_grace_seconds', 25))):
                     raise ValueError('invalid command: ' + step)
                 if m['experiment'] in ('E1', 'E2') and step == 'run':
@@ -317,6 +323,22 @@ def collect(root, block, registration):
         return collect_locked(root, block, registration)
 
 
+def validate_registration(reg):
+    """Check provenance syntax, not public availability or timestamp authenticity."""
+    if (not isinstance(reg, dict) or
+            any(not isinstance(reg.get(key), str) or not reg[key].strip()
+                for key in ('public_url', 'revision'))):
+        raise ValueError('invalid public registration receipt')
+    url = reg['public_url']
+    if any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in url):
+        raise ValueError('invalid public registration URL')
+    parsed = urlsplit(url)
+    if (parsed.scheme not in ('http', 'https') or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None):
+        raise ValueError('invalid public registration URL')
+    parsed.port  # Reject malformed or out-of-range ports without fetching the URL.
+
+
 def collect_locked(root, block, registration):
     root = Path(root).resolve()
     verify(root)
@@ -332,10 +354,10 @@ def collect_locked(root, block, registration):
     if read_json(root / 'order.json') != order(m):
         raise ValueError('registered order differs')
     reg = read_json(registration)
+    validate_registration(reg)
     if (reg['campaign_sha256'] != digest(root / 'campaign.json') or
             reg['order_sha256'] != digest(root / 'order.json') or
-            timestamp(reg['registered_at']) >= timestamp(utc()) or
-            not reg.get('public_url') or not reg.get('revision')):
+            timestamp(reg['registered_at']) >= timestamp(utc())):
         raise ValueError('invalid public registration receipt')
     receipt_path = root / 'registration.json'
     if receipt_path.exists() and read_json(receipt_path) != reg:
