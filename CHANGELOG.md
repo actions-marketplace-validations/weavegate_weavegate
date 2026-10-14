@@ -20,6 +20,11 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Fixed
 
+- Experiment campaigns reject malformed E3/E4 phases and unspawnable executable,
+  argument and working-directory strings before freeze, and classify malformed
+  environment/resource provenance as quality failures during collection and
+  reanalysis. E2 reports always include both derived queue endpoints. See
+  `experiments/gate-performance/harness/README.md`.
 - Experiment campaigns reject unspawnable environments, non-integer versions,
   malformed seeds and registration provenance before consuming an assigned
   block. Markdown reports safely display campaign metadata and include

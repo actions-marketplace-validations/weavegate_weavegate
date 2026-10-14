@@ -92,7 +92,7 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 
 | Field | Contract |
 | --- | --- |
-| `schema`, `campaign_id`, `experiment`, `phase`, `protocol_revision` | Integer schema `1`, nonempty string campaign identity, `E1`–`E4`, registered phase and positive integer revision. Booleans and floating-point versions fail before freeze. E1/E2 require revision `1` and support `pilot`, `confirmation`, and E1 `adoption-cold`. |
+| `schema`, `campaign_id`, `experiment`, `phase`, `protocol_revision` | Integer schema `1`, nonempty string campaign identity, `E1`–`E4`, nonempty string registered phase and positive integer revision. Booleans and floating-point versions fail before freeze; malformed phases fail before creating a bundle, including for E3/E4. E1/E2 require revision `1` and support `pilot`, `confirmation`, and E1 `adoption-cold`. |
 | `seed`, `strata`, `dates` | Nonempty string seed for E1–E4 (the published seed for E1/E2), workload-to-date-slot count arrays, distinct increasing UTC dates. All registered slots are created before measurement; malformed seeds fail before creating a campaign. |
 | `protocols` | Filename to `{path, sha256}`; E1/E2 require exact copies of the three protocol files shipped with this collector. |
 | `pins` | `{path, sha256, role}` entries copied from the manifest's directory to `pins/`. Include release checksums, binaries/JARs, inputs, dependency locks/trees, treatment diffs and hook/checker sources. |
@@ -108,8 +108,11 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 | `ci` | E2 `owner/repo`, full lowercase 40-hex common `execution_sha`, and required `tasks` mappings for both arms (below), validated before freeze; workflow/action/ruleset pins belong in the inventories. |
 | `deviations` | Optional list of strings disclosing departures from the registered design, validated before freeze; an omitted or empty list is allowed. A nonempty list prevents favorable confirmatory claims. |
 
-A command specification contains exact `argv` (nonempty list of strings), `cwd` (nonempty string
-working directory), `env` (explicit allowlisted values) and `timeout_seconds`.
+A command specification contains exact `argv` (nonempty list of strings with a
+nonempty executable at index 0), `cwd` (nonempty string working directory),
+`env` (explicit allowlisted values) and `timeout_seconds`.
+Argument strings and working directories cannot contain NUL; empty arguments
+after the executable are allowed.
 Environment names and values must be strings; names cannot contain `=`, and
 neither names nor values may contain NUL. Invalid argument lists or environments
 fail before a campaign directory is created.
@@ -173,8 +176,10 @@ Its successful exit and actual logs are retained. A `receipt.json` contains:
   `peak_memory_bytes`, `containers_created`, `peak_containers`,
   `disk_write_bytes`, `artifact_bytes`, `cache_bytes`; E2 requires
   `runner_minutes`, `peak_runner_concurrency`.
-- `environment`: observed host/allocation/runtime/cache identities.
-- `resource_method`: counter scope, reset/timer boundaries and collection
+- `environment`: a nonempty object of observed host/allocation/runtime/cache
+  identities.
+- `resource_method`: a nonempty description string giving counter scope,
+  reset/timer boundaries and collection
   overhead; include CLI descendants and MySQL, with the protocol's 100 ms
   cadence and sampled-peak limitation if sampling memory.
 - `evidence`: relative file paths mapped to hashes of sanitized retained bytes.
@@ -184,6 +189,11 @@ Its successful exit and actual logs are retained. A `receipt.json` contains:
 The collector supplies E1's primary duration from its own monotonic clock and
 checks evidence hashes. The analyzer rechecks receipts, original evidence,
 commands and cleanup rather than trusting the derived trial classification.
+Both collection and analysis reject scalar environment inventories and
+non-string or blank resource descriptions as quality failures. The frozen
+checker and independent auditor still validate experiment-specific identities,
+scope, units and boundary completeness; structural validation cannot certify
+an honest or complete measurement method.
 The quality interface composes campaign checkers; a boolean alone does not
 establish the underlying Oracle, isolation or telemetry semantics.
 Non-object observation JSON remains retained as failed evidence. It supplies
@@ -228,7 +238,9 @@ runner ID; missing identity makes telemetry incomplete rather than omitting
 that job's timing or cost. Required jobs must have a start timestamp.
 It derives `validation_seconds`, `queue_inclusive_seconds`,
 `initial_queue_seconds`, `runner_minutes`, `peak_runner_concurrency` from UTC
-provider timestamps. Failed and matrix jobs contribute runner cost; skipped
+provider timestamps. Both queue endpoints always appear in E2 analysis and
+reports, even when optional `analysis_metrics` is omitted, so improved validation
+time retains its observed queue effects. Failed and matrix jobs contribute runner cost; skipped
 jobs do not. Concurrency uses half-open intervals and does not sum parallel
 jobs as wall time. It validates all derived receipt values exactly.
 The 90-minute outer cap starts at run creation and covers the latest started-job

@@ -167,6 +167,8 @@ def analyze(root, output):
         metrics = sorted(set(m['resource_metrics']) | set(m.get('analysis_metrics', [])))
         if m['experiment'] in ('E1', 'E2'):
             metrics.append('gate_seconds' if m['experiment'] == 'E1' else 'validation_seconds')
+        if m['experiment'] == 'E2':
+            metrics.extend(('queue_inclusive_seconds', 'initial_queue_seconds'))
         if m['experiment'] == 'E1' and m['phase'] == 'adoption-cold':
             metrics.append('adoption_seconds')
         results[workload] = {}

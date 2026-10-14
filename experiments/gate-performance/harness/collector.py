@@ -36,6 +36,8 @@ def validate_manifest(m):
         raise ValueError('campaign identity and protocol revision required')
     if not isinstance(m.get('seed'), str) or not m['seed'].strip():
         raise ValueError('seed must be a nonempty string')
+    if not isinstance(m.get('phase'), str) or not m['phase'].strip():
+        raise ValueError('phase must be a nonempty string')
     for name in INVENTORIES:
         if not isinstance(m.get(name), dict) or not m[name]:
             raise ValueError('missing inventory: ' + name)
@@ -95,8 +97,9 @@ def validate_manifest(m):
                 raise ValueError('expected facts must be nonempty objects')
             for step, spec in commands.items():
                 if (not isinstance(spec.get('argv'), list) or not spec['argv']
-                        or not all(isinstance(a, str) for a in spec['argv'])
-                        or not isinstance(spec.get('cwd'), str) or not spec['cwd']
+                        or not all(isinstance(a, str) and '\0' not in a for a in spec['argv'])
+                        or not spec['argv'][0]
+                        or not isinstance(spec.get('cwd'), str) or not spec['cwd'] or '\0' in spec['cwd']
                         or not positive(spec.get('timeout_seconds'))
                         or not isinstance(spec.get('env'), dict)
                         or not all(isinstance(k, str) and isinstance(v, str)
@@ -288,7 +291,8 @@ def receipt_valid(m, row, receipt, directory):
         raise ValueError('missing paired comparison facts')
     if any(not counter(receipt.get('metrics', {}).get(name)) for name in m['resource_metrics']):
         raise ValueError('missing/invalid resource measurements')
-    if not receipt.get('environment') or not receipt.get('resource_method'):
+    if (not isinstance(receipt.get('environment'), dict) or not receipt['environment']
+            or not isinstance(receipt.get('resource_method'), str) or not receipt['resource_method'].strip()):
         raise ValueError('observed environment and resource provenance required')
     evidence = receipt.get('evidence', {})
     if not evidence:

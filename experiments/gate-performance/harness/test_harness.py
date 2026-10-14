@@ -16,7 +16,7 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from analysis import analyze, estimate, quantile
+from analysis import analyze, estimate, quantile, trial as analyzed_trial
 from ci import TASKS, endpoint, snapshot
 from collector import collect, execute, freeze, receipt_valid, validate_manifest
 from common import (E1_RESOURCES, E2_RESOURCES, PROTOCOLS, QUALITY, SEED, canonical,
@@ -267,6 +267,45 @@ if step=='cleanup':
             freeze(source, bundle)
             self.assertEqual(read_json(bundle / 'order.json'), order(m))
             analyze(bundle, self.root / ('future-analysis-' + experiment))
+
+    def test_future_protocol_freeze_requires_string_phase(self):
+        for experiment in ('E3', 'E4'):
+            for index, phase in enumerate((1, True, None, [], {}, '', '   ')):
+                m = copy.deepcopy(self.manifest)
+                m.update(experiment=experiment, phase=phase)
+                source = self.source / 'phase-manifest.json'
+                write_json(source, m)
+                destination = self.root / ('phase-%s-%d' % (experiment, index))
+                with self.subTest(experiment=experiment, phase=phase):
+                    with self.assertRaises(ValueError):
+                        freeze(source, destination)
+                    self.assertFalse(destination.exists())
+            m['phase'] = 'custom phase'
+            write_json(source, m)
+            destination = self.root / ('valid-phase-' + experiment)
+            freeze(source, destination)
+            self.assertEqual(read_json(destination / 'order.json'), order(m))
+
+    def test_freeze_rejects_unspawnable_command_strings(self):
+        mutations = (('argv', ['', 'argument']), ('argv', ['bad\0executable']),
+                     ('argv', [sys.executable, 'bad\0argument']), ('cwd', 'bad\0directory'))
+        for step in ('prepare', 'run', 'observe', 'check', 'cleanup'):
+            for index, (field, value) in enumerate(mutations):
+                m = copy.deepcopy(self.manifest)
+                spec = m['commands']['example-fixed-replay']['baseline'][step]
+                spec[field] = value
+                source = self.source / 'command-string-manifest.json'
+                write_json(source, m)
+                destination = self.root / ('command-string-%s-%d' % (step, index))
+                with self.subTest(step=step, field=field, value=value):
+                    with self.assertRaises((ValueError, OSError)):
+                        subprocess.Popen(spec['argv'], cwd=spec['cwd'], env=spec['env'])
+                    with self.assertRaises(ValueError):
+                        freeze(source, destination)
+                    self.assertFalse(destination.exists())
+        # Empty non-executable arguments are legal and must not be rejected.
+        self.manifest['commands']['example-fixed-replay']['baseline']['run']['argv'].append('')
+        self.frozen()
 
     def test_collection_rejects_malformed_registration_before_entering_slot(self):
         bundle, registration = self.frozen()
@@ -637,6 +676,103 @@ if step=='observe':
         receipt['facts']['schedule_runs'] = 20.0
         receipt_valid(m, row, receipt, directory)
 
+    def test_receipt_requires_structured_environment_and_descriptive_method(self):
+        directory = self.root / 'provenance'
+        directory.mkdir()
+        (directory / 'proof.log').write_text('constructed provenance evidence')
+        row = {'workload': 'example-fixed-replay', 'arm': 'baseline'}
+        receipt = {'checks': dict.fromkeys(QUALITY, True),
+                   'facts': dict(self.manifest['expected_facts'][row['workload']][row['arm']], host='test'),
+                   'metrics': dict(dict.fromkeys(E1_RESOURCES, 1), gate_seconds=1),
+                   'environment': {'host': 'test', 'allocation': 'constructed'},
+                   'resource_method': 'constructed scope, units and reset boundaries',
+                   'evidence': {'proof.log': digest(directory / 'proof.log')}}
+        receipt_valid(self.manifest, row, receipt, directory)
+        for field, values in (('environment', (True, 1, 'host', ['host'], {}, None)),
+                              ('resource_method', (True, 1, [], {'scope': 'test'}, '', '   ', None))):
+            for value in values:
+                bad = dict(receipt, **{field: value})
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, 'provenance'):
+                    receipt_valid(self.manifest, row, bad, directory)
+
+    def test_collection_rejects_scalar_provenance_and_preserves_cleanup(self):
+        self.hook.write_text(self.hook.read_text() + '''
+if step=='observe':
+ receipt=json.loads((p/'receipt.json').read_text())
+ receipt.update(environment=True,resource_method=True)
+ (p/'receipt.json').write_text(json.dumps(receipt))
+''')
+        m = self.make_manifest()
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        self.assertTrue(collect(bundle, slot['block'], registration))
+        for arm in slot['arms']:
+            row = read_json(bundle / 'blocks' / slot['block'] / arm / 'trial.json')
+            self.assertTrue(row['started'])
+            self.assertTrue(row['cleanup_proven'])
+            self.assertEqual(row['classification'], 'quality_failure')
+            self.assertIn('provenance', row['reason'])
+        verify(bundle)
+
+    def test_analysis_rechecks_original_receipt_provenance(self):
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        collect(bundle, slot['block'], registration)
+        directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+        receipt = read_json(directory / 'receipt.json')
+        self.assertEqual(analyzed_trial(bundle, self.manifest, slot, slot['arms'][0])['classification'], 'complete')
+        for index, (field, value) in enumerate((('environment', True), ('environment', 'host'),
+                                               ('resource_method', True), ('resource_method', {'scope': 'test'}))):
+            write_json(directory / 'receipt.json', dict(receipt, **{field: value}))
+            seal(bundle)  # Construct a coherent bundle containing a malformed original.
+            result = analyze(bundle, self.root / ('provenance-analysis-%d' % index))
+            counts = result['accounting'][slot['workload']][slot['arms'][0]]
+            self.assertEqual(counts['quality_failure'], 1)
+            self.assertEqual(result['paired_missingness'][slot['block']],
+                             ['observed environment and resource provenance required'])
+
+    def test_e2_analysis_always_reports_provider_queue_metrics(self):
+        m = self.e2_manifest()
+        self.assertNotIn('analysis_metrics', m)
+        bundle, registration = self.frozen(m)
+        shutil.copyfile(registration, bundle / 'registration.json')
+        seal(bundle)
+        data, inventory = CITests().data()
+        baseline = endpoint(data, inventory)
+        candidate_data = copy.deepcopy(data)
+        origin = datetime.fromisoformat(data['run']['created_at'].replace('Z', '+00:00'))
+        def delayed_shorter(value):
+            elapsed = (datetime.fromisoformat(value.replace('Z', '+00:00')) - origin).total_seconds()
+            return (origin + timedelta(seconds=20 + (elapsed - 5) / 2)).isoformat()
+        candidate_data['run']['updated_at'] = delayed_shorter(data['run']['updated_at'])
+        for job in candidate_data['pages'][0]['jobs']:
+            if job['conclusion'] == 'skipped':
+                continue
+            for field in ('started_at', 'completed_at'):
+                job[field] = delayed_shorter(job[field])
+            for step in job['steps']:
+                for field in ('started_at', 'completed_at'):
+                    if field in step:
+                        step[field] = delayed_shorter(step[field])
+        candidate = endpoint(candidate_data, inventory)
+        def constructed_row(root, manifest, slot, arm):
+            return dict(slot, arm=arm, attempt=1, started=True, cleanup_proven=True,
+                        classification='complete', reason='', exit=0, elapsed_seconds=1,
+                        metrics=baseline if arm == 'baseline' else candidate,
+                        facts={'schedule': 'sch_constructed', 'host': 'test',
+                               'ci_created_at': '2026-10-13T00:00:00Z',
+                               'ci_completed_at': '2026-10-13T00:00:00Z'})
+        with patch('analysis.trial', side_effect=constructed_row):
+            result = analyze(bundle, self.root / 'queue-analysis')
+        estimates = result['estimates']['external-acceptance']
+        self.assertAlmostEqual(estimates['validation_seconds']['ratio'], .5)
+        report = (self.root / 'queue-analysis/report.md').read_text()
+        for metric in ('queue_inclusive_seconds', 'initial_queue_seconds'):
+            self.assertEqual(estimates[metric]['n'], 6)
+            self.assertAlmostEqual(estimates[metric]['ratio'], candidate[metric] / baseline[metric])
+            self.assertGreater(estimates[metric]['ratio'], 1)
+            self.assertIsNotNone(estimates[metric]['interval'])
+            self.assertIn('| %s | 6 |' % metric, report)
     def test_ci_pairing_facts_must_match_retained_provider_boundaries(self):
         m = self.e2_manifest()
         data, inventory = CITests().data()
