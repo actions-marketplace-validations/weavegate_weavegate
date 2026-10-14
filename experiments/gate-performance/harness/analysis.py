@@ -220,7 +220,7 @@ def analyze(root, output):
         primary_count = sum(m['strata'][primary])
         if any(results[primary][name]['n'] != primary_count for name in resource_names):
             decision['reasons'].append('resource_measurements_incomplete')
-        cost_metrics = ('cpu_seconds', 'peak_memory_bytes', 'disk_write_bytes') if m['experiment'] == 'E1' else ('runner_minutes',)
+        cost_metrics = E1_RESOURCES if m['experiment'] == 'E1' else ('runner_minutes',)
         for name in cost_metrics:
             ratio = results[primary][name]['ratio']
             if ratio is None:

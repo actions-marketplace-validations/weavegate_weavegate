@@ -142,6 +142,15 @@ ordinary `env` values, pins, inventories or registration fields. Declare any
 additional sanitization in the observer; wire payloads and database DSNs are
 outside the collection contract.
 
+JSON redaction works on strings and preserves numeric/boolean syntax and
+collector-owned public control fields, slot identities, paths and hash
+checkpoints. Command arguments and ordinary environment entries are public
+manifest data; required secret environment values are excluded from command
+receipts. Unknown string payloads and original JSON evidence are redacted;
+non-JSON logs still use byte redaction. Short values can collide with original
+evidence strings and invalidate their proofs, producing sanitized failed
+evidence instead of repairing hashes or corrupting collector JSON.
+
 For E2, `run.timeout_seconds` is a wrapper watchdog and must be greater than
 5,400 seconds. Freeze a value that reserves the hook's dispatch/retention
 overhead in addition to the provider cap; no universal overhead allowance is
@@ -159,6 +168,10 @@ checkout/build/install/gate/upload spans. Its `gate_seconds` requires a separate
 file. The wrapper's duration is never relabeled as the nested CLI duration.
 E2's `run` is a pinned observer/dispatch wrapper for one complete workflow.
 The 600/1,800/5,400-second observation budgets never modify product timeouts.
+Each command's watchdog starts with the recorded monotonic start before process
+creation; waiting uses only its remaining budget. Spawn setup that consumes the
+budget cannot yield a complete observation. E2's provider cap still has its
+separate provider origin.
 On expiration the process group receives TERM, followed by KILL if any live
 member remains after the registered `cancel_grace_seconds` (default 25).
 The grace deadline covers the whole group even when its leader exits first.
@@ -308,6 +321,9 @@ inventory or other protected paths stop collection and refuse resealing. The
 current block retains `integrity-error.json`; the damaged bundle and original
 checksum inventory remain for audit. Preserve them rather than repairing them
 into replacement primary evidence.
+`stopped.json` is collector-owned; hooks cannot create or replace it. A detected
+integrity violation remains fatal to sealing even if a later hook restores the
+original bytes.
 
 Analyze into a **new directory outside the input bundle**. `results.json`
 contains every planned/started/completion/failure denominator, reason counts,
@@ -342,7 +358,8 @@ never pooled. Fewer than two valid pairs in any planned date suppresses the
 interval. Zero counters retain their absolute differences and an N/A ratio.
 All planned confirmation pairs, resources and quality evidence must be complete
 before the E1 0.85 / E2 0.80 ratio threshold and upper interval bound `< 1`
-can produce a favorable decision. Resource ratios above 1.10 are disclosed
+can produce a favorable decision. E1 checks all seven required resource ratios
+for higher-cost disclosure; E2 checks runner-minutes. Ratios above 1.10 are disclosed
 in `higher_resource_cost` and beside the decision in `report.md`, naming the
 metrics. A favorable E1 timing result is qualified as "faster with higher
 measured resource cost"; E2 uses "faster feedback with higher runner cost."

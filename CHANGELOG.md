@@ -20,6 +20,12 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Fixed
 
+- Experiment reports qualify higher costs for all seven E1 resources. E2
+  provider-derived measurements reject boolean/number substitutions. Redaction
+  preserves collector JSON types and public slot identities for short secrets;
+  command watchdogs include spawn setup, and hooks cannot forge stopped status
+  or restore away an observed integrity violation. See
+  `experiments/gate-performance/harness/README.md`.
 - Experiment hooks cannot replace a completed arm's evidence while running its
   mate, and oversized integer counters become quality failures without aborting
   collection. E2 keeps the provider-based 90-minute cap separate from its

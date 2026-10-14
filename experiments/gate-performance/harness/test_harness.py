@@ -1136,6 +1136,7 @@ if step=='observe':
         with patch('collector.subprocess.Popen', return_value=process), \
                 patch('collector.os.killpg', side_effect=kill), \
                 patch('collector.time.monotonic', return_value=10), \
+                patch('collector.time.monotonic_ns', side_effect=[0, 0, 1000000000]), \
                 patch('collector.wait_group', return_value=True), self.assertRaises(KeyboardInterrupt):
             execute(spec, {'redact_env': []}, self.root, 'interrupt', [])
         self.assertEqual(events, [('wait', {'timeout': 1}), ('signal', process.pid, signal.SIGTERM),
@@ -1271,7 +1272,7 @@ else:
             result = analyze(bundle, self.root / 'higher-cost')
             self.assertEqual(result['decision']['status'], 'improvement_demonstrated')
             self.assertEqual(set(result['decision']['higher_resource_cost']),
-                             {'cpu_seconds', 'peak_memory_bytes', 'disk_write_bytes'})
+                             set(E1_RESOURCES))
             report = (self.root / 'higher-cost/report.md').read_text()
             self.assertIn('faster with higher measured resource cost', report)
             for metric in result['decision']['higher_resource_cost']:
@@ -1280,7 +1281,7 @@ else:
             result = analyze(bundle, self.root / 'undefined-cost')
             self.assertEqual(result['decision']['status'], 'improvement_demonstrated')
             self.assertEqual(set(result['decision']['undefined_resource_ratios']),
-                             {'cpu_seconds', 'peak_memory_bytes', 'disk_write_bytes'})
+                             set(E1_RESOURCES))
             self.assertIn('no resource-efficiency claim follows',
                           (self.root / 'undefined-cost/report.md').read_text())
 
@@ -1377,6 +1378,114 @@ else:
         self.assertNotEqual(receipt['metrics']['gate_seconds'], receipt['metrics']['adoption_seconds'])
 
 
+    def test_all_e1_resources_receive_higher_cost_disclosure(self):
+        m = self.make_manifest(phase='confirmation')
+        bundle, registration = self.frozen(m)
+        shutil.copyfile(registration, bundle / 'registration.json')
+        seal(bundle)
+        state = {'metric': 'containers_created'}
+        def row(root, manifest, slot, arm):
+            return dict(slot, arm=arm, attempt=1, started=True, cleanup_proven=True,
+                        classification='complete', reason='', exit=0, elapsed_seconds=1,
+                        metrics=dict(dict.fromkeys(E1_RESOURCES, 1), gate_seconds=1),
+                        facts={'schedule': 'constructed', 'host': 'test'})
+        def fixed(manifest, workload, metric, pairs, dates):
+            ratio = .7 if metric == 'gate_seconds' else 1.2 if metric == state['metric'] else 1
+            return {'n': len(pairs), 'ratio': ratio, 'difference': ratio - 1,
+                    'interval': {'ratio': [ratio, ratio]}}
+        for index, metric in enumerate(E1_RESOURCES):
+            state['metric'] = metric
+            output = self.root / ('every-resource-%d' % index)
+            with patch('analysis.trial', side_effect=row), patch('analysis.estimate', side_effect=fixed):
+                result = analyze(bundle, output)
+            self.assertEqual(result['decision']['status'], 'improvement_demonstrated')
+            self.assertEqual(result['decision']['higher_resource_cost'], [metric])
+            self.assertIn('faster with higher measured resource cost', (output / 'report.md').read_text())
+            self.assertIn('`' + metric + '`', (output / 'report.md').read_text())
+
+    def test_derived_ci_metrics_preserve_json_number_types(self):
+        m = self.e2_manifest()
+        data, inventory = CITests().data()
+        m['ci']['tasks'] = {arm: copy.deepcopy(inventory['tasks']) for arm in ('baseline', 'candidate')}
+        directory = self.root / 'typed-ci'
+        directory.mkdir()
+        for queue in (0, 1):
+            data['pages'][0]['jobs'][0]['started_at'] = '2026-10-13T00:00:%02dZ' % queue
+            write_json(directory / 'ci.json', data)
+            row = {'workload': 'external-acceptance', 'arm': 'baseline'}
+            receipt = {'checks': dict.fromkeys(QUALITY, True),
+                       'facts': dict(m['expected_facts'][row['workload']][row['arm']], host='test',
+                                     ci_created_at=data['run']['created_at'], ci_completed_at=data['run']['updated_at']),
+                       'metrics': endpoint(data, inventory), 'environment': {'host': 'test'},
+                       'resource_method': 'constructed', 'ci_snapshot': 'ci.json',
+                       'evidence': {'ci.json': digest(directory / 'ci.json')}}
+            receipt_valid(m, row, receipt, directory)
+            receipt['metrics']['initial_queue_seconds'] = bool(queue)
+            with self.subTest(queue=queue), self.assertRaisesRegex(ValueError, 'provider timestamps'):
+                receipt_valid(m, row, receipt, directory)
+
+    def test_short_secret_redaction_preserves_collector_json_and_slot_identity(self):
+        for index, secret in enumerate(('0', '1', 'a')):
+            m = self.make_manifest()
+            m['redact_env'] = ['TEST_REDACTION_SECRET']
+            source = self.source / 'short-secret.json'
+            write_json(source, m)
+            bundle = self.root / ('short-secret-%d' % index)
+            freeze(source, bundle)
+            registration = self.root / ('short-registration-%d.json' % index)
+            write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                     'order_sha256': digest(bundle / 'order.json'),
+                                     'registered_at': '2020-01-01T00:00:00Z',
+                                     'revision': 'constructed', 'public_url': 'https://example.invalid/constructed'})
+            with patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}):
+                collect(bundle, self.block(bundle), registration)
+            verify(bundle)
+            slot = order(m)[0]
+            directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+            row = read_json(directory / 'trial.json')
+            self.assertEqual(row['block'], slot['block'])
+            self.assertEqual(row['arm'], slot['arms'][0])
+            self.assertIs(type(row['attempt']), int)
+            for path in directory.glob('*.command.json'):
+                command = read_json(path)
+                self.assertIs(type(command['started']), bool)
+                self.assertIs(type(command['seconds']), float)
+            self.assertIn('[REDACTED]', (directory / 'run.stdout').read_text())
+            self.assertNotIn(secret, (directory / 'run.stdout').read_text())
+            result = analyze(bundle, self.root / ('short-analysis-%d' % index))
+            self.assertEqual(result['accounting'][slot['workload']][slot['arms'][0]]['started'], 1)
+
+    def test_wait_budget_includes_process_creation_delay(self):
+        spec = self.manifest['commands']['example-fixed-replay']['baseline']['run']
+        for index, setup in enumerate((30, 610)):
+            process = Mock(pid=123)
+            process.wait.return_value = 0
+            with patch('collector.subprocess.Popen', return_value=process), \
+                    patch('collector.time.monotonic_ns', side_effect=[0, int(setup * 1e9), int((setup + 1) * 1e9)]), \
+                    patch('collector.os.killpg') as kill, patch('collector.wait_group', return_value=True):
+                result = execute(spec, {'trial_dir': self.root, 'block_id': 'test', 'redact_env': []},
+                                 self.root, 'spawn-delay-%d' % index, [])
+            if setup == 30:
+                process.wait.assert_called_once_with(timeout=570)
+                self.assertFalse(result['timeout'])
+            else:
+                self.assertTrue(result['timeout'])
+                kill.assert_called_once_with(123, signal.SIGTERM)
+            self.assertTrue(result['started'])
+
+    def test_hooks_cannot_write_collector_stopped_marker(self):
+        m = self.make_manifest()
+        slot = order(m)[0]
+        m['commands'][slot['workload']][slot['arms'][0]]['prepare']['argv'] = [sys.executable, '-c',
+            "from pathlib import Path; (Path('{campaign_dir}')/'stopped.json').write_text('{}')"]
+        bundle, registration = self.frozen(m)
+        with self.assertRaisesRegex(ValueError, 'refusing to reseal'):
+            collect(bundle, slot['block'], registration)
+        self.assertFalse((bundle / 'blocks' / slot['block'] / slot['arms'][0] / 'run.command.json').exists())
+        self.assertTrue((bundle / 'blocks' / slot['block'] / 'integrity-error.json').exists())
+        with self.assertRaises(ValueError):
+            verify(bundle)
+
     def test_mate_hooks_cannot_replace_completed_arm_evidence(self):
         for index, mutation in enumerate(('overwrite', 'delete', 'add')):
             m = self.make_manifest()
@@ -1445,7 +1554,8 @@ if step=='observe':
                 raise subprocess.TimeoutExpired('dispatch plus workflow', timeout)
             return 0
         process.wait.side_effect = wait
-        with patch('collector.subprocess.Popen', return_value=process):
+        with patch('collector.subprocess.Popen', return_value=process), \
+                patch('collector.time.monotonic_ns', side_effect=[0, 0, 5410000000000]):
             result = execute(spec, {'trial_dir': self.root, 'block_id': 'test', 'redact_env': []},
                              self.root, 'run', [])
         self.assertFalse(result['timeout'])

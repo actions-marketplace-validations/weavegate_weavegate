@@ -193,6 +193,18 @@ def sanitize(root, secrets):
     removed = 0
     for path in files(root):
         data = path.read_bytes()
+        if path.suffix == '.json':
+            try:
+                value = read_json(path)
+            except (ValueError, UnicodeError):
+                pass  # Non-JSON originals still receive byte-level redaction.
+            else:
+                replacements = [0]
+                redacted = redact_metadata(value, secrets, path.name, replacements)
+                if replacements[0]:
+                    path.write_bytes(canonical(redacted))
+                removed += replacements[0]
+                continue
         variants = set(secrets)
         for value in secrets:
             variants.add(json.dumps(value.decode(), ensure_ascii=True)[1:-1].encode())
@@ -267,7 +279,10 @@ def execute(spec, context, directory, step, secrets):
             result['started'] = True
             try:
                 try:
-                    result['exit'] = process.wait(timeout=spec['timeout_seconds'])
+                    remaining = spec['timeout_seconds'] - (time.monotonic_ns() - start) / 1e9
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(argv, spec['timeout_seconds'])
+                    result['exit'] = process.wait(timeout=remaining)
                 except subprocess.TimeoutExpired:
                     result['timeout'] = True
                     grace = spec.get('cancel_grace_seconds', 25)
@@ -290,7 +305,7 @@ def execute(spec, context, directory, step, secrets):
     result['seconds'] = (time.monotonic_ns() - start) / 1e9
     result['ended_at'] = utc()
     # Result values can include expanded environment references; redact them too.
-    result = redact_value(result, secrets)
+    result = redact_metadata(result, secrets, step + '.command.json')
     write_json(directory / (step + '.command.json'), result)
     return result
 
@@ -325,7 +340,7 @@ def receipt_valid(m, row, receipt, directory):
         from ci import endpoint, workflow_bounds
         provider = read_json(child(directory, receipt['ci_snapshot']))
         derived = endpoint(provider, dict(m['ci'], tasks=m['ci']['tasks'][row['arm']]))
-        if any(receipt['metrics'].get(k) != v for k, v in derived.items()):
+        if any(not json_equal(receipt['metrics'].get(k), v) for k, v in derived.items()):
             raise ValueError('CI receipt disagrees with provider timestamps')
         for key, boundary in zip(('ci_created_at', 'ci_completed_at'), workflow_bounds(provider)):
             if timestamp(facts.get(key)) != boundary:
@@ -419,9 +434,10 @@ def collect_locked(root, block, registration):
     protected['registration.json'] = digest(receipt_path)
     protected.update({str(path.relative_to(root)): digest(path) for path in files(pair_dir)})
     checksum_inventory = digest(root / 'SHA256SUMS')
-    allowed = set(protected) | aggregates | {'SHA256SUMS', 'stopped.json'}
+    allowed = set(protected) | aggregates | {'SHA256SUMS'}
     active_directory = None
-    def protect():
+    integrity_error = None
+    def check_protected():
         if digest(root / 'SHA256SUMS') != checksum_inventory:
             raise ValueError('sealed checksum inventory changed during collection')
         for name, checksum in protected.items():
@@ -432,6 +448,15 @@ def collect_locked(root, block, registration):
             name = str(path.relative_to(root))
             if name not in allowed and (active_directory is None or active_directory not in path.parents):
                 raise ValueError('unregistered evidence added during collection: ' + name)
+    def protect():
+        nonlocal integrity_error
+        if integrity_error is not None:
+            raise ValueError(integrity_error)
+        try:
+            check_protected()
+        except (OSError, ValueError) as error:
+            integrity_error = str(error)
+            raise
     def command(spec, context, directory, step):
         result = execute(spec, context, directory, step, secrets)
         protect()
@@ -538,10 +563,15 @@ def collect_locked(root, block, registration):
                     if not safe:
                         row.update(classification='quality_failure', reason='cleanup_unproven')
                     sanitize(directory, secrets)
-                    write_json(directory / 'trial.json', redact_value(row, secrets))
+                    write_json(directory / 'trial.json', redact_metadata(row, secrets, 'trial.json'))
     finally:
         if not safe:
-            write_json(root / 'stopped.json', {'reason': 'cleanup_unproven', 'block': block})
+            if (root / 'stopped.json').exists():
+                integrity_error = integrity_error or 'hook wrote collector-owned stopped.json'
+            else:
+                write_json(root / 'stopped.json', {'reason': 'cleanup_unproven', 'block': block})
+                protected['stopped.json'] = digest(root / 'stopped.json')
+                allowed.add('stopped.json')
         # BaseException paths must never seal unsanitized hook output. A failed
         # sanitization leaves the bundle unsealed rather than publishing raw bytes.
         sanitize(pair_dir, secrets)
@@ -611,13 +641,40 @@ def exclusive(root):
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def redact_value(value, secrets):
+def redact_metadata(value, secrets, filename, replacements=None):
+    """Keep numeric types and collector-owned public identity/control fields."""
+    if not isinstance(value, dict):
+        return redact_value(value, secrets, replacements)
+    if filename in ('slot.json', 'collection-command.json', 'completed-arm-hashes.json'):
+        return value  # Protected collector-owned public audit identifiers.
+    if filename == 'trial.json':
+        public = {'block', 'block_id', 'workload', 'date_slot', 'date', 'arms', 'arm',
+                  'attempt', 'classification', 'collection_root', 'metrics', 'started',
+                  'exit', 'elapsed_seconds', 'cleanup_proven'}
+        known = public | {'reason', 'facts'}
+    elif filename.endswith('.command.json'):
+        public = {'step', 'argv', 'cwd', 'env', 'redacted_env_names', 'started_at',
+                  'ended_at', 'started', 'exit', 'timeout', 'seconds'}
+        known = public | {'error'}
+    elif filename == 'redactions.json':
+        public = known = {'replacements'}
+    else:
+        return redact_value(value, secrets, replacements)
+    return {key if key in known else redact_value(key, secrets, replacements):
+            item if key in public else redact_value(item, secrets, replacements)
+            for key, item in value.items()}
+
+
+def redact_value(value, secrets, replacements=None):
     if isinstance(value, str):
         for secret in secrets:
+            if replacements is not None:
+                replacements[0] += value.count(secret.decode())
             value = value.replace(secret.decode(), '[REDACTED]')
         return value
     if isinstance(value, list):
-        return [redact_value(item, secrets) for item in value]
+        return [redact_value(item, secrets, replacements) for item in value]
     if isinstance(value, dict):
-        return {key: redact_value(item, secrets) for key, item in value.items()}
+        return {redact_value(key, secrets, replacements): redact_value(item, secrets, replacements)
+                for key, item in value.items()}
     return value
