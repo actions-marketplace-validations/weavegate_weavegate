@@ -292,7 +292,7 @@ def analyze(root, output):
     for workload, metrics in results.items():
         for metric, value in metrics.items():
             lines.append('| %s | %s | %d | %s | %s | %s | %s | %s |' %
-                         (workload, metric, value['n'], display(value['ratio']),
+                         (cell(workload), cell(metric), value['n'], display(value['ratio']),
                           interval_display(value, 'ratio'), display(value['difference']),
                           interval_display(value, 'difference'), interval_reason(value)))
     lines += ['', 'Full intervals, per-date estimates, arm summaries, all failure counts and',

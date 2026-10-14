@@ -103,10 +103,11 @@ relative, cannot traverse `..`, and cannot traverse symlinks.
 | `resource_metrics`, `analysis_metrics` | Required resources and optional descriptive numeric endpoints, with units/provenance declared in the observation inventory. `analysis_metrics`, when present, must be a list of unique nonempty string names, validated before freeze; an empty list is allowed. Missing values remain unknown; zero is retained and its ratio is undefined. |
 | `redact_env` | Environment variable names whose required values are passed to hooks and removed from retained bytes and command receipts. Values are never in the manifest. |
 | `ci` | E2 `owner/repo`, full lowercase 40-hex common `execution_sha`, and required `tasks` mappings for both arms (below), validated before freeze; workflow/action/ruleset pins belong in the inventories. |
-| `deviations` | Disclosed departures from the registered design; prevents favorable confirmatory claims. |
+| `deviations` | Optional list of strings disclosing departures from the registered design, validated before freeze; an omitted or empty list is allowed. A nonempty list prevents favorable confirmatory claims. |
 
-A command specification contains exact `argv` (array), `cwd` (nonempty string
+A command specification contains exact `argv` (nonempty list of strings), `cwd` (nonempty string
 working directory), `env` (explicit allowlisted values) and `timeout_seconds`.
+Invalid argument lists fail before a campaign directory is created.
 No shell is introduced by the
 collector. Tokens `{trial_dir}`, `{campaign_dir}`, `{block_id}`, `{arm}` expand
 at execution. Use absolute executable paths or explicitly supply `PATH`.
@@ -145,6 +146,10 @@ runs, and the attempt is incomplete. Grace/teardown beyond the cap remains in
 the command/event receipts. A process exit does not establish resource cleanup.
 An interruption during the termination grace wait also kills and reaps the
 command's process group before control reaches cleanup.
+Command receipts record `started` as true once process creation succeeds;
+later execution errors retain this status, elapsed time and the trial's started
+denominator. A failed spawn remains unstarted with reason `spawn_failed`;
+post-spawn errors use `execution_failed`, or `budget_expired` after a timeout.
 
 ## Hook evidence
 
@@ -275,6 +280,8 @@ and decision reasons. Pilot estimates remain descriptive.
 The report also includes registered arms, quality inventory, planned/started
 and every outcome denominator by workload/arm, failure-reason counts, excluded
 blocks with pair reasons, registered deviations and stopped-campaign status.
+Custom metric names are escaped in the Markdown table; JSON retains the exact
+registered names, including delimiters and line breaks.
 
 No missing duration is zero, no attempt is replaced, and phases/workloads are
 never pooled. Fewer than two valid pairs in any planned date suppresses the

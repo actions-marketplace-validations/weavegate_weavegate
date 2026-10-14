@@ -203,6 +203,61 @@ if step=='cleanup':
                     self.assertFalse(destination.exists())
         self.frozen()  # Valid string directories still freeze.
 
+    def test_freeze_requires_nonempty_argv_lists(self):
+        for step in ('prepare', 'run', 'observe', 'check', 'cleanup'):
+            for index, argv in enumerate(('/bin/true', {'/bin/true': 1}, 1, True,
+                                          None, [], [1], [None])):
+                m = copy.deepcopy(self.manifest)
+                m['commands']['example-fixed-replay']['baseline'][step]['argv'] = argv
+                source = self.source / 'argv-manifest.json'
+                write_json(source, m)
+                destination = self.root / ('argv-%s-%d' % (step, index))
+                with self.subTest(step=step, argv=argv):
+                    with self.assertRaises(ValueError):
+                        freeze(source, destination)
+                    self.assertFalse(destination.exists())
+        self.frozen()  # Valid argv lists still freeze.
+
+    def test_freeze_requires_deviation_string_lists(self):
+        for index, deviations in enumerate((1, True, None, 'deviation', {},
+                                            [1], [True], [None], [{}], [[]])):
+            m = copy.deepcopy(self.manifest)
+            m['deviations'] = deviations
+            source = self.source / 'deviations-manifest.json'
+            write_json(source, m)
+            destination = self.root / ('deviations-%d' % index)
+            with self.subTest(deviations=deviations):
+                with self.assertRaises(ValueError):
+                    freeze(source, destination)
+                self.assertFalse(destination.exists())
+        for index, deviations in enumerate(([], ['constructed deviation', 'constructed deviation'])):
+            m['deviations'] = deviations
+            write_json(source, m)
+            bundle = self.root / ('valid-deviations-%d' % index)
+            freeze(source, bundle)
+            output = self.root / ('deviations-analysis-%d' % index)
+            analyze(bundle, output)
+            report = (output / 'report.md').read_text()
+            self.assertIn('- constructed deviation' if deviations else 'None.', report)
+
+    def test_report_escapes_custom_metric_names(self):
+        m = copy.deepcopy(self.manifest)
+        names = ['latency|p95', 'custom\nrow\r<value>&']
+        m['analysis_metrics'] = names[:1]
+        m['resource_metrics'] += names[1:]
+        bundle, _ = self.frozen(m)
+        result = analyze(bundle, self.root / 'escaped-metrics')
+        report = (self.root / 'escaped-metrics/report.md').read_text()
+        self.assertIn('| latency&#124;p95 |', report)
+        self.assertIn('| custom<br>row&lt;value&gt;&amp; |', report)
+        self.assertNotIn('custom\nrow', report)
+        for metrics in result['estimates'].values():
+            self.assertTrue(set(names) <= set(metrics))
+        table = report.split('| Workload | Metric |', 1)[1]
+        for line in table.splitlines():
+            if line.startswith('| example-') or line.startswith('| spring-'):
+                self.assertEqual(line.count('|'), 9)
+
     def test_freeze_requires_lowercase_execution_sha(self):
         m = self.e2_manifest()
         m['ci']['execution_sha'] = 'A' * 40
@@ -627,6 +682,75 @@ if step=='observe':
         self.assertIn(block, report)
         self.assertEqual(result['accounting'][workload]['baseline']['operational_failure'], 1)
 
+    def test_post_spawn_errors_preserve_started_accounting(self):
+        from collector import execute as real_execute
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        processes = []
+        def command(spec, context, directory, step, secrets):
+            if step != 'run':
+                return real_execute(spec, context, directory, step, secrets)
+            process = Mock(pid=123)
+            process.wait.side_effect = [OSError('constructed post-spawn error'), 4]
+            processes.append(process)
+            with patch('collector.subprocess.Popen', return_value=process), \
+                    patch('collector.os.killpg') as kill, patch('collector.wait_group', return_value=True):
+                result = real_execute(spec, context, directory, step, secrets)
+                kill.assert_called_once_with(123, signal.SIGKILL)
+                return result
+        with patch('collector.execute', side_effect=command):
+            self.assertTrue(collect(bundle, slot['block'], registration))
+        self.assertEqual(len(processes), 2)
+        verify(bundle)
+        result = analyze(bundle, self.root / 'post-spawn-report')
+        report = (self.root / 'post-spawn-report/report.md').read_text()
+        for arm in slot['arms']:
+            directory = bundle / 'blocks' / slot['block'] / arm
+            row = read_json(directory / 'trial.json')
+            receipt = read_json(directory / 'run.command.json')
+            self.assertIsNotNone(receipt['error'])
+            self.assertTrue(row['started'])
+            self.assertTrue(receipt['started'])
+            self.assertEqual(row['reason'], 'execution_failed')
+            self.assertEqual(row['classification'], 'operational_failure')
+            self.assertTrue(row['cleanup_proven'])
+            self.assertGreater(row['elapsed_seconds'], 0)
+            self.assertEqual(result['accounting'][slot['workload']][arm]['started'], 1)
+            self.assertIn('| %s | %s | 8 | 1 | 0 | 1 | 0 | 7 |' % (slot['workload'], arm), report)
+
+    def test_spawn_failures_remain_unstarted_in_accounting(self):
+        m = copy.deepcopy(self.manifest)
+        for arms in m['commands'].values():
+            for specs in arms.values():
+                specs['run']['argv'] = [str(self.root / 'absent')]
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        self.assertTrue(collect(bundle, slot['block'], registration))
+        result = analyze(bundle, self.root / 'spawn-failure-report')
+        for arm in slot['arms']:
+            row = read_json(bundle / 'blocks' / slot['block'] / arm / 'trial.json')
+            self.assertFalse(row['started'])
+            self.assertEqual(row['reason'], 'spawn_failed')
+            self.assertEqual(result['accounting'][slot['workload']][arm]['started'], 0)
+
+    def test_timeout_boundary_error_preserves_started_receipt(self):
+        spec = self.manifest['commands']['example-fixed-replay']['baseline']['run']
+        process = Mock(pid=123)
+        process.wait.side_effect = [subprocess.TimeoutExpired(spec['argv'], 600), 4]
+        with patch('collector.subprocess.Popen', return_value=process), \
+                patch('collector.os.killpg', side_effect=[ProcessLookupError('constructed exit race'), None]) as kill, \
+                patch('collector.wait_group', return_value=True):
+            result = execute(spec, {'trial_dir': self.root, 'block_id': 'test', 'redact_env': []},
+                             self.root, 'run', [])
+        self.assertTrue(result['started'])
+        self.assertTrue(result['timeout'])
+        self.assertIn('constructed exit race', result['error'])
+        self.assertGreater(result['seconds'], 0)
+        self.assertEqual([call.args for call in kill.call_args_list],
+                         [(123, signal.SIGTERM), (123, signal.SIGKILL)])
+        self.assertEqual(process.wait.call_count, 2)
+        self.assertEqual(read_json(self.root / 'run.command.json'), result)
+
     def test_unproven_cleanup_blocks_mate(self):
         m = copy.deepcopy(self.manifest)
         m['deviations'] = ['constructed cleanup|deviation']
@@ -705,8 +829,10 @@ if step=='observe':
         result = execute(spec, context, self.root, 'absent', [])
         self.assertIsNotNone(result['error'])
         self.assertIsNone(result['exit'])
+        self.assertFalse(result['started'])
         spec['argv'] = [sys.executable, '-c', 'import threading; threading.Event().wait()']
         result = execute(spec, context, self.root, 'timeout', [])
+        self.assertTrue(result['started'])
         self.assertTrue(result['timeout'])
         self.assertLess(result['exit'], 0)
 

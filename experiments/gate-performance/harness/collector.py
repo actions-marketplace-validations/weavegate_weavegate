@@ -40,6 +40,9 @@ def validate_manifest(m):
     for name in ('quality_checks', 'resource_metrics', 'compare_facts', 'redact_env'):
         string_inventory(m.get(name), name, allow_empty=name == 'redact_env')
     string_inventory(m.get('analysis_metrics', []), 'analysis_metrics', allow_empty=True)
+    deviations = m.get('deviations', [])
+    if not isinstance(deviations, list) or any(not isinstance(value, str) for value in deviations):
+        raise ValueError('deviations must be a list of strings')
     if m['experiment'] in ('E1', 'E2'):
         if m['protocol_revision'] != 1 or m['seed'] != SEED:
             raise ValueError('E1/E2 revision 1 uses the published seed')
@@ -87,7 +90,8 @@ def validate_manifest(m):
             if not isinstance(expected, dict) or not expected:
                 raise ValueError('expected facts must be nonempty objects')
             for step, spec in commands.items():
-                if (not spec.get('argv') or not all(isinstance(a, str) for a in spec['argv'])
+                if (not isinstance(spec.get('argv'), list) or not spec['argv']
+                        or not all(isinstance(a, str) for a in spec['argv'])
                         or not isinstance(spec.get('cwd'), str) or not spec['cwd']
                         or not positive(spec.get('timeout_seconds'))
                         or not isinstance(spec.get('env'), dict)
@@ -226,13 +230,14 @@ def execute(spec, context, directory, step, secrets):
     result = {'step': step, 'argv': argv, 'cwd': cwd,
               'env': {k: v for k, v in env.items() if k not in context['redact_env']},
               'redacted_env_names': context['redact_env'], 'started_at': started,
-              'exit': None, 'timeout': False, 'error': None}
+              'started': False, 'exit': None, 'timeout': False, 'error': None}
     process = None
     try:
         with (directory / (step + '.stdout')).open('wb') as out, \
                 (directory / (step + '.stderr')).open('wb') as err:
             process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err,
                                        start_new_session=True)
+            result['started'] = True
             try:
                 try:
                     result['exit'] = process.wait(timeout=spec['timeout_seconds'])
@@ -416,7 +421,7 @@ def collect_locked(root, block, registration):
                     row['started'] = True
                     write_json(directory / 'trial.json', row)
                     run = command(commands['run'], context, directory, 'run')
-                    row.update(started=run['error'] is None, exit=run['exit'], elapsed_seconds=run['seconds'],
+                    row.update(started=run['started'], exit=run['exit'], elapsed_seconds=run['seconds'],
                                reason='unexpected_exit')
                     observed = command(commands['observe'], context, directory, 'observe')
                     redactions = sanitize(directory, secrets)
@@ -434,7 +439,8 @@ def collect_locked(root, block, registration):
                     except (ValueError, OSError, KeyError, TypeError, AttributeError):
                         pass  # Unknown counters stay unknown; originals remain retained.
                     if run['timeout'] or run['error']:
-                        row['reason'] = 'budget_expired' if run['timeout'] else 'spawn_failed'
+                        row['reason'] = ('budget_expired' if run['timeout'] else
+                                         'execution_failed' if run['started'] else 'spawn_failed')
                     elif run['exit'] in (0, 2, 3) and run['exit'] not in m['expected_exit'][slot['workload']][arm]:
                         row.update(classification='quality_failure',
                                    reason='flaky_exit' if run['exit'] == 3 else 'unexpected_outcome')

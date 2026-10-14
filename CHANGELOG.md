@@ -20,6 +20,10 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Fixed
 
+- Experiment campaigns reject malformed command argument lists and deviations
+  before freeze, count started attempts despite later execution errors, and
+  escape custom metric names in Markdown reports. See
+  `experiments/gate-performance/harness/README.md`.
 - Experiment campaigns reject unpadded UTC dates and malformed E2 CI inventories
   before freeze, apply the 90-minute cap to the whole workflow attempt, retain
   malformed pairing timestamps as missing evidence, and report provider request
