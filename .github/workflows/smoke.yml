@@ -279,6 +279,8 @@ jobs:
           python3 -B scripts/test-notice-template.py | tee "$RUNNER_TEMP/notice-template.log"
           grep -F 'NOTICE_TEMPLATE_RESULT yaml_source=stable target_duplicates=deduplicated license_changes=preserved' \
             "$RUNNER_TEMP/notice-template.log"
+          grep -F 'NOTICE_INSTALL_RESULT transient=retried permanent=failed checksum_verification=preserved' \
+            "$RUNNER_TEMP/notice-template.log"
           ./scripts/gen-notice.sh
           git ls-files --error-unmatch NOTICE > /dev/null
           git diff --exit-code -- NOTICE
