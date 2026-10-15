@@ -137,7 +137,10 @@ environment names and values cannot contain NUL. No shell is introduced.
 `{trial_dir}`, `{campaign_dir}`, `{block_id}` and `{arm}` expand once. Unknown
 tokens and braces inside inserted paths remain literal. Relative working
 directories are rejected before freeze creates a bundle. Supply an absolute
-executable or explicit `PATH`; the parent environment is otherwise not inherited.
+executable (including a path under `{campaign_dir}` or `{trial_dir}`), or a bare
+executable name with explicit `env.PATH`. Missing executable resolution and
+relative executable paths are rejected before freeze; the parent environment
+is otherwise not inherited.
 
 The five hooks run in this order:
 
@@ -159,6 +162,9 @@ nonempty `execution_pins` subset of registered paths; without it, all live pins
 are required. This permits trusted teardown after unrelated input drift. Any
 live drift still prevents allocation reuse and stops the campaign. Changed
 cleanup dependencies are never executed.
+SIGINT/SIGTERM delivery is deferred across cleanup pin verification, the bounded
+cleanup command and its final evidence checkpoint, so a signal cannot bypass
+trusted teardown or interrupt its startup.
 
 ## Receipts and failure behavior
 
@@ -181,6 +187,11 @@ For cold adoption, the collector supplies `adoption_seconds`; the observer's
 separate `gate_seconds` requires `gate_timer` with `source: "monotonic"`,
 `boundary: "cli_spawn_to_exit"`, matching numeric `seconds` and a hashed original
 `evidence` path. The wrapper duration cannot substitute for the nested CLI timer.
+
+The collector validates the sanitized receipt and every referenced original
+immediately after `observe`, before invoking `check`. Missing or invalid
+observation evidence skips `check` and retains a quality failure; later hooks
+cannot supply evidence retroactively. Trusted cleanup still runs.
 
 Cleanup requires successful command execution plus `cleanup.json` with
 `proven: true` and a nonempty `evidence` path/hash map. Exit 0 alone is inadequate.
@@ -214,7 +225,9 @@ supplies a successful cleanup receipt.
 SIGINT/SIGTERM interrupt collection through cleanup and sanitization; the CLI
 returns 130 after preserving evidence. Failed spawn stays unstarted; an
 interrupted running command stays started with its actual elapsed time. Atomic
-JSON replacement preserves complete checkpoints. An interruption writes
+JSON replacement preserves complete checkpoints. Final aggregate generation
+and sealing defer signal delivery; a signal at that boundary adds and seals
+the stopped record before returning. An interruption writes
 `stopped.json` even after proven cleanup; the unexecuted mate remains in missing
 attempt accounting and further collection is prohibited. SIGKILL, power loss or failed
 sanitization can leave an unsealed bundle: preserve it for audit, do not repair
@@ -251,10 +264,13 @@ alongside collector-owned `attempt.json`, `trial.json`, `redactions.json`,
 `cleanup-inputs.json` and
 `<step>.command.json`/`.stdout`/`.stderr` for the five steps. These control names
 are reserved at the arm root; nested originals are ordinary payloads.
-`attempt.json` stores admission/interruption and cleanup-input state.
+`attempt.json` stores admission/interruption, observation-boundary failures and
+cleanup-input state.
 `trials.csv`, `commands.jsonl`, `events.jsonl` and `environments.jsonl` inventory
-all planned arms and actual commands. `collection.lock` prevents concurrent
-local writers. `SHA256SUMS` is a JSON inventory of every other entry: files map
+all planned arms and actual commands. All four ledgers use atomic replacement,
+preserving originals that hooks hard-linked to an earlier ledger.
+`collection.lock` excludes local writers while collection or analysis holds the
+lock; concurrent analyses share it. `SHA256SUMS` is a JSON inventory of every other entry: files map
 to SHA-256 values and directories map to `null`. Empty directory addition,
 removal and file/directory replacement are authenticated at hook boundaries
 and during verification.
@@ -278,6 +294,8 @@ tasks to exact nonempty `{job, step}` names. All pages, original attempt 1,
 revision, required successful jobs/steps, started-job runner identities and end
 times must be present. Run IDs, job IDs and job `run_id` values must be positive
 integers; booleans, floats and strings are rejected before identity comparison.
+Every page's `total_count` must be a nonnegative integer, agree across pages and
+match the number of distinct retained jobs; booleans and floats are rejected.
 Failed/matrix jobs contribute runner cost; skipped jobs
 do not. Concurrency uses half-open intervals, not summed parallel wall time.
 
@@ -293,7 +311,9 @@ endpoints require separately frozen mappings and cannot rename the primary.
 
 ## Reproduce analysis
 
-Analyze into a **new directory outside the input bundle**. Analysis verifies
+Analyze into a **new directory outside the input bundle**. Analysis holds a
+shared campaign lock from input verification through output sealing. A busy
+collector causes analysis to fail before creating output. Analysis verifies
 inventory, plan, order and registration, then reconstructs every trial from
 original command/observation/cleanup evidence. Any retained registration is
 validated, including before the first command; collection evidence requires a

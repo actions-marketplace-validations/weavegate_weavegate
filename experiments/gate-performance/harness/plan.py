@@ -108,6 +108,11 @@ def validate_manifest(m):
                         spec['cwd'] == token or spec['cwd'].startswith(token + '/')
                         for token in ('{campaign_dir}', '{trial_dir}'))):
                     raise ValueError('command cwd must expand to an absolute directory: ' + step)
+                executable = spec['argv'][0]
+                if (not Path(executable).is_absolute() and not any(
+                        executable.startswith(token + '/') for token in ('{campaign_dir}', '{trial_dir}'))
+                        and ('/' in executable or 'PATH' not in spec['env'])):
+                    raise ValueError('command executable requires an absolute path or explicit PATH: ' + step)
                 if m['experiment'] in ('E1', 'E2') and step == 'run':
                     if m['experiment'] == 'E2':
                         if spec['timeout_seconds'] <= 5400:

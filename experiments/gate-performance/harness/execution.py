@@ -39,8 +39,8 @@ def expand_command(spec, context):
 
 
 @contextmanager
-def defer_spawn_interrupts():
-    """Acquire the child handle before allowing cancellation to unwind spawn.
+def defer_interrupts():
+    """Finish an owned checkpoint before delivering SIGINT/SIGTERM.
 
     Temporary handlers defer delivery without inheriting a blocked signal mask
     in the child. Collection and command execution run on the main thread.
@@ -56,8 +56,12 @@ def defer_spawn_interrupts():
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
-        if pending:
-            raise KeyboardInterrupt('command interrupted during process creation')
+        for signum in pending:
+            handler = previous[signum]
+            if callable(handler):
+                handler(signum, None)  # Nested scopes forward to the outer deferral.
+            else:
+                raise KeyboardInterrupt('collection interrupted by signal %d' % signum)
 
 
 def group_running(group):
@@ -123,7 +127,7 @@ def execute(spec, context, directory, step, secrets):
         with (directory / (step + '.stdout')).open('wb') as out, \
                 (directory / (step + '.stderr')).open('wb') as err:
             try:
-                with defer_spawn_interrupts():
+                with defer_interrupts():
                     process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err,
                                                start_new_session=True)
                     result['started'] = True

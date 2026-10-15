@@ -1,10 +1,13 @@
 """Shared bundle primitives; Python standard library only."""
 import csv
+import fcntl
 import hashlib
+import io
 import json
 import math
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -165,10 +168,25 @@ def finite_number(value):
 
 
 def write_csv(path, rows, fields):
-    with Path(path).open('w', newline='') as stream:
+    with io.StringIO(newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=fields, lineterminator='\n')
         writer.writeheader()
         writer.writerows(rows)
+        write_bytes(path, stream.getvalue().encode())
+
+
+@contextmanager
+def campaign_lock(root, shared=False):
+    # Readers need no write permission, but hold the same inode as collectors.
+    with (Path(root) / 'collection.lock').open('rb') as lock:
+        try:
+            fcntl.flock(lock, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('another collector or analyzer owns this campaign') from None
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def sampling(experiment, phase):

@@ -95,11 +95,11 @@ if step=='cleanup':
             m[section] = {'constructed': 'test only'}
         return m
 
-    def frozen(self, m=None):
+    def frozen(self, m=None, name='bundle'):
         m = m or self.manifest
         manifest = self.source / 'manifest.json'
         write_json(manifest, m)
-        bundle = self.root / 'bundle'
+        bundle = self.root / name
         freeze(manifest, bundle)
         registration = self.root / 'registration.json'
         write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
@@ -122,6 +122,201 @@ if step=='cleanup':
 
     def block(self, bundle):
         return read_json(bundle / 'order.json')[0]['block']
+
+    def test_observation_must_exist_before_later_hooks(self):
+        original = self.hook.read_text()
+        for late in ('check', 'cleanup'):
+            for missing in ('receipt', 'original'):
+                script = original
+                if missing == 'receipt':
+                    script = script.replace("if step=='observe':", "if step==%r:" % late)
+                else:
+                    script += "\nif step=='observe': (p/'evidence.log').unlink()\n"
+                    script += "if step==%r: (p/'evidence.log').write_bytes(%r)\n" % (
+                        late, b'synthetic oracle and cleanup evidence\n')
+                self.hook.write_text(script)
+                m = self.make_manifest()
+                bundle, registration = self.frozen(m, late + '-' + missing)
+                slot = order(m)[0]
+                with self.subTest(late=late, missing=missing):
+                    self.assertTrue(collect(bundle, slot['block'], registration))
+                    verify(bundle)
+                    for arm in slot['arms']:
+                        directory = bundle / 'blocks' / slot['block'] / arm
+                        row = read_json(directory / 'trial.json')
+                        self.assertEqual(row['classification'], 'quality_failure')
+                        self.assertFalse((directory / 'check.command.json').exists())
+                        self.assertTrue(row['cleanup_proven'])
+                        self.assertEqual(row, analyzed_trial(bundle, m, slot, arm))
+
+    def test_inventory_preserves_hardlinked_originals(self):
+        self.hook.write_text(self.hook.read_text() + '''
+if step=='observe':
+ receipt=json.loads((p/'receipt.json').read_text())
+ for name in ('trials.csv','commands.jsonl','events.jsonl','environments.jsonl'):
+  target=p/('original-'+name)
+  os.link(p.parents[2]/name,target)
+  receipt['evidence'][target.name]=hashlib.sha256(target.read_bytes()).hexdigest()
+ (p/'receipt.json').write_text(json.dumps(receipt))
+''')
+        m = self.make_manifest()
+        bundle, registration = self.frozen(m)
+        slot = order(m)[0]
+        originals = {name: (bundle / name).read_bytes() for name in
+                     ('trials.csv', 'commands.jsonl', 'events.jsonl', 'environments.jsonl')}
+        self.assertTrue(collect(bundle, slot['block'], registration))
+        verify(bundle)
+        for arm in slot['arms']:
+            directory = bundle / 'blocks' / slot['block'] / arm
+            for name, data in originals.items():
+                with self.subTest(arm=arm, name=name):
+                    self.assertEqual((directory / ('original-' + name)).read_bytes(), data)
+                    self.assertFalse(os.path.samestat((directory / ('original-' + name)).stat(),
+                                                     (bundle / name).stat()))
+            row = analyzed_trial(bundle, m, slot, arm)
+            self.assertEqual(row['classification'], 'complete')
+            self.assertEqual(row, read_json(directory / 'trial.json'))
+
+    def test_signals_during_final_seal_preserve_stopped_bundle(self):
+        import collector
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            for boundary in ('inventory', 'seal'):
+                for when in ('before', 'after'):
+                    bundle, registration = self.frozen(name='%s-%s-%s' % (signum, boundary, when))
+                    slot = order(self.manifest)[0]
+                    original = getattr(collector, boundary)
+                    sent = []
+                    def checkpoint(*args):
+                        ready = not sent and all((bundle / 'blocks' / slot['block'] / arm /
+                                                  'trial.json').exists() for arm in slot['arms'])
+                        def interrupt():
+                            sent.append(signum)
+                            os.kill(os.getpid(), signum)
+                        if ready and when == 'before':
+                            interrupt()
+                        result = original(*args)
+                        if ready and when == 'after':
+                            interrupt()
+                        return result
+                    with self.subTest(signum=signum, boundary=boundary, when=when):
+                        with patch('collector.' + boundary, side_effect=checkpoint), \
+                                self.assertRaises(KeyboardInterrupt):
+                            collect(bundle, slot['block'], registration)
+                        self.assertEqual(sent, [signum])
+                        verify(bundle)
+                        self.assertEqual(read_json(bundle / 'stopped.json')['reason'], 'interrupted_collection')
+                        for arm in slot['arms']:
+                            self.assertEqual(analyzed_trial(bundle, self.manifest, slot, arm)['classification'],
+                                             'complete')
+                        with self.assertRaisesRegex(ValueError, 'campaign stopped'):
+                            collect(bundle, slot['block'], registration)
+
+    def test_signals_during_cleanup_pins_still_run_trusted_teardown(self):
+        from collector import verify_execution_pins as real_verify
+        m = copy.deepcopy(self.manifest)
+        for arms in m['commands'].values():
+            for commands in arms.values():
+                commands['cleanup']['execution_pins'] = [str(self.hook)]
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            bundle, registration = self.frozen(m, 'cleanup-pins-%s' % signum)
+            slot = order(m)[0]
+            sent = []
+            def pins(manifest, selected=None):
+                if selected is not None and not sent:
+                    sent.append(signum)
+                    os.kill(os.getpid(), signum)
+                return real_verify(manifest, selected)
+            with self.subTest(signum=signum):
+                with patch('collector.verify_execution_pins', side_effect=pins), \
+                        self.assertRaises(KeyboardInterrupt):
+                    collect(bundle, slot['block'], registration)
+                verify(bundle)
+                directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+                self.assertTrue((directory / 'cleanup.command.json').exists())
+                self.assertTrue(read_json(directory / 'trial.json')['cleanup_proven'])
+                self.assertTrue((bundle / 'stopped.json').exists())
+                self.assertFalse(analyzed_trial(bundle, m, slot, slot['arms'][1])['started'])
+
+    def test_executable_resolution_must_be_explicit_before_freeze(self):
+        for index, executable in enumerate(('python3', './python3', 'bin/python3')):
+            m = copy.deepcopy(self.manifest)
+            spec = m['commands']['example-fixed-replay']['baseline']['run']
+            spec['argv'][0] = executable
+            source = self.source / 'resolution.json'
+            write_json(source, m)
+            bundle = self.root / ('resolution-%d' % index)
+            with self.subTest(executable=executable), self.assertRaisesRegex(ValueError, 'executable'):
+                freeze(source, bundle)
+            self.assertFalse(bundle.exists())
+        for executable in ('python3', sys.executable, '{trial_dir}/python3', '{campaign_dir}/bin/python3'):
+            m = copy.deepcopy(self.manifest)
+            spec = m['commands']['example-fixed-replay']['baseline']['run']
+            spec['argv'][0] = executable
+            if executable == 'python3':
+                spec['env']['PATH'] = '/usr/bin:/bin'
+            validate_manifest(m)
+
+    def test_signals_during_cleanup_spawn_wait_for_teardown_checkpoint(self):
+        real_popen = subprocess.Popen
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            bundle, registration = self.frozen(name='cleanup-spawn-%s' % signum)
+            slot = order(self.manifest)[0]
+            children = []
+            def spawn(argv, **kwargs):
+                process = real_popen(argv, **kwargs)
+                if argv[2] == 'cleanup':
+                    children.append(process)
+                    os.kill(os.getpid(), signum)
+                return process
+            with self.subTest(signum=signum):
+                with patch('execution.subprocess.Popen', side_effect=spawn), \
+                        self.assertRaises(KeyboardInterrupt):
+                    collect(bundle, slot['block'], registration)
+                self.assertEqual([child.poll() for child in children], [0])
+                verify(bundle)
+                directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+                self.assertTrue(read_json(directory / 'trial.json')['cleanup_proven'])
+                self.assertFalse(read_json(directory / 'cleanup.command.json')['interrupted'])
+                self.assertTrue((bundle / 'stopped.json').exists())
+
+    def test_analysis_holds_campaign_lock_until_output_is_sealed(self):
+        from common import campaign_lock
+        from collector import exclusive
+        from analysis import verify as real_verify, trial as real_trial
+        bundle, _ = self.frozen()
+        stages = set()
+        def check_lock(stage):
+            stages.add(stage)
+            with self.assertRaises(ValueError):
+                with exclusive(bundle):
+                    pass
+        def verified(root):
+            check_lock('verify')
+            return real_verify(root)
+        def reduced(*args):
+            check_lock('trial')
+            return real_trial(*args)
+        def sealed(root):
+            check_lock('seal')
+            return seal(root)
+        with patch('analysis.verify', side_effect=verified), patch('analysis.trial', side_effect=reduced), \
+                patch('common.seal', side_effect=sealed):
+            result = analyze(bundle, self.root / 'locked-analysis')
+        self.assertEqual(stages, {'verify', 'trial', 'seal'})
+        self.assertEqual(result['input_sha256sums'], digest(bundle / 'SHA256SUMS'))
+        with exclusive(bundle):
+            with self.assertRaises(ValueError):
+                analyze(bundle, self.root / 'blocked-analysis')
+        self.assertFalse((self.root / 'blocked-analysis').exists())
+        # Independent readers may coexist, including on read-only archives.
+        (bundle / 'collection.lock').chmod(0o400)
+        with campaign_lock(bundle, shared=True):
+            analyze(bundle, self.root / 'shared-analysis')
+        (bundle / 'order.json').write_text('[]')
+        with self.assertRaises(ValueError):
+            analyze(bundle, self.root / 'invalid-analysis')
+        with exclusive(bundle):
+            pass  # Failure releases the lock as well as successful publication.
 
     def test_collector_owned_paths_are_not_original_evidence(self):
         from evidence import hashes_valid
@@ -2698,6 +2893,18 @@ class StatisticsTests(unittest.TestCase):
 
 
 class CITests(unittest.TestCase):
+    def test_pagination_totals_require_nonnegative_integers_on_every_page(self):
+        for value in (True, 1.0, '1', None, -1):
+            for page_index in (0, 1):
+                data, inventory = self.data()
+                job = data['pages'][0]['jobs'][2]
+                data['pages'] = [{'total_count': 1, 'jobs': [job]}, {'total_count': 1, 'jobs': []}]
+                data['pages'][page_index]['total_count'] = value
+                with self.subTest(value=value, page=page_index), self.assertRaisesRegex(ValueError, 'total_count'):
+                    endpoint(data, inventory)
+        data, inventory = self.data()
+        self.assertEqual(endpoint(data, inventory)['validation_seconds'], 25)
+
     def data(self):
         run = {'id': 1, 'status': 'completed', 'run_attempt': 1, 'head_sha': 'a' * 40,
                'created_at': '2026-10-13T00:00:00Z', 'updated_at': '2026-10-13T00:00:35Z'}

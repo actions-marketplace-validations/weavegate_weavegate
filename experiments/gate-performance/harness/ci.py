@@ -73,6 +73,8 @@ def endpoint(snapshot, inventory):
             snapshot['repository'] != inventory['repository']):
         raise ValueError('CI attempt/repository/revision mismatch')
     pages = snapshot['pages']
+    if any(type(p.get('total_count')) is not int or p['total_count'] < 0 for p in pages):
+        raise ValueError('CI jobs total_count must be a nonnegative integer on every page')
     if not pages or any(p['total_count'] != pages[0]['total_count'] for p in pages):
         raise ValueError('inconsistent jobs pages')
     jobs = [job for page in pages for job in page['jobs']]

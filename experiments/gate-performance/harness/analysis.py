@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from fractions import Fraction
 from pathlib import Path
 
-from common import (E1_RESOURCES, E2_RESOURCES, child, counter, digest, json_equal, order,
+from common import (E1_RESOURCES, E2_RESOURCES, campaign_lock, child, counter, digest, json_equal, order,
                     read_json, sha, verify, write_csv, write_json)
 from evidence import trial
 from plan import validate_manifest, validate_registration
@@ -98,6 +98,11 @@ def analyze(root, output):
     root, output = Path(root).resolve(), Path(output).resolve()
     if output == root or root in output.parents:
         raise ValueError('analysis output must be outside the immutable input bundle')
+    with campaign_lock(root, shared=True):
+        return analyze_locked(root, output)
+
+
+def analyze_locked(root, output):
     verify(root)
     if read_json(root / 'analysis/dependencies.json').get('bundle_format') != 4:
         raise ValueError('unsupported bundle format; use the bundle archived analyzer')

@@ -7,6 +7,20 @@ from plan import STEPS
 from storage import COMMAND_FILES, CONTROL
 
 
+def observation(m, row, directory, elapsed_seconds, receipt=None):
+    """Validate at the observation boundary and again during offline reduction."""
+    if receipt is None:
+        receipt = read_json(directory / 'receipt.json')
+    if not isinstance(receipt, dict) or not isinstance(receipt.get('metrics'), dict):
+        raise ValueError('missing/malformed observation receipt')
+    # Join the clock in memory; never rewrite the observer's retained bytes.
+    joined = dict(receipt, metrics=dict(receipt['metrics']))
+    if m['experiment'] == 'E1':
+        metric = 'adoption_seconds' if m['phase'] == 'adoption-cold' else 'gate_seconds'
+        joined['metrics'][metric] = elapsed_seconds
+    receipt_valid(m, row, joined, directory)
+
+
 def receipt_valid(m, row, receipt, directory):
     if not isinstance(receipt, dict):
         raise ValueError('observation receipt must be an object')
@@ -181,6 +195,8 @@ def trial(root, m, slot, arm):
         row.update(classification='quality_failure', reason='cleanup_unproven')
     elif validation_error:
         row.update(classification='quality_failure', reason=validation_error)
+    elif state.get('observation_error'):
+        row.update(classification='quality_failure', reason=state['observation_error'])
     elif state.get('reason') == 'registered_date_expired' and not run:
         row.update(classification='not_started', reason='registered_date_expired')
     elif state.get('reason'):
@@ -205,14 +221,7 @@ def trial(root, m, slot, arm):
                 return row
             if state.get('state') != 'finished':
                 raise ValueError('interrupted_collection')
-            # Join the clock measurement in memory. The observer's retained bytes
-            # and hashes are never rewritten to insert collector-derived metrics.
-            if not isinstance(receipt, dict) or not isinstance(receipt.get('metrics'), dict):
-                raise ValueError('missing/malformed observation receipt')
-            joined = dict(receipt, metrics=dict(receipt['metrics']))
-            if m['experiment'] == 'E1':
-                joined['metrics'][metric] = row['elapsed_seconds']
-            receipt_valid(m, row, joined, directory)
+            observation(m, row, directory, row['elapsed_seconds'], receipt)
             row.update(classification='complete', reason='')
         except EVIDENCE_ERRORS as error:
             row['reason'] = str(error)

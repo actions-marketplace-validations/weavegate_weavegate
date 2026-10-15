@@ -28,7 +28,11 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   empty directories, reject secret-bearing evidence paths and validate retained
   registrations before measurements begin. Original evidence excludes collector
   metadata, cleanup requires newly retained proof, and command output replacement
-  prevents sealing. Sanitization preserves external hard-linked originals.
+  prevents sealing. Observation evidence must exist before the checker runs.
+  Sanitization and aggregate replacement preserve hard-linked originals;
+  cleanup and final sealing defer interruption, and analysis locks its inputs
+  through output sealing. Plans require explicit executable resolution and
+  provider pagination requires integer totals.
   Retained analyzer sources reproduce
   tables without a live checkout. See
   `experiments/gate-performance/harness/README.md`; its runnable demo is

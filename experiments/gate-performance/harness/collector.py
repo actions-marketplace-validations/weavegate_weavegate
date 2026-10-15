@@ -1,5 +1,4 @@
 """Freeze plans, execute a one-shot block, and commit immutable evidence boundaries."""
-import fcntl
 import json
 import os
 import signal
@@ -8,10 +7,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common import (bundle_inventory, canonical, child, digest, order, read_json, seal, sha,
-                    timestamp, utc, verify, write_csv, write_json)
-from evidence import EVIDENCE_ERRORS, cleanup_valid, trial
-from execution import ReceiptIntegrityError, execute, succeeded
+from common import (bundle_inventory, campaign_lock, canonical, child, digest, order, read_json, seal, sha,
+                    timestamp, utc, verify, write_bytes, write_csv, write_json)
+from evidence import EVIDENCE_ERRORS, cleanup_valid, observation, trial
+from execution import ReceiptIntegrityError, defer_interrupts, execute, succeeded
 from plan import STEPS, validate_manifest, validate_registration, verify_execution_pins
 from redaction import redact_metadata, sanitize, validate_redaction_secrets
 from storage import BundleGuard
@@ -162,16 +161,29 @@ def collect_locked(root, block, registration):
         interrupted = True
         raise
     finally:
-        if not safe or interrupted:
-            session.save(root / 'stopped.json', {'reason': 'cleanup_unproven' if not safe
-                         else 'interrupted_collection', 'block': block})
-        if session.guard.error is not None:
-            write_json(pair_dir / 'integrity-error.json',
-                       {'reason': redact_metadata(session.guard.error, secrets, '')})
-            raise ValueError('protected campaign evidence changed; refusing to reseal')
-        session.guard.check()
-        inventory(root, m)
-        seal(root)
+        try:
+            with defer_interrupts():
+                if not safe or interrupted:
+                    session.save(root / 'stopped.json', {'reason': 'cleanup_unproven' if not safe
+                                 else 'interrupted_collection', 'block': block})
+                if session.guard.error is not None:
+                    write_json(pair_dir / 'integrity-error.json',
+                               {'reason': redact_metadata(session.guard.error, secrets, '')})
+                    raise ValueError('protected campaign evidence changed; refusing to reseal')
+                session.guard.check()
+                inventory(root, m)
+                seal(root)
+        except KeyboardInterrupt:
+            # Delivery occurs after the aggregate checkpoint. Record a signal
+            # received even during seal(), before propagating it to the CLI.
+            with defer_interrupts():
+                if session.guard.error is not None:
+                    raise ValueError('protected campaign evidence changed; refusing to reseal')
+                write_json(root / 'stopped.json', {'reason': 'cleanup_unproven' if not safe
+                           else 'interrupted_collection', 'block': block})
+                inventory(root, m)
+                seal(root)
+            raise
     return safe
 
 
@@ -252,8 +264,13 @@ class Collection:
                 if not current_date(slot):
                     state['reason'] = 'registered_date_expired'
                 else:
-                    self.command(directory, context, 'run', commands['run'])
+                    run = self.command(directory, context, 'run', commands['run'])
                     self.command(directory, context, 'observe', commands['observe'])
+                    try:
+                        observation(self.manifest, dict(slot, arm=arm), directory, run['seconds'])
+                    except EVIDENCE_ERRORS as error:
+                        state['observation_error'] = str(error)
+                        raise
                     self.command(directory, context, 'check', commands['check'])
         except EVIDENCE_ERRORS as error:
             state['reason'] = str(error)
@@ -261,27 +278,31 @@ class Collection:
             state['reason'] = 'interrupted_collection'
             raise
         finally:
-            # Teardown has its own frozen dependency set and runs regardless of
-            # outcome. A valid proof plus all live pins is required for reuse.
-            try:
-                pins_match = True
-                try:
-                    verify_execution_pins(self.manifest)
-                except (OSError, ValueError):
-                    pins_match = False
-                verify_execution_pins(self.manifest, commands['cleanup'].get('execution_pins'))
-                try:
-                    if self.guard.error is None:
-                        self.save(directory / 'cleanup-inputs.json', bundle_inventory(directory))
-                finally:
-                    self.command(directory, context, 'cleanup', commands['cleanup'], teardown=True)
-                cleanup_valid(directory)
-                state['cleanup_inputs_valid'] = pins_match and self.contained and self.guard.error is None
-            except EVIDENCE_ERRORS:
-                state['cleanup_inputs_valid'] = False
-            finally:
-                self.finish(directory, state, slot, arm)
+            with defer_interrupts():
+                self.cleanup(directory, state, slot, arm, commands, context)
         return state['cleanup_inputs_valid']
+
+    def cleanup(self, directory, state, slot, arm, commands, context):
+        # Teardown has its own frozen dependency set and runs regardless of
+        # outcome. A valid proof plus all live pins is required for reuse.
+        try:
+            pins_match = True
+            try:
+                verify_execution_pins(self.manifest)
+            except (OSError, ValueError):
+                pins_match = False
+            verify_execution_pins(self.manifest, commands['cleanup'].get('execution_pins'))
+            try:
+                if self.guard.error is None:
+                    self.save(directory / 'cleanup-inputs.json', bundle_inventory(directory))
+            finally:
+                self.command(directory, context, 'cleanup', commands['cleanup'], teardown=True)
+            cleanup_valid(directory)
+            state['cleanup_inputs_valid'] = pins_match and self.contained and self.guard.error is None
+        except EVIDENCE_ERRORS:
+            state['cleanup_inputs_valid'] = False
+        finally:
+            self.finish(directory, state, slot, arm)
 
 
 def inventory(root, m):
@@ -312,18 +333,11 @@ def inventory(root, m):
     write_csv(root / 'trials.csv', rows, ['block', 'workload', 'date_slot', 'arm', 'attempt',
                                         'started', 'classification', 'reason', 'exit', 'elapsed_seconds'])
     for name, items in [('commands', commands), ('events', events), ('environments', environments)]:
-        (root / (name + '.jsonl')).write_text(''.join(
-            json.dumps(item, sort_keys=True, allow_nan=False) + '\n' for item in items))
+        write_bytes(root / (name + '.jsonl'), ''.join(
+            json.dumps(item, sort_keys=True, allow_nan=False) + '\n' for item in items).encode())
 
 
 @contextmanager
 def exclusive(root):
-    with (Path(root) / 'collection.lock').open('r+b') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ValueError('another collector owns this campaign') from None
-        try:
-            yield
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+    with campaign_lock(root):
+        yield
