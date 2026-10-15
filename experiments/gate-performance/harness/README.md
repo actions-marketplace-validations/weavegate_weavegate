@@ -57,7 +57,7 @@ attempted; the original checksum inventory is preserved and resealing refused.
 This is integrity checking among trusted hooks, not an OS security sandbox
 against processes running as the same user.
 
-The evidence layout is bundle format `4`, recorded in
+The evidence layout is bundle format `5`, recorded in
 `analysis/dependencies.json`; the input manifest remains schema `1`. Earlier
 development bundles retain their own archived analyzer. This analyzer rejects
 older layouts rather than interpreting their cached trials as original evidence.
@@ -140,7 +140,9 @@ directories are rejected before freeze creates a bundle. Supply an existing
 absolute executable, or a bare executable name with explicit `env.PATH` containing
 only absolute directories. Freeze resolves bare names and retains the absolute
 path in `campaign.json` and subsequent command receipts. Every resolved executable
-must appear in `execution_pins`; missing pins, relative paths and executable
+must be an executable regular file at freeze and every live-pin check, including
+admission before a block is consumed and trusted cleanup. It must appear in
+`execution_pins`; missing pins, relative paths and executable
 placeholders are rejected before creating the bundle. A later PATH shadow cannot
 select another binary. Pin interpreter scripts, JARs and other dependencies too;
 the harness does not discover transitive dependencies. The parent environment
@@ -202,9 +204,11 @@ Cleanup requires successful command execution plus `cleanup.json` with
 `proven: true` and a nonempty `evidence` path/hash map. Exit 0 alone is inadequate.
 Observation and cleanup evidence cannot reference the collector's exact control
 or command paths at the arm root; nested originals with those names remain valid.
-The collector records `cleanup-inputs.json` immediately before teardown. Both
-`cleanup.json` and every referenced cleanup original must be newly retained by
-that step; earlier product evidence cannot substitute for teardown evidence.
+The collector records paths, hashes and file identities in `cleanup-inputs.json`
+immediately before teardown. Both `cleanup.json` and every referenced cleanup original must be newly retained by
+that step; the inventory also records pre-cleanup device/inode identities to
+reject hard-link aliases of earlier files. Earlier product evidence cannot
+substitute for teardown evidence.
 Malformed observations, operational exits and timeouts remain failed attempts;
 the mate still runs after proven cleanup. Unproven cleanup leaves the mate not
 started, writes `stopped.json` and prohibits further collection.

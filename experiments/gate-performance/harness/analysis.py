@@ -104,7 +104,7 @@ def analyze(root, output):
 
 def analyze_locked(root, output):
     verify(root)
-    if read_json(root / 'analysis/dependencies.json').get('bundle_format') != 4:
+    if read_json(root / 'analysis/dependencies.json').get('bundle_format') != 5:
         raise ValueError('unsupported bundle format; use the bundle archived analyzer')
     m = read_json(root / 'campaign.json')
     validate_manifest(m)

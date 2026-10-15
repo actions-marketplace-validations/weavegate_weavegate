@@ -20,7 +20,7 @@ from unittest.mock import Mock, patch
 from analysis import analyze, estimate, mean, quantile, trial as analyzed_trial
 from ci import TASKS, endpoint, snapshot
 from collector import collect, execute, freeze
-from evidence import receipt_valid
+from evidence import cleanup_inventory, receipt_valid
 from execution import kill_group
 from plan import validate_manifest
 from common import (E1_RESOURCES, E2_RESOURCES, PROTOCOLS, QUALITY, SEED, canonical,
@@ -237,6 +237,51 @@ if step=='cleanup':
         directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
         self.assertTrue((directory / 'cleanup.command.json').exists())
         self.assertFalse((directory / 'run.command.json').exists())
+
+    def test_cleanup_rejects_hard_link_to_product_original(self):
+        from collector import execute as real_execute
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        def command(spec, context, directory, step, secrets):
+            result = real_execute(spec, context, directory, step, secrets)
+            if step == 'cleanup':
+                (directory / 'cleanup.log').unlink()
+                os.link(directory / 'evidence.log', directory / 'cleanup.log')
+                write_json(directory / 'cleanup.json', {'proven': True,
+                           'evidence': {'cleanup.log': digest(directory / 'cleanup.log')}})
+            return result
+        with patch('collector.execute', side_effect=command):
+            collect(bundle, slot['block'], registration)
+        verify(bundle)
+        self.assertTrue((bundle / 'stopped.json').exists())
+        row = analyzed_trial(bundle, self.manifest, slot, slot['arms'][0])
+        self.assertFalse(row['cleanup_proven'])
+        self.assertEqual(row['reason'], 'cleanup_unproven')
+        self.assertFalse(analyzed_trial(bundle, self.manifest, slot, slot['arms'][1])['started'])
+        copied = self.root / 'copied-alias'
+        shutil.copytree(bundle, copied, copy_function=shutil.copyfile)
+        self.assertFalse(analyzed_trial(copied, self.manifest, slot, slot['arms'][0])['cleanup_proven'])
+
+    def test_executable_permissions_checked_before_freeze_and_admission(self):
+        binary = self.source / 'pinned-python'
+        shutil.copyfile(sys.executable, binary)
+        m = copy.deepcopy(self.manifest)
+        m['execution_pins'].append({'path': str(binary), 'sha256': digest(binary), 'role': 'interpreter'})
+        for arms in m['commands'].values():
+            for commands in arms.values():
+                for spec in commands.values():
+                    spec['argv'][0] = str(binary)
+        binary.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, 'executable'):
+            self.frozen(m, 'nonexecutable')
+        self.assertFalse((self.root / 'nonexecutable').exists())
+        binary.chmod(0o700)
+        bundle, registration = self.frozen(m)
+        binary.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, 'executable'):
+            collect(bundle, self.block(bundle), registration)
+        self.assertFalse((bundle / 'blocks' / self.block(bundle)).exists())
+        verify(bundle)
 
     def test_every_executable_requires_a_registered_pin(self):
         unpinned = self.source / 'unpinned-python'
@@ -1834,8 +1879,7 @@ if step=='observe':
                             'ended_at': slot['date'] + 'T00:00:%02dZ' % (step_index * 2 + 1)})
             write_json(directory / 'attempt.json', {'collection_root': str(bundle),
                        'state': 'finished', 'reason': '', 'cleanup_inputs_valid': True})
-            from common import bundle_inventory
-            write_json(directory / 'cleanup-inputs.json', bundle_inventory(directory))
+            write_json(directory / 'cleanup-inputs.json', cleanup_inventory(directory))
             (directory / 'cleanup.log').write_text('constructed cleanup proof')
             write_json(directory / 'cleanup.json',
                        {'proven': True, 'evidence': {'cleanup.log': digest(directory / 'cleanup.log')}})

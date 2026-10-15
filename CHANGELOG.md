@@ -27,8 +27,9 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   interruptions and unproven cleanup stop further collection. Bundles authenticate
   empty directories, reject secret-bearing evidence paths and validate retained
   registrations before measurements begin. Original evidence excludes collector
-  metadata, cleanup requires newly retained proof, and command output replacement
-  prevents sealing. Observation evidence must exist before the checker runs.
+  metadata, cleanup requires newly retained proof without pre-cleanup hard-link
+  aliases, and command output replacement prevents sealing. Non-executable command paths fail before consuming a block.
+  Observation evidence must exist before the checker runs.
   Sanitization and aggregate replacement preserve hard-linked originals;
   admission, ownership updates, cleanup and final sealing defer interruption.
   Analysis locks its inputs through output sealing, and lock-file replacement

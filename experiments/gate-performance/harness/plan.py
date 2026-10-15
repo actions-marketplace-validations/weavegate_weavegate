@@ -214,10 +214,14 @@ def validate_registration(reg):
 
 
 def verify_execution_pins(m, selected=None):
+    executables = {spec['argv'][0] for arms in m['commands'].values()
+                   for commands in arms.values() for spec in commands.values()}
     for pin in m['execution_pins']:
         if selected is not None and pin['path'] not in selected:
             continue
         path = Path(pin['path'])
+        if pin['path'] in executables and (not path.is_file() or not os.access(path, os.X_OK)):
+            raise ValueError('command executable is not executable: ' + str(path))
         if not path.is_absolute() or not pin.get('role') or digest(path) != pin['sha256']:
             raise ValueError('live execution pin mismatch: ' + pin['path'])
 

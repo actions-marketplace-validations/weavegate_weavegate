@@ -81,6 +81,22 @@ def hashes_valid(directory, evidence):
             raise ValueError('retained evidence hash mismatch: ' + str(name))
 
 
+def cleanup_inventory(directory):
+    """Capture paths and inode identities before teardown can introduce aliases."""
+    from common import bundle_inventory
+    paths = bundle_inventory(directory)
+    # Collector metadata is atomically replaced; its freed inode may be reused
+    # by a genuinely new cleanup original. Only retained originals qualify.
+    identities = []
+    for name, value in paths.items():
+        path = child(directory, name)
+        if (value is not None and
+                not (path.parent == directory and path.name in CONTROL | COMMAND_FILES)):
+            stat = path.stat()
+            identities.append([stat.st_dev, stat.st_ino])
+    return {'paths': paths, 'identities': identities}
+
+
 def cleanup_valid(directory):
     command = read_json(directory / 'cleanup.command.json')
     if not succeeded(command):
@@ -90,11 +106,18 @@ def cleanup_valid(directory):
         raise ValueError('missing cleanup proof')
     hashes_valid(directory, proof.get('evidence'))
     inputs = read_json(directory / 'cleanup-inputs.json')
-    if not isinstance(inputs, dict) or not inputs:
+    if (not isinstance(inputs, dict) or not isinstance(inputs.get('paths'), dict)
+            or not inputs['paths'] or not isinstance(inputs.get('identities'), list)):
         raise ValueError('missing cleanup input inventory')
+    identities = inputs['identities']
+    inputs = inputs['paths']
     if 'cleanup.json' in inputs or any(
             str(child(directory, name).relative_to(directory)) in inputs for name in proof['evidence']):
         raise ValueError('cleanup proof must retain originals created by cleanup')
+    for name in proof['evidence']:
+        stat = child(directory, name).stat()
+        if [stat.st_dev, stat.st_ino] in identities:
+            raise ValueError('cleanup proof aliases pre-cleanup evidence')
 
 
 EVIDENCE_ERRORS = (ValueError, OSError, KeyError, TypeError, AttributeError)

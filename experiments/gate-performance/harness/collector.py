@@ -7,9 +7,9 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common import (bundle_inventory, campaign_lock, canonical, child, digest, order, read_json, seal, sha,
+from common import (campaign_lock, canonical, child, digest, order, read_json, seal, sha,
                     timestamp, utc, verify, write_bytes, write_csv, write_json)
-from evidence import EVIDENCE_ERRORS, cleanup_valid, observation, trial
+from evidence import EVIDENCE_ERRORS, cleanup_inventory, cleanup_valid, observation, trial
 from execution import ReceiptIntegrityError, defer_interrupts, execute, succeeded
 from plan import STEPS, bind_executables, validate_manifest, validate_registration, verify_execution_pins
 from redaction import redact_metadata, sanitize, validate_redaction_secrets
@@ -69,7 +69,7 @@ def freeze(source, destination):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(path.read_bytes())
     write_json(destination / 'analysis' / 'dependencies.json',
-               {'bundle_format': 4, 'runtime': 'Python >= 3.9', 'dependencies': 'standard library only'})
+               {'bundle_format': 5, 'runtime': 'Python >= 3.9', 'dependencies': 'standard library only'})
     inventory(destination, m)
     seal(destination)
 
@@ -304,7 +304,7 @@ class Collection:
             verify_execution_pins(self.manifest, commands['cleanup'].get('execution_pins'))
             try:
                 if self.guard.error is None:
-                    self.save(directory / 'cleanup-inputs.json', bundle_inventory(directory))
+                    self.save(directory / 'cleanup-inputs.json', cleanup_inventory(directory))
             finally:
                 self.command(directory, context, 'cleanup', commands['cleanup'], teardown=True)
             cleanup_valid(directory)
