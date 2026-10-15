@@ -3,9 +3,11 @@
 This detects accidental or observable hook writes, not hostile processes running
 as the collector's user. A violation is sticky even if a later hook restores bytes.
 """
+import os
 from pathlib import Path
 
 from common import bundle_inventory, child, digest, write_json
+from execution import defer_interrupts
 from plan import STEPS
 from redaction import validate_paths
 
@@ -18,6 +20,7 @@ class BundleGuard:
     def __init__(self, root, secrets=()):
         self.root = Path(root)
         self.secrets = secrets
+        self.lock_stat = os.stat(self.root / 'collection.lock', follow_symlinks=False)
         self.hashes = self.snapshot()
         self.active = None
         self.error = None
@@ -29,6 +32,8 @@ class BundleGuard:
         if self.error is not None:
             raise ValueError(self.error)
         try:
+            if not os.path.samestat(self.lock_stat, os.stat(self.root / 'collection.lock', follow_symlinks=False)):
+                raise ValueError('protected campaign lock replaced during collection')
             if self.active is not None:
                 validate_paths(self.active, self.secrets, self.owned_paths(self.active))
             writing = {str(Path(p).relative_to(self.root)) for p in writing}
@@ -49,15 +54,17 @@ class BundleGuard:
     def mkdir(self, path):
         """Admit only the collector's next assigned arm directory."""
         self.check()
-        path.mkdir(mode=0o700)
-        self.hashes[str(path.relative_to(self.root))] = None
+        with defer_interrupts():
+            path.mkdir(mode=0o700)
+            self.hashes[str(path.relative_to(self.root))] = None
 
     def own(self, path, value):
         """Only collector writes may update an already retained control file."""
         path = Path(path)
         self.check()
-        write_json(path, value)
-        self.hashes[str(path.relative_to(self.root))] = digest(path)
+        with defer_interrupts():
+            write_json(path, value)
+            self.hashes[str(path.relative_to(self.root))] = digest(path)
 
     def checkpoint(self):
         self.check()
@@ -69,13 +76,14 @@ class BundleGuard:
         self.check(writing=paths)
         # A step owns only its own receipts, once. Earlier commands and originals
         # are immutable; reserved future receipts must still be absent.
-        for path in paths:
-            name = str(path.relative_to(self.root))
-            if name in self.hashes:
-                self.error = 'command executed twice: ' + name
-                raise ValueError(self.error)
-            if path.exists():
-                self.hashes[name] = digest(path)
+        with defer_interrupts():
+            for path in paths:
+                name = str(path.relative_to(self.root))
+                if name in self.hashes:
+                    self.error = 'command executed twice: ' + name
+                    raise ValueError(self.error)
+                if path.exists():
+                    self.hashes[name] = digest(path)
 
     def owned_paths(self, directory):
         return {directory / name for name in CONTROL | COMMAND_FILES}

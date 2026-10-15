@@ -136,10 +136,14 @@ Environment names must be nonempty and cannot contain `=`; arguments, cwd,
 environment names and values cannot contain NUL. No shell is introduced.
 `{trial_dir}`, `{campaign_dir}`, `{block_id}` and `{arm}` expand once. Unknown
 tokens and braces inside inserted paths remain literal. Relative working
-directories are rejected before freeze creates a bundle. Supply an absolute
-executable (including a path under `{campaign_dir}` or `{trial_dir}`), or a bare
-executable name with explicit `env.PATH`. Missing executable resolution and
-relative executable paths are rejected before freeze; the parent environment
+directories are rejected before freeze creates a bundle. Supply an existing
+absolute executable, or a bare executable name with explicit `env.PATH` containing
+only absolute directories. Freeze resolves bare names and retains the absolute
+path in `campaign.json` and subsequent command receipts. Every resolved executable
+must appear in `execution_pins`; missing pins, relative paths and executable
+placeholders are rejected before creating the bundle. A later PATH shadow cannot
+select another binary. Pin interpreter scripts, JARs and other dependencies too;
+the harness does not discover transitive dependencies. The parent environment
 is otherwise not inherited.
 
 The five hooks run in this order:
@@ -158,8 +162,9 @@ cap remains 5,400 seconds from workflow creation. Hooks must enforce that
 provider deadline and cancellation. Product timeouts remain unchanged.
 
 Live pins are checked before each non-cleanup hook. Cleanup may declare its own
-nonempty `execution_pins` subset of registered paths; without it, all live pins
-are required. This permits trusted teardown after unrelated input drift. Any
+nonempty `execution_pins` subset of registered paths, including its executable;
+without it, all live pins are required. This permits trusted teardown after
+unrelated input drift. Any
 live drift still prevents allocation reuse and stops the campaign. Changed
 cleanup dependencies are never executed.
 SIGINT/SIGTERM delivery is deferred across cleanup pin verification, the bounded
@@ -215,7 +220,9 @@ even with identical bytes, is a permanent integrity failure and prevents sealing
 The
 watchdog starts before spawn and waits only its remaining budget. Timeout sends
 TERM to the process group, waits one grace bound, then KILL with one further
-shared bound for leader reaping and group death. A normally exiting leader with
+shared bound for leader reaping and group death. If the group vanishes before
+TERM, the leader is still reaped and group absence checked; the receipt remains
+a timeout without an extra execution error. A normally exiting leader with
 live descendants also fails and triggers termination. `/proc` polling observes
 termination only; it does not coordinate workloads. Processes that detach from
 the group and external resources still require the registered cleanup proof.
@@ -225,7 +232,11 @@ supplies a successful cleanup receipt.
 SIGINT/SIGTERM interrupt collection through cleanup and sanitization; the CLI
 returns 130 after preserving evidence. Failed spawn stays unstarted; an
 interrupted running command stays started with its actual elapsed time. Atomic
-JSON replacement preserves complete checkpoints. Final aggregate generation
+JSON replacement and the corresponding ownership update defer signals together,
+so a collector write cannot be mistaken for hook tampering. Block admission also
+defers delivery until registration, slot metadata and the initial guard are ready;
+an admission signal seals a stopped campaign with both arms unstarted.
+Final aggregate generation
 and sealing defer signal delivery; a signal at that boundary adds and seals
 the stopped record before returning. An interruption writes
 `stopped.json` even after proven cleanup; the unexecuted mate remains in missing
@@ -269,8 +280,12 @@ cleanup-input state.
 `trials.csv`, `commands.jsonl`, `events.jsonl` and `environments.jsonl` inventory
 all planned arms and actual commands. All four ledgers use atomic replacement,
 preserving originals that hooks hard-linked to an earlier ledger.
-`collection.lock` excludes local writers while collection or analysis holds the
-lock; concurrent analyses share it. `SHA256SUMS` is a JSON inventory of every other entry: files map
+Collection and analysis lock both the campaign directory inode and
+`collection.lock`; concurrent analyses share these locks. Replacing the lock file
+cannot admit a second writer while a current reader or writer holds the directory
+lock. Path-to-inode checks detect replacement, and hook-boundary checks refuse to
+reseal the damaged bundle. These checks remain local coordination, not an OS sandbox.
+`SHA256SUMS` is a JSON inventory of every other entry: files map
 to SHA-256 values and directories map to `null`. Empty directory addition,
 removal and file/directory replacement are authenticated at hook boundaries
 and during verification.

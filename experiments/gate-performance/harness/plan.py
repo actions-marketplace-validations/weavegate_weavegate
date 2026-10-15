@@ -1,5 +1,7 @@
 """Validate the complete frozen plan before collection can consume a slot."""
+import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -109,10 +111,17 @@ def validate_manifest(m):
                         for token in ('{campaign_dir}', '{trial_dir}'))):
                     raise ValueError('command cwd must expand to an absolute directory: ' + step)
                 executable = spec['argv'][0]
-                if (not Path(executable).is_absolute() and not any(
-                        executable.startswith(token + '/') for token in ('{campaign_dir}', '{trial_dir}'))
-                        and ('/' in executable or 'PATH' not in spec['env'])):
+                if (any(token in executable for token in
+                        ('{campaign_dir}', '{trial_dir}', '{block_id}', '{arm}')) or
+                        not Path(executable).is_absolute() and
+                        ('/' in executable or 'PATH' not in spec['env'])):
                     raise ValueError('command executable requires an absolute path or explicit PATH: ' + step)
+                if Path(executable).is_absolute():
+                    pins = spec.get('execution_pins', [pin['path'] for pin in m['execution_pins']])
+                    if executable not in pins:
+                        raise ValueError('command executable must have an execution pin: ' + step)
+                elif any(not Path(entry).is_absolute() for entry in spec['env']['PATH'].split(os.pathsep)):
+                    raise ValueError('command executable PATH entries must be absolute: ' + step)
                 if m['experiment'] in ('E1', 'E2') and step == 'run':
                     if m['experiment'] == 'E2':
                         if spec['timeout_seconds'] <= 5400:
@@ -211,3 +220,16 @@ def verify_execution_pins(m, selected=None):
         path = Path(pin['path'])
         if not path.is_absolute() or not pin.get('role') or digest(path) != pin['sha256']:
             raise ValueError('live execution pin mismatch: ' + pin['path'])
+
+
+def bind_executables(m):
+    """Freeze PATH lookup to an absolute argv[0]; offline analysis needs no host."""
+    for arms in m['commands'].values():
+        for commands in arms.values():
+            for spec in commands.values():
+                executable = spec['argv'][0]
+                if not Path(executable).is_absolute():
+                    executable = shutil.which(executable, path=spec['env']['PATH'])
+                    if executable is None:
+                        raise ValueError('command executable not found in explicit PATH')
+                    spec['argv'][0] = executable

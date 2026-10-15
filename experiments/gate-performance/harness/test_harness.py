@@ -89,7 +89,9 @@ if step=='cleanup':
              'expected_facts': {w: {a: facts(w) for a in
                                     ('baseline', 'candidate')} for w in strata},
              'pins': [{'path': 'hook.py', 'sha256': digest(self.hook), 'role': 'checker'}],
-             'execution_pins': [{'path': str(self.hook), 'sha256': digest(self.hook), 'role': 'checker'}],
+             'execution_pins': [{'path': str(self.hook), 'sha256': digest(self.hook), 'role': 'checker'},
+                                {'path': sys.executable, 'sha256': digest(Path(sys.executable)),
+                                 'role': 'Python interpreter'}],
              'protocols': {name: {'path': name, 'sha256': digest(self.source / name)} for name in PROTOCOLS}}
         for section in ('arms', 'inputs', 'runtime', 'environment', 'observation', 'sources'):
             m[section] = {'constructed': 'test only'}
@@ -122,6 +124,202 @@ if step=='cleanup':
 
     def block(self, bundle):
         return read_json(bundle / 'order.json')[0]['block']
+
+    def test_signals_during_admission_preserve_stopped_bundle(self):
+        import collector
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            for boundary in ('mkdir', 'registration', 'command', 'slot', 'seal', 'session'):
+                bundle, registration = self.frozen(name='admit-%s-%s' % (signum, boundary))
+                block = self.block(bundle)
+                pair = bundle / 'blocks' / block
+                sent = []
+                def interrupt():
+                    if not sent:
+                        sent.append(signum)
+                        os.kill(os.getpid(), signum)
+                real_mkdir, real_write = Path.mkdir, collector.write_json
+                real_seal, real_session = collector.seal, collector.Collection
+                def mkdir(path, *args, **kwargs):
+                    result = real_mkdir(path, *args, **kwargs)
+                    if path == pair and boundary == 'mkdir':
+                        interrupt()
+                    return result
+                def write(path, value):
+                    result = real_write(path, value)
+                    if path.name == {'registration': 'registration.json',
+                                     'command': 'collection-command.json',
+                                     'slot': 'slot.json'}.get(boundary):
+                        interrupt()
+                    return result
+                def sealed(root):
+                    result = real_seal(root)
+                    if boundary == 'seal':
+                        interrupt()
+                    return result
+                def session(*args):
+                    result = real_session(*args)
+                    if boundary == 'session':
+                        interrupt()
+                    return result
+                with self.subTest(signum=signum, boundary=boundary):
+                    with patch.object(Path, 'mkdir', mkdir), patch('collector.write_json', side_effect=write), \
+                            patch('collector.seal', side_effect=sealed), \
+                            patch('collector.Collection', side_effect=session), self.assertRaises(KeyboardInterrupt):
+                        collect(bundle, block, registration)
+                    self.assertEqual(sent, [signum])
+                    self.assertTrue((bundle / 'stopped.json').exists())
+                    verify(bundle)
+                    result = analyze(bundle, self.root / ('admit-report-%s-%s' % (signum, boundary)))
+                    self.assertTrue(all(arm['started'] == 0 for arms in result['accounting'].values()
+                                        for arm in arms.values()))
+                    with self.assertRaisesRegex(ValueError, 'campaign stopped'):
+                        collect(bundle, block, registration)
+
+    def test_signals_during_guard_mutation_preserve_stopped_bundle(self):
+        import storage
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            for boundary in ('mkdir', 'attempt.json', 'redactions.json'):
+                bundle, registration = self.frozen(name='guard-%s-%s' % (signum, boundary))
+                slot = order(self.manifest)[0]
+                directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+                sent = []
+                real_write, real_mkdir = storage.write_json, Path.mkdir
+                def interrupt():
+                    if not sent:
+                        sent.append(signum)
+                        os.kill(os.getpid(), signum)
+                def write(path, value):
+                    result = real_write(path, value)
+                    if path == directory / boundary:
+                        interrupt()
+                    return result
+                def mkdir(path, *args, **kwargs):
+                    result = real_mkdir(path, *args, **kwargs)
+                    if boundary == 'mkdir' and path == directory:
+                        interrupt()
+                    return result
+                with self.subTest(signum=signum, boundary=boundary):
+                    with patch('storage.write_json', side_effect=write), patch.object(Path, 'mkdir', mkdir), \
+                            self.assertRaises(KeyboardInterrupt):
+                        collect(bundle, slot['block'], registration)
+                    self.assertEqual(sent, [signum])
+                    verify(bundle)
+                    self.assertTrue((bundle / 'stopped.json').exists())
+                    self.assertFalse((directory.parent / 'integrity-error.json').exists())
+                    if boundary == 'redactions.json':
+                        self.assertTrue(read_json(directory / 'trial.json')['cleanup_proven'])
+                    self.assertFalse(analyzed_trial(bundle, self.manifest, slot, slot['arms'][1])['started'])
+
+    def test_lock_replacement_cannot_admit_another_collector(self):
+        from collector import execute as real_execute
+        from common import campaign_lock
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        seal_before = (bundle / 'SHA256SUMS').read_bytes()
+        admitted = []
+        def command(spec, context, directory, step, secrets):
+            if step == 'prepare':
+                seal_before_contents[0] = (bundle / 'SHA256SUMS').read_bytes()
+                replacement = self.root / 'replacement.lock'
+                replacement.write_bytes(b'')
+                os.replace(replacement, bundle / 'collection.lock')
+                try:
+                    with campaign_lock(bundle):
+                        admitted.append(True)
+                except ValueError:
+                    pass
+            return real_execute(spec, context, directory, step, secrets)
+        seal_before_contents = [seal_before]
+        with patch('collector.execute', side_effect=command), self.assertRaisesRegex(ValueError, 'lock|protected'):
+            collect(bundle, slot['block'], registration)
+        self.assertEqual(admitted, [])
+        self.assertEqual((bundle / 'SHA256SUMS').read_bytes(), seal_before_contents[0])
+        directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+        self.assertTrue((directory / 'cleanup.command.json').exists())
+        self.assertFalse((directory / 'run.command.json').exists())
+
+    def test_every_executable_requires_a_registered_pin(self):
+        unpinned = self.source / 'unpinned-python'
+        unpinned.symlink_to(sys.executable)
+        for index, (executable, selected) in enumerate(((str(unpinned), None),
+                (unpinned.name, None), (sys.executable, [str(self.hook)]))):
+            m = copy.deepcopy(self.manifest)
+            spec = m['commands']['example-fixed-replay']['baseline']['cleanup']
+            spec['argv'][0] = executable
+            spec['env']['PATH'] = str(self.source)
+            if selected is not None:
+                spec['execution_pins'] = selected
+            source = self.source / 'unpinned.json'
+            write_json(source, m)
+            bundle = self.root / ('unpinned-%d' % index)
+            with self.subTest(executable=executable, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'executable.*pin'):
+                    freeze(source, bundle)
+                self.assertFalse(bundle.exists())
+
+    def test_frozen_executable_binding_rejects_drift_and_ignores_path_shadowing(self):
+        binary = self.source / 'pinned-python'
+        shutil.copyfile(sys.executable, binary)
+        binary.chmod(0o700)
+        original = binary.read_bytes()
+        early = self.source / 'early'
+        early.mkdir()
+        for bare in (False, True):
+            m = copy.deepcopy(self.manifest)
+            m['execution_pins'].append({'path': str(binary), 'sha256': digest(binary), 'role': 'interpreter'})
+            for arms in m['commands'].values():
+                for commands in arms.values():
+                    for spec in commands.values():
+                        spec['argv'][0] = binary.name if bare else str(binary)
+                        spec['env']['PATH'] = str(early) + os.pathsep + str(self.source)
+            bundle, registration = self.frozen(m, 'binding-%s' % bare)
+            frozen = read_json(bundle / 'campaign.json')
+            slot = order(frozen)[0]
+            binary.write_bytes(b'changed executable')
+            with self.subTest(bare=bare), self.assertRaisesRegex(ValueError, 'live execution pin mismatch'):
+                collect(bundle, slot['block'], registration)
+            self.assertFalse((bundle / 'blocks').exists())
+            binary.write_bytes(original)
+            if bare:
+                shadow = early / binary.name
+                shadow.write_text('#!/bin/sh\nexit 99\n')
+                shadow.chmod(0o700)
+            self.assertTrue(collect(bundle, slot['block'], registration))
+            verify(bundle)
+            for arm in slot['arms']:
+                directory = bundle / 'blocks' / slot['block'] / arm
+                self.assertEqual(read_json(directory / 'run.command.json')['argv'][0], str(binary))
+                self.assertEqual(read_json(directory / 'trial.json')['classification'], 'complete')
+
+    def test_vanished_timeout_group_preserves_campaign_reuse(self):
+        from collector import execute as real_execute
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        def command(spec, context, directory, step, secrets):
+            if step != 'run':
+                return real_execute(spec, context, directory, step, secrets)
+            process = Mock(pid=123)
+            process.wait.side_effect = [subprocess.TimeoutExpired(spec['argv'], 600), 0, 0]
+            with patch('execution.subprocess.Popen', return_value=process), \
+                    patch('execution.os.killpg', side_effect=ProcessLookupError), \
+                    patch('execution.wait_group', return_value=True) as absent:
+                result = real_execute(spec, context, directory, step, secrets)
+                absent.assert_called_once()
+                return result
+        with patch('collector.execute', side_effect=command):
+            self.assertTrue(collect(bundle, slot['block'], registration))
+        verify(bundle)
+        self.assertFalse((bundle / 'stopped.json').exists())
+        for arm in slot['arms']:
+            directory = bundle / 'blocks' / slot['block'] / arm
+            receipt = read_json(directory / 'run.command.json')
+            self.assertTrue(receipt['timeout'])
+            self.assertTrue(receipt['containment_proven'])
+            self.assertIsNone(receipt['error'])
+            row = read_json(directory / 'trial.json')
+            self.assertTrue(row['started'])
+            self.assertTrue(row['cleanup_proven'])
+            self.assertEqual(row, analyzed_trial(bundle, self.manifest, slot, arm))
 
     def test_observation_must_exist_before_later_hooks(self):
         original = self.hook.read_text()
@@ -216,7 +414,7 @@ if step=='observe':
         m = copy.deepcopy(self.manifest)
         for arms in m['commands'].values():
             for commands in arms.values():
-                commands['cleanup']['execution_pins'] = [str(self.hook)]
+                commands['cleanup']['execution_pins'] = [str(self.hook), sys.executable]
         for signum in (signal.SIGINT, signal.SIGTERM):
             bundle, registration = self.frozen(m, 'cleanup-pins-%s' % signum)
             slot = order(m)[0]
@@ -238,7 +436,8 @@ if step=='observe':
                 self.assertFalse(analyzed_trial(bundle, m, slot, slot['arms'][1])['started'])
 
     def test_executable_resolution_must_be_explicit_before_freeze(self):
-        for index, executable in enumerate(('python3', './python3', 'bin/python3')):
+        for index, executable in enumerate(('python3', './python3', 'bin/python3',
+                                             '{trial_dir}/python3', '{campaign_dir}/bin/python3')):
             m = copy.deepcopy(self.manifest)
             spec = m['commands']['example-fixed-replay']['baseline']['run']
             spec['argv'][0] = executable
@@ -248,7 +447,7 @@ if step=='observe':
             with self.subTest(executable=executable), self.assertRaisesRegex(ValueError, 'executable'):
                 freeze(source, bundle)
             self.assertFalse(bundle.exists())
-        for executable in ('python3', sys.executable, '{trial_dir}/python3', '{campaign_dir}/bin/python3'):
+        for executable in ('python3', sys.executable):
             m = copy.deepcopy(self.manifest)
             spec = m['commands']['example-fixed-replay']['baseline']['run']
             spec['argv'][0] = executable
@@ -572,6 +771,7 @@ if step=='cleanup':
         from storage import BundleGuard
         bundle = self.root / 'directory-bundle'
         bundle.mkdir()
+        (bundle / 'collection.lock').touch()
         (bundle / 'retained').mkdir()
         seal(bundle)
         verify(bundle)
@@ -1788,13 +1988,17 @@ if step=='observe':
             self.assertIn('| %s | %s | 8 | 1 | 0 | 1 | 0 | 7 |' % (slot['workload'], arm), report)
 
     def test_spawn_failures_remain_unstarted_in_accounting(self):
+        from collector import execute as real_execute
         m = copy.deepcopy(self.manifest)
-        for arms in m['commands'].values():
-            for specs in arms.values():
-                specs['run']['argv'] = [str(self.root / 'absent')]
         bundle, registration = self.frozen(m)
         slot = order(m)[0]
-        self.assertTrue(collect(bundle, slot['block'], registration))
+        def command(spec, context, directory, step, secrets):
+            if step != 'run':
+                return real_execute(spec, context, directory, step, secrets)
+            with patch('execution.subprocess.Popen', side_effect=OSError('constructed spawn failure')):
+                return real_execute(spec, context, directory, step, secrets)
+        with patch('collector.execute', side_effect=command):
+            self.assertTrue(collect(bundle, slot['block'], registration))
         result = analyze(bundle, self.root / 'spawn-failure-report')
         for arm in slot['arms']:
             row = read_json(bundle / 'blocks' / slot['block'] / arm / 'trial.json')
@@ -1805,7 +2009,7 @@ if step=='observe':
     def test_timeout_boundary_error_preserves_started_receipt(self):
         spec = self.manifest['commands']['example-fixed-replay']['baseline']['run']
         process = Mock(pid=123)
-        process.wait.side_effect = [subprocess.TimeoutExpired(spec['argv'], 600), 4]
+        process.wait.side_effect = [subprocess.TimeoutExpired(spec['argv'], 600), 4, 4]
         with patch('execution.subprocess.Popen', return_value=process), \
                 patch('execution.os.killpg', side_effect=[ProcessLookupError('constructed exit race'), None]) as kill, \
                 patch('execution.wait_group', return_value=True):
@@ -1813,11 +2017,12 @@ if step=='observe':
                              self.root, 'run', [])
         self.assertTrue(result['started'])
         self.assertTrue(result['timeout'])
-        self.assertIn('constructed exit race', result['error'])
+        self.assertIsNone(result['error'])
+        self.assertTrue(result['containment_proven'])
         self.assertGreater(result['seconds'], 0)
         self.assertEqual([call.args for call in kill.call_args_list],
-                         [(123, signal.SIGTERM), (123, signal.SIGKILL)])
-        self.assertEqual(process.wait.call_count, 2)
+                         [(123, signal.SIGTERM)])
+        self.assertEqual(process.wait.call_count, 3)
         self.assertEqual(read_json(self.root / 'run.command.json'), result)
 
     def test_unproven_cleanup_blocks_mate(self):
@@ -1876,7 +2081,7 @@ if step=='observe':
         m['execution_pins'].append({'path': str(other), 'sha256': digest(other), 'role': 'checker input'})
         for arms in m['commands'].values():
             for commands in arms.values():
-                commands['cleanup']['execution_pins'] = [str(self.hook)]
+                commands['cleanup']['execution_pins'] = [str(self.hook), sys.executable]
         for changed_step in ('prepare', 'run', 'observe', 'check'):
             other.write_text('registered input')
             source = self.source / 'pin-drift-manifest.json'
@@ -1924,7 +2129,7 @@ if step=='observe':
         m = copy.deepcopy(self.manifest)
         for arms in m['commands'].values():
             for commands in arms.values():
-                commands['cleanup']['execution_pins'] = [str(self.hook)]
+                commands['cleanup']['execution_pins'] = [str(self.hook), sys.executable]
         bundle, registration = self.frozen(m)
         slot = order(m)[0]
         calls = []

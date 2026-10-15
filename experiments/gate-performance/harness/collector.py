@@ -11,7 +11,7 @@ from common import (bundle_inventory, campaign_lock, canonical, child, digest, o
                     timestamp, utc, verify, write_bytes, write_csv, write_json)
 from evidence import EVIDENCE_ERRORS, cleanup_valid, observation, trial
 from execution import ReceiptIntegrityError, defer_interrupts, execute, succeeded
-from plan import STEPS, validate_manifest, validate_registration, verify_execution_pins
+from plan import STEPS, bind_executables, validate_manifest, validate_registration, verify_execution_pins
 from redaction import redact_metadata, sanitize, validate_redaction_secrets
 from storage import BundleGuard
 
@@ -19,6 +19,8 @@ from storage import BundleGuard
 def freeze(source, destination):
     source, destination = Path(source).resolve(), Path(destination)
     m = read_json(source)
+    validate_manifest(m)
+    bind_executables(m)
     validate_manifest(m)
     # Validate every prerequisite before creating a campaign.
     verify_execution_pins(m)
@@ -126,18 +128,20 @@ def collect_locked(root, block, registration):
     secrets = [os.environ[name].encode() for name in redaction_env_names]
     validate_redaction_secrets(secrets)
     pair_dir = root / 'blocks' / block
-    pair_dir.parent.mkdir(exist_ok=True)
-    pair_dir.mkdir(mode=0o700)  # Existing or interrupted blocks cannot be rerun.
-    write_json(receipt_path, reg)
-    write_json(pair_dir / 'collection-command.json', {'argv': [sys.executable, '-B',
-               str(Path(__file__).with_name('tool.py')), 'collect', str(root), '--block', block,
-               '--registration', str(receipt_path)]})
-    write_json(pair_dir / 'slot.json', slot)
-    seal(root)  # A crash consumes the slot, never creates a replacement attempt.
-    session = Collection(root, m, secrets)
+    session = None
     safe = True
     interrupted = False
     try:
+        with defer_interrupts():
+            pair_dir.parent.mkdir(exist_ok=True)
+            pair_dir.mkdir(mode=0o700)  # Existing or interrupted blocks cannot be rerun.
+            write_json(receipt_path, reg)
+            write_json(pair_dir / 'collection-command.json', {'argv': [sys.executable, '-B',
+                       str(Path(__file__).with_name('tool.py')), 'collect', str(root), '--block', block,
+                       '--registration', str(receipt_path)]})
+            write_json(pair_dir / 'slot.json', slot)
+            seal(root)  # A crash consumes the slot, never creates a replacement attempt.
+            session = Collection(root, m, secrets)
         for arm in slot['arms']:
             directory = pair_dir / arm
             session.guard.mkdir(directory)
@@ -161,30 +165,36 @@ def collect_locked(root, block, registration):
         interrupted = True
         raise
     finally:
-        try:
-            with defer_interrupts():
-                if not safe or interrupted:
-                    session.save(root / 'stopped.json', {'reason': 'cleanup_unproven' if not safe
-                                 else 'interrupted_collection', 'block': block})
-                if session.guard.error is not None:
-                    write_json(pair_dir / 'integrity-error.json',
-                               {'reason': redact_metadata(session.guard.error, secrets, '')})
-                    raise ValueError('protected campaign evidence changed; refusing to reseal')
-                session.guard.check()
-                inventory(root, m)
-                seal(root)
-        except KeyboardInterrupt:
-            # Delivery occurs after the aggregate checkpoint. Record a signal
-            # received even during seal(), before propagating it to the CLI.
-            with defer_interrupts():
-                if session.guard.error is not None:
-                    raise ValueError('protected campaign evidence changed; refusing to reseal')
-                write_json(root / 'stopped.json', {'reason': 'cleanup_unproven' if not safe
-                           else 'interrupted_collection', 'block': block})
-                inventory(root, m)
-                seal(root)
-            raise
+        if session is not None:
+            finalize(session, pair_dir, block, safe, interrupted)
     return safe
+
+
+def finalize(session, pair_dir, block, safe, interrupted):
+    root, m = session.root, session.manifest
+    try:
+        with defer_interrupts():
+            if not safe or interrupted:
+                session.save(root / 'stopped.json', {'reason': 'cleanup_unproven' if not safe
+                             else 'interrupted_collection', 'block': block})
+            if session.guard.error is not None:
+                write_json(pair_dir / 'integrity-error.json',
+                           {'reason': redact_metadata(session.guard.error, session.secrets, '')})
+                raise ValueError('protected campaign evidence changed; refusing to reseal')
+            session.guard.check()
+            inventory(root, m)
+            seal(root)
+    except KeyboardInterrupt:
+        # Delivery occurs after the aggregate checkpoint. Record a signal
+        # received even during seal(), before propagating it to the CLI.
+        with defer_interrupts():
+            if session.guard.error is not None:
+                raise ValueError('protected campaign evidence changed; refusing to reseal')
+            write_json(root / 'stopped.json', {'reason': 'cleanup_unproven' if not safe
+                       else 'interrupted_collection', 'block': block})
+            inventory(root, m)
+            seal(root)
+        raise
 
 
 def current_date(slot):

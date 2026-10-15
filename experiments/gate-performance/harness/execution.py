@@ -156,7 +156,10 @@ def execute(spec, context, directory, step, secrets):
                     result['timeout'] = True
                     grace = spec.get('cancel_grace_seconds', 25)
                     deadline = time.monotonic() + grace
-                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass  # The leader may exit between the watchdog and TERM.
                     try:
                         result['exit'] = process.wait(timeout=grace)
                     except subprocess.TimeoutExpired:

@@ -62,7 +62,9 @@ def demo(destination):
          'expected_facts': {w: {a: facts(w) for a in
                                 ('baseline', 'candidate')} for w in strata},
          'pins': [{'path': 'hook.py', 'sha256': digest(hook), 'role': 'constructed demo hook'}],
-         'execution_pins': [{'path': str(hook), 'sha256': digest(hook), 'role': 'constructed demo hook'}],
+         'execution_pins': [{'path': str(hook), 'sha256': digest(hook), 'role': 'constructed demo hook'},
+                            {'path': sys.executable, 'sha256': digest(Path(sys.executable)),
+                             'role': 'Python interpreter'}],
          'protocols': {name: {'path': name, 'sha256': digest(source / name)} for name in PROTOCOLS}}
     for inventory in ('arms', 'inputs', 'runtime', 'environment', 'observation', 'sources'):
         m[inventory] = {'description': 'constructed demo; not a registered measurement campaign'}

@@ -177,16 +177,32 @@ def write_csv(path, rows, fields):
 
 @contextmanager
 def campaign_lock(root, shared=False):
-    # Readers need no write permission, but hold the same inode as collectors.
-    with (Path(root) / 'collection.lock').open('rb') as lock:
+    # The directory inode keeps exclusion intact even if a hook replaces the
+    # lock marker. Keep the file lock too for archived format-4 readers.
+    root = Path(root)
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
         try:
-            fcntl.flock(lock, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError('another collector or analyzer owns this campaign') from None
-        try:
-            yield
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+        with (root / 'collection.lock').open('rb') as lock:
+            try:
+                fcntl.flock(lock, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise ValueError('another collector or analyzer owns this campaign') from None
+            def check_paths():
+                if (not os.path.samestat(os.fstat(descriptor), os.stat(root, follow_symlinks=False))
+                        or not os.path.samestat(os.fstat(lock.fileno()),
+                                               os.stat(root / 'collection.lock', follow_symlinks=False))):
+                    raise ValueError('campaign lock pathname replaced')
+            check_paths()
+            try:
+                yield
+            finally:
+                check_paths()
+    finally:
+        os.close(descriptor)
 
 
 def sampling(experiment, phase):
