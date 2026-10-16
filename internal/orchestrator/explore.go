@@ -10,6 +10,7 @@ import (
 	"github.com/weavegate/weavegate/internal/oracle"
 	"github.com/weavegate/weavegate/internal/scenario"
 	"github.com/weavegate/weavegate/internal/sut"
+	"github.com/weavegate/weavegate/internal/timing"
 )
 
 // CandidateSummary records stable evidence for one successfully evaluated
@@ -71,6 +72,8 @@ func (o *Orchestrator) ExplorePlan(
 	plan scenario.SchedulePlan,
 	evaluator oracle.Evaluator,
 ) (result ExploreResult, returnErr error) {
+	ctx, finish := timing.Start(ctx, "explore_pass")
+	defer finish()
 	startedAt := time.Now()
 	defer func() {
 		result.Elapsed = time.Since(startedAt)

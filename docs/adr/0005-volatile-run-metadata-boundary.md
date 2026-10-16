@@ -46,6 +46,14 @@ further:
 
 ## Consequences
 
+- Run-stage intervals are additive `manifest.timings` metadata, also inherited
+  by `report.json`. They use one local monotonic origin and identify nested
+  spans, so consumers can distinguish inclusive work from exclusive wall
+  coverage. The collection scope ends before artifact writing; a whole-process
+  measurement remains the collector's responsibility. Timing never enters the
+  five deterministic artifacts (including the later portable schedule file)
+  or normalized execution fingerprints. See the
+  [timing contract](../reference/report-schema.md#run-timings).
 - A determinism regression test is a rerun-and-diff on four files, not a
   bespoke comparator: write the same run twice and `bytes.Equal` the
   deterministic four.

@@ -22,6 +22,7 @@ import (
 	"github.com/weavegate/weavegate/internal/orchestrator"
 	"github.com/weavegate/weavegate/internal/report"
 	"github.com/weavegate/weavegate/internal/scenario"
+	"github.com/weavegate/weavegate/internal/timing"
 )
 
 type cleanupGuard struct {
@@ -106,9 +107,14 @@ func runScenarioWithDiagnosticDeriver(
 	newFixture func() fixture.Provisioner,
 	deriveDiagnostics func(diagnostic.Input) ([]diagnostic.Diagnostic, error),
 ) (finalErr error) {
+	ctx, timings := timing.New(ctx)
+	ctx, finishCommand := timing.Start(ctx, "command")
+	defer finishCommand()
 	startedAt := time.Now().UTC()
 
+	_, finishPreflight := timing.Start(ctx, "preflight")
 	plan, err := buildRunPlan(flags)
+	finishPreflight()
 	if err != nil {
 		return reportRunFailure(stderr, err)
 	}
@@ -141,7 +147,9 @@ func runScenarioWithDiagnosticDeriver(
 		finalErr = &exitError{err: ci.FixtureError(cleanupErr)}
 	}()
 
-	db, err := fx.Provision(ctx, plan.Fixture)
+	provisionCtx, finishProvision := timing.Start(ctx, "fixture_provision")
+	db, err := fx.Provision(provisionCtx, plan.Fixture)
+	finishProvision()
 	if err != nil {
 		return reportRunFailure(stderr, ci.FixtureError(fmt.Errorf("run: provision fixture: %w", err)))
 	}
@@ -182,7 +190,9 @@ func runScenarioWithDiagnosticDeriver(
 
 	// Tear down before writing and printing so cleanup failure is present in
 	// the saved manifest. cleanupGuard guarantees this is the only call.
+	_, finishCleanup := timing.Start(ctx, "fixture_teardown")
 	cleanupErr := cleanup.run()
+	finishCleanup()
 	cleanupDone = true
 	if cleanupErr != nil {
 		_, _ = fmt.Fprintf(stderr, "weavegate: warning: cleanup failed: %v\n", cleanupErr)
@@ -245,6 +255,8 @@ func runScenarioWithDiagnosticDeriver(
 		run.DiagnosticDerivationFailed = true
 	}
 
+	finishCommand()
+	run.Manifest.Timings = report.NewTimings(timings.Snapshot())
 	dir, err := report.WriteRun(plan.Out, run)
 	if err != nil {
 		return reportRunFailure(stderr, err)

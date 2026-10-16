@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/weavegate/weavegate/internal/timing"
 )
 
 type statementExecutor interface {
@@ -102,7 +104,10 @@ func applyFixtureSQL(
 	sources := append([]preparedSQLSource(nil), prepared.migrations...)
 	sources = append(sources, prepared.seed)
 	for _, source := range sources {
-		if err := executeSQLSource(ctx, executor, source); err != nil {
+		sourceCtx, finishSource := timing.Start(ctx, "database_"+source.phase)
+		err := executeSQLSource(sourceCtx, executor, source)
+		finishSource()
+		if err != nil {
 			return err
 		}
 	}

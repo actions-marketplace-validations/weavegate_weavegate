@@ -44,6 +44,28 @@ and checks budget arithmetic. The child is launched only after fixture
 provisioning. The selected scenario's start payload is checked against the wire
 frame limit before provisioning. See the [external config keys](config.md#external-jvm).
 
+### Run-stage timing evidence
+
+Completed runs record `manifest.json`'s optional `timings` object, also nested
+in `report.json`. Each exploration candidate and replay repetition records
+reset, adapter startup, schedule execution, Oracle and adapter stop intervals.
+Provisioning and final cleanup are separate command stages. External startup
+includes separate JAR snapshot and process-start-to-ready intervals.
+
+The collection scope ends before artifact writing. These nested intervals are
+volatile metadata; `report.md` and normalized execution evidence keep their
+deterministic contract. To inspect a saved run, use the following command,
+replacing the run-directory placeholder:
+
+```bash
+python3 -m json.tool "<out>/runs/<run_id>/manifest.json"
+```
+
+Python is only an optional inspection tool, not a CLI dependency. Consult the
+[timing schema](report-schema.md#run-timings) for units, scope and how to avoid
+double-counting nested intervals. Older runs without this field have no timing
+measurement.
+
 ### `--replay` resolution order
 
 Exactly `sch_` followed by 12 lowercase hexadecimal characters is treated as

@@ -12,6 +12,7 @@ import (
 	"github.com/weavegate/weavegate/internal/scenario"
 	"github.com/weavegate/weavegate/internal/sut"
 	"github.com/weavegate/weavegate/internal/syncpoint"
+	"github.com/weavegate/weavegate/internal/timing"
 	"github.com/weavegate/weavegate/internal/trace"
 )
 
@@ -82,6 +83,8 @@ func (o *Orchestrator) Run(
 	schedule scenario.Schedule,
 	evaluator oracle.Evaluator,
 ) (result RunResult, returnErr error) {
+	ctx, finishRun := timing.StartSchedule(ctx, schedule.ID)
+	defer finishRun()
 	startedAt := time.Now()
 	result = RunResult{
 		ScheduleID: schedule.ID,
@@ -135,7 +138,10 @@ func (o *Orchestrator) Run(
 	}()
 	executionCtx, cancelExecution := context.WithCancelCause(runCtx)
 	defer cancelExecution(nil)
-	if err := o.config.Fixture.Reset(runCtx); err != nil {
+	resetCtx, finishReset := timing.Start(runCtx, "fixture_reset")
+	resetErr := o.config.Fixture.Reset(resetCtx)
+	finishReset()
+	if err := resetErr; err != nil {
 		return result, fmt.Errorf("run schedule %q: reset fixture: %w", schedule.ID, NewFixtureError(err))
 	}
 	if err := trace.emit(Event{Kind: EventFixtureReset, Step: -1}); err != nil {
@@ -168,7 +174,9 @@ func (o *Orchestrator) Run(
 				context.WithoutCancel(ctx),
 				o.config.StopTimeout,
 			)
+			stopCtx, finishStop := timing.Start(stopCtx, "adapter_stop")
 			stopErr = adapter.Stop(stopCtx)
+			finishStop()
 			cancelStop()
 		}
 		cancelCollectors()
@@ -201,7 +209,9 @@ func (o *Orchestrator) Run(
 		}
 	}()
 
+	_, finishCreate := timing.Start(executionCtx, "adapter_create")
 	created, err := o.config.NewAdapter(runtime)
+	finishCreate()
 	if err != nil {
 		return result, fmt.Errorf("run schedule %q: create adapter: %w", schedule.ID, err)
 	}
@@ -209,7 +219,9 @@ func (o *Orchestrator) Run(
 		return result, fmt.Errorf("run schedule %q: adapter factory returned nil", schedule.ID)
 	}
 	adapter = created
-	handle, err := adapter.Start(executionCtx, value.Clone().SUTConfig, o.config.DB)
+	startCtx, finishStart := timing.Start(executionCtx, "adapter_start")
+	handle, err := adapter.Start(startCtx, value.Clone().SUTConfig, o.config.DB)
+	finishStart()
 	if err != nil {
 		return result, fmt.Errorf("run schedule %q: start adapter: %w", schedule.ID, err)
 	}
@@ -246,7 +258,11 @@ func (o *Orchestrator) Run(
 		preObserved:       make(map[int]bool),
 		pending:           make(map[int]bool),
 	}
-	if err := coordinator.execute(); err != nil {
+	executeCtx, finishExecute := timing.Start(executionCtx, "schedule_execute")
+	coordinator.ctx = executeCtx
+	executeErr := coordinator.execute()
+	finishExecute()
+	if err := executeErr; err != nil {
 		coordinator.rebuildCollectionErrors = solelyWrapsCollectorFailure(err) ||
 			solelyWraps(err, executionCtx.Err())
 		return result, fmt.Errorf("run schedule %q: %w", schedule.ID, executionError(executionCtx, err))
@@ -259,10 +275,12 @@ func (o *Orchestrator) Run(
 		return result, err
 	}
 	result.Trace = trace.clone()
-	evaluated, err := evaluator.Evaluate(executionCtx, o.config.DB.SQL, oracle.RunContext{
+	oracleCtx, finishOracle := timing.Start(executionCtx, "oracle_evaluate")
+	evaluated, err := evaluator.Evaluate(oracleCtx, o.config.DB.SQL, oracle.RunContext{
 		Trace:     result.Trace.Clone(),
 		Terminals: result.Terminals.Clone(),
 	})
+	finishOracle()
 	if err != nil {
 		return result, fmt.Errorf("run schedule %q: evaluate oracles: %w", schedule.ID, executionError(executionCtx, err))
 	}
@@ -412,12 +430,14 @@ func (r *runCoordinator) invoke(worker scenario.Worker) error {
 
 func (r *runCoordinator) bootstrap(index int) error {
 	step := r.schedule.Steps[index]
+	waitCtx, finishWait := timing.Start(r.ctx, "block_recognition")
 	status, err := r.runtime.WaitArrive(
-		r.ctx,
+		waitCtx,
 		step.Worker,
 		step.Point,
 		r.configuredBlockTimeout(),
 	)
+	finishWait()
 	if err != nil {
 		return fmt.Errorf("bootstrap worker %q at %q: %w", step.Worker, step.Point, err)
 	}
@@ -442,7 +462,9 @@ func (r *runCoordinator) traverse(index int) error {
 		return r.release(index)
 	}
 
-	status, err := r.runtime.WaitArrive(r.ctx, step.Worker, step.Point, r.configuredStepTimeout())
+	waitCtx, finishWait := timing.Start(r.ctx, "step_wait")
+	status, err := r.runtime.WaitArrive(waitCtx, step.Worker, step.Point, r.configuredStepTimeout())
+	finishWait()
 	if err != nil {
 		return fmt.Errorf("wait for step[%d] worker %q at %q: %w", index, step.Worker, step.Point, err)
 	}
@@ -554,7 +576,9 @@ func (r *runCoordinator) drainPending() (bool, error) {
 			continue
 		}
 
-		status, err := r.runtime.WaitArrive(r.ctx, step.Worker, step.Point, r.configuredStepTimeout())
+		waitCtx, finishWait := timing.Start(r.ctx, "step_wait")
+		status, err := r.runtime.WaitArrive(waitCtx, step.Worker, step.Point, r.configuredStepTimeout())
+		finishWait()
 		if err != nil {
 			return progressed, fmt.Errorf(
 				"recheck pending step[%d] worker %q at %q: %w",

@@ -43,7 +43,7 @@ empty diagnostics array followed successful derivation. The legacy v1
 ## Volatile vs. deterministic
 
 Two files carry per-run identity and are expected to differ between two runs
-of the same config: `manifest.json` (run ID, start time) and `report.json`
+of the same config: `manifest.json` (run ID, start time, stage timings) and `report.json`
 (a merge of manifest, scenario, and observation, so it inherits manifest's
 volatile fields). The remaining five files, including `schedule.json` when a
 schedule is present, are **byte-identical** for two runs given the same config
@@ -68,11 +68,86 @@ deterministic or stripping timestamps everywhere.
 | `engine` | string | Distinct storage engines actually in use by the provisioned schema's tables, read from `information_schema.tables` immediately after provisioning and joined with `,` when more than one engine is present. Not assumed from the config or migrations. |
 | `adapter`, `variant`, `image` | string | The resolved adapter, SUT variant, and database image for this run. |
 | `sut_sha256` | string, optional | For `adapter: external`, `sha256:<64 lowercase hex>` of the selected executable JAR, checked at preflight and against a private snapshot used for each child launch. Absent for `gonative`. Its addition is compatible with v2/v3 under the additive-field policy. |
+| `timings` | object, optional | Local monotonic intervals through the boundary before artifact writing. New CLI runs include it; older artifacts may omit it. See [Run timings](#run-timings). It is volatile and also appears inside `report.json`'s manifest. |
 | `cleanup_failed` | bool | `true` when fixture teardown failed after this run completed (see [exit-codes.md](exit-codes.md#cleanup-failures-never-mask-a-verdict) for how this can raise a passing run's exit code to 4). It never changes `report.md`'s headline or `scenario.json`/`observation.json`'s content — those describe the scenario's own, deterministic outcome — but it records, on the run this actually happened to, why the process exit code can be higher than the headline alone would suggest. `false` on every ordinary run. |
 
 Both digests come from the same immutable prepared source that `Provision` and
 every `Reset` apply. The CLI does not re-read migration or seed paths while
 building the manifest.
+
+### Run timings
+
+`manifest.timings.scope` is `before_artifact_write`. `spans` is an array in
+start order, measured on the CLI process's monotonic clock. Collection begins
+at the run command implementation and ends just before `WriteRun`: artifact
+encoding/writing/publication, stdout, process launch and exit are outside this
+scope. It is not whole-gate wall time. A collector measuring the CLI from spawn
+through exit must measure that separately.
+
+| Span field | Type | Meaning |
+| --- | --- | --- |
+| `id` | int | Positive identifier within this run, in start order. |
+| `parent_id` | int | Enclosing interval's ID; `0` for the `command` root. |
+| `name` | string | Measured stage from the table below. |
+| `schedule_id` | string, optional | Present on each `schedule_run`, including passing candidates. Repeated executions have distinct span IDs even when their schedule ID is the same. |
+| `start_ns` | int64 | Offset in nanoseconds from the local recorder origin. Not a timestamp and not comparable with another process's clock. |
+| `duration_ns` | int64 | Inclusive monotonic duration of the interval in nanoseconds. |
+
+| Stage | Boundary |
+| --- | --- |
+| `command` | Run command implementation through report preparation, before artifact writing. |
+| `preflight` | Config/scenario/fixture source preparation and replay or exploration planning. |
+| `fixture_provision` | Fixture provisioning, including database readiness and initial migrations/seed. |
+| `database_start` | MySQL container start request through readiness. Nested in provision. |
+| `database_migration`, `database_seed` | One prepared SQL source's execution. Nested in provision or reset; migration files have separate intervals. |
+| `explore_pass` | One exploration pass, including every evaluated candidate. |
+| `replay` | All repetitions of one selected schedule. |
+| `schedule_run` | One execution, including validation, run-gate wait, reset and detached adapter cleanup. |
+| `fixture_reset` | Fixture reset for that execution. |
+| `adapter_create` | Adapter factory call. |
+| `adapter_start` | Adapter start through a usable handle; includes external JAR snapshot and startup. |
+| `jar_snapshot` | Bounded private JAR snapshot request through its result, before child launch. External only. |
+| `process_start_to_ready` | External process launch request through accepted readiness. Includes JVM and application startup, protocol exchange and local supervision. External only. |
+| `schedule_execute` | Worker invocation, sync-point coordination and terminal collection. Includes application work and waits; it is not application CPU time. |
+| `block_recognition` | Each worker's initial arrival wait through its classification. Nested in schedule execution. Timeout inference is not measured database lock time. |
+| `step_wait` | A later schedule-step arrival wait, including deferred steps. Nested in schedule execution. |
+| `oracle_evaluate` | Oracle evaluator call. Evaluation validation and fingerprint construction belong to the enclosing run's remainder. |
+| `adapter_stop` | Detached adapter Stop call, including external shutdown/reap and snapshot removal. Collector joining and runtime closure belong to the enclosing run's remainder. |
+| `fixture_teardown` | Final bounded fixture cleanup, including unsuccessful cleanup attempts. |
+
+Children are included in their parent's duration. Compute exclusive coverage
+by subtracting the **union** of child intervals from their parent; summing all
+spans double-counts nested work. Keep the uncovered remainder: it includes
+bookkeeping, manifest queries, verdict/diagnostic preparation and measurement
+overhead. Do not subtract these offsets from JVM clocks or infer
+JVM-internal Spring startup from them; that separate measurement is unavailable.
+
+Every executed candidate and replay has its own `schedule_run`, even when
+exhausted exploration saves no selected schedule or representative trace.
+These intervals describe performance only. They never enter normalized trace,
+Oracle evaluation, fingerprints, schedule IDs, flaky decisions, or Markdown.
+The existing deterministic files remain byte-identical for identical inputs.
+Older artifacts without `timings` mean timing was unavailable, not zero. A
+retained diagnostic-derivation failure includes timings under artifact version
+3; execution failures still publish no run directory.
+
+Timing size grows linearly with executions, not with the saved evidence:
+each `schedule_run` adds its own reset, startup, wait, Oracle, and stop
+intervals, and `report.json` repeats the whole object. On the Go-native
+`matching-slice` fixture, the `fixed` variant's exploration evaluated 18
+candidates over 3 passes and recorded 262 spans, so `manifest.json` grew to
+about 43 KB. Nearly all of it was timing, roughly 2.3 KB per execution, and
+`report.json` was about 48 KB. Larger candidate sets, more passes, or higher
+`--repeat` values scale both files accordingly. To reproduce these figures,
+run the following from the repository root. It writes to a fresh temporary
+output directory:
+
+```bash
+OUT=$(mktemp -d)
+weavegate run --config fixtures/matching-slice/.weavegate/config.yaml \
+  --scenario concurrent-assign --variant fixed --out "$OUT"
+wc -c "$OUT"/runs/*/manifest.json "$OUT"/runs/*/report.json
+```
 
 ## `scenario.json`
 
