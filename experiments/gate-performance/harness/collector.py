@@ -10,9 +10,10 @@ from pathlib import Path
 from common import (campaign_lock, canonical, child, digest, order, read_json, seal, sha,
                     timestamp, utc, verify, write_bytes, write_csv, write_json)
 from evidence import EVIDENCE_ERRORS, cleanup_inventory, cleanup_valid, observation, trial
-from execution import ReceiptIntegrityError, defer_interrupts, execute, succeeded
+from execution import ReceiptIntegrityError, defer_interrupts, execute, expand_command, succeeded
 from plan import STEPS, bind_executables, validate_manifest, validate_registration, verify_execution_pins
-from redaction import redact_metadata, sanitize, validate_redaction_secrets
+from redaction import (redact_metadata, sanitize, validate_public_evidence,
+                       validate_redaction_secrets)
 from storage import BundleGuard
 
 
@@ -128,6 +129,16 @@ def collect_locked(root, block, registration):
     secrets = [os.environ[name].encode() for name in redaction_env_names]
     validate_redaction_secrets(secrets)
     pair_dir = root / 'blocks' / block
+    collection_command = {'argv': [sys.executable, '-B', str(Path(__file__).with_name('tool.py')),
+                                  'collect', str(root), '--block', block,
+                                  '--registration', str(receipt_path)]}
+    invocations = []
+    for arm in slot['arms']:
+        context = {'campaign_dir': root, 'trial_dir': pair_dir / arm,
+                   'block_id': block, 'arm': arm, 'redact_env': redaction_env_names}
+        for spec in m['commands'][slot['workload']][arm].values():
+            invocations.append(expand_command(spec, context))
+    validate_public_evidence(root, secrets, [reg, collection_command, invocations])
     session = None
     safe = True
     interrupted = False
@@ -136,9 +147,7 @@ def collect_locked(root, block, registration):
             pair_dir.parent.mkdir(exist_ok=True)
             pair_dir.mkdir(mode=0o700)  # Existing or interrupted blocks cannot be rerun.
             write_json(receipt_path, reg)
-            write_json(pair_dir / 'collection-command.json', {'argv': [sys.executable, '-B',
-                       str(Path(__file__).with_name('tool.py')), 'collect', str(root), '--block', block,
-                       '--registration', str(receipt_path)]})
+            write_json(pair_dir / 'collection-command.json', collection_command)
             write_json(pair_dir / 'slot.json', slot)
             seal(root)  # A crash consumes the slot, never creates a replacement attempt.
             session = Collection(root, m, secrets)

@@ -66,6 +66,11 @@ def validate_manifest(m):
         raise ValueError('strata require positive integer counts')
     if any(not re.fullmatch(r'[a-z0-9][a-z0-9-]*', name) for name in m['strata']):
         raise ValueError('workload IDs must be safe lowercase identifiers')
+    # The numeric formats are minimum widths: large slots/counts add digits.
+    for workload, counts in m['strata'].items():
+        for date_index, count in enumerate(counts, 1):
+            if len(('%s-%02d-%03d' % (workload, date_index, count)).encode()) > 255:
+                raise ValueError('composed block name exceeds 255 bytes')
     dates = m['dates']
     if len(set(dates)) != len(dates) or dates != sorted(dates):
         raise ValueError('date slots must be distinct and increasing')

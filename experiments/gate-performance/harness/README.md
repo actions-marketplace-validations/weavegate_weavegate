@@ -111,6 +111,10 @@ independence and counter scope also require audit of the frozen hooks.
 JSON rejects duplicate keys and nonfinite numbers. Versions, counts and exit
 codes are integers, not booleans. Hashes are lowercase 64-character SHA-256.
 Portable paths are relative, without parent traversal, NUL or symlinks.
+Workload IDs use lowercase ASCII letters, digits and hyphens, starting with a
+letter or digit. Every composed `<workload>-<date-slot>-<block-number>` name must
+fit within 255 bytes, including numeric suffixes wider than their minimum two
+and three digits. Overlong names are rejected before freeze creates a campaign.
 
 | Field | Contract |
 | --- | --- |
@@ -207,8 +211,10 @@ or command paths at the arm root; nested originals with those names remain valid
 The collector records paths, hashes and file identities in `cleanup-inputs.json`
 immediately before teardown. Both `cleanup.json` and every referenced cleanup original must be newly retained by
 that step; the inventory also records pre-cleanup device/inode identities to
-reject hard-link aliases of earlier files. Earlier product evidence cannot
-substitute for teardown evidence.
+reject hard-link aliases of earlier files, including immutable command receipts
+and stdout/stderr. Only replaceable control metadata is excluded from that
+identity set, since its freed inode may be reused. Earlier product evidence or
+command output cannot substitute for teardown evidence.
 Malformed observations, operational exits and timeouts remain failed attempts;
 the mate still runs after proven cleanup. Unproven cleanup leaves the mate not
 started, writes `stopped.json` and prohibits further collection.
@@ -251,8 +257,16 @@ or rerun it as a primary observation. No claim of crash recovery is made.
 ## Sanitization and bundle layout
 
 Secrets belong only in `redact_env` values, never public manifests, ordinary
-`env`, argv, pins or registration. Empty values and values contained in the
-literal `[REDACTED]` marker fail before entering a slot. Longer overlapping
+`env`, argv, paths, pins or registration. Before consuming a block, collection
+checks all retained file paths and bytes, decoded JSON, registration and generated
+control metadata, including both arms' expanded argv/cwd/env. A configured secret
+in those public values rejects admission without changing the frozen bundle or
+running hooks. This includes campaign and manifest source paths, relocated
+campaign paths and short secrets that collide with public data. Credentials are
+supplied at collection, so freeze alone does not provide this check; review the
+frozen inputs before publishing them.
+Empty values and values contained in the literal `[REDACTED]` marker also fail
+before entering a slot. Longer overlapping
 values are replaced first. JSON string redaction preserves numeric/boolean
 syntax; non-JSON payloads receive byte redaction, including JSON-escaped forms.
 No payload is exempt merely because its filename resembles a control file.
@@ -262,7 +276,8 @@ Hook-owned relative file and directory paths containing a configured secret
 are rejected, including empty directories and collisions with short secret
 values. Paths are never silently renamed. The diagnostic omits the leaking
 name, cleanup is attempted and resealing remains forbidden even if cleanup
-removes that path. Collector-owned public control paths remain exempt.
+removes that path. Collector-owned public control paths retain their spelling
+after admission validates their public inputs.
 
 Sanitization precedes evidence checkpoints. Unchanged bytes are not rewritten.
 Changed payloads use an atomic temporary-file replacement, preserving external

@@ -25,10 +25,13 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   and reproduce E1/E2 paired analysis from the same evidence rules used during
   collection. Failed, interrupted and missing attempts remain in the accounting;
   interruptions and unproven cleanup stop further collection. Bundles authenticate
-  empty directories, reject secret-bearing evidence paths and validate retained
+  empty directories, reject secret-bearing evidence paths and public metadata
+  before collection, and validate retained
   registrations before measurements begin. Original evidence excludes collector
   metadata, cleanup requires newly retained proof without pre-cleanup hard-link
-  aliases, and command output replacement prevents sealing. Non-executable command paths fail before consuming a block.
+  aliases (including command output), and command output replacement prevents
+  sealing. Non-executable command paths fail before consuming a block; composed
+  block names exceeding 255 bytes fail before campaign creation.
   Observation evidence must exist before the checker runs.
   Sanitization and aggregate replacement preserve hard-linked originals;
   admission, ownership updates, cleanup and final sealing defer interruption.

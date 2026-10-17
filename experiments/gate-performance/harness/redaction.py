@@ -13,6 +13,36 @@ def validate_redaction_secrets(secrets):
         raise ValueError('secret must be nonempty and absent from the redaction marker')
 
 
+def secret_variants(secrets):
+    variants = set(secrets)
+    for value in secrets:
+        variants.add(json.dumps(value.decode(), ensure_ascii=True)[1:-1].encode())
+        variants.add(json.dumps(value.decode(), ensure_ascii=False)[1:-1].encode())
+    return sorted(variants, key=len, reverse=True)
+
+
+def validate_public_evidence(root, secrets, metadata):
+    """Reject leaks before admission without rewriting registered public bytes."""
+    if not secrets:
+        return
+    variants = secret_variants(secrets)
+    def check(data):
+        if any(value in data for value in variants):
+            # Neither the credential nor its containing path belongs in errors.
+            raise ValueError('secret in public campaign evidence or metadata')
+    check(canonical(metadata))
+    for path in entries(root):
+        check(str(path.relative_to(root)).encode())
+        if path.is_file():
+            check(path.read_bytes())
+            if path.suffix == '.json':
+                try:
+                    value = read_json(path)
+                except (ValueError, UnicodeError):
+                    continue
+                check(canonical(value))  # Catch alternate JSON string escapes.
+
+
 def sanitize(root, secrets, owned=()):
     """Sanitize retained bytes before computing evidence hashes."""
     validate_redaction_secrets(secrets)
@@ -33,11 +63,7 @@ def sanitize(root, secrets, owned=()):
                 removed += replacements[0]
                 continue
         original = data
-        variants = set(secrets)
-        for value in secrets:
-            variants.add(json.dumps(value.decode(), ensure_ascii=True)[1:-1].encode())
-            variants.add(json.dumps(value.decode(), ensure_ascii=False)[1:-1].encode())
-        for value in sorted(variants, key=len, reverse=True):
+        for value in secret_variants(secrets):
             removed += data.count(value)
             data = data.replace(value, REDACTION_MARKER)
         if data != original:

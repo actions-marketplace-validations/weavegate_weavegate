@@ -85,13 +85,14 @@ def cleanup_inventory(directory):
     """Capture paths and inode identities before teardown can introduce aliases."""
     from common import bundle_inventory
     paths = bundle_inventory(directory)
-    # Collector metadata is atomically replaced; its freed inode may be reused
-    # by a genuinely new cleanup original. Only retained originals qualify.
+    # Mutable control metadata is atomically replaced; its freed inode may be
+    # reused by a new cleanup original. Completed command receipts and output
+    # stay immutable, so their identities must also be excluded from proof.
     identities = []
     for name, value in paths.items():
         path = child(directory, name)
         if (value is not None and
-                not (path.parent == directory and path.name in CONTROL | COMMAND_FILES)):
+                not (path.parent == directory and path.name in CONTROL)):
             stat = path.stat()
             identities.append([stat.st_dev, stat.st_ino])
     return {'paths': paths, 'identities': identities}

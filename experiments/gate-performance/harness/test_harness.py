@@ -262,6 +262,108 @@ if step=='cleanup':
         shutil.copytree(bundle, copied, copy_function=shutil.copyfile)
         self.assertFalse(analyzed_trial(copied, self.manifest, slot, slot['arms'][0])['cleanup_proven'])
 
+    def test_cleanup_rejects_hard_links_to_command_outputs(self):
+        from collector import execute as real_execute
+        for suffix in ('.stdout', '.stderr'):
+            bundle, registration = self.frozen(name='output-alias-' + suffix[1:])
+            slot = order(self.manifest)[0]
+            def command(spec, context, directory, step, secrets):
+                result = real_execute(spec, context, directory, step, secrets)
+                if step == 'cleanup':
+                    os.link(directory / ('run' + suffix), directory / 'teardown.log')
+                    write_json(directory / 'cleanup.json', {'proven': True,
+                               'evidence': {'teardown.log': digest(directory / 'teardown.log')}})
+                return result
+            with self.subTest(suffix=suffix), patch('collector.execute', side_effect=command):
+                self.assertFalse(collect(bundle, slot['block'], registration))
+                verify(bundle)
+                self.assertTrue((bundle / 'stopped.json').exists())
+                row = analyzed_trial(bundle, self.manifest, slot, slot['arms'][0])
+                self.assertFalse(row['cleanup_proven'])
+                self.assertEqual(row['reason'], 'cleanup_unproven')
+                self.assertFalse(analyzed_trial(bundle, self.manifest, slot, slot['arms'][1])['started'])
+                copied = self.root / ('copied-output-alias-' + suffix[1:])
+                shutil.copytree(bundle, copied, copy_function=shutil.copyfile)
+                verify(copied)
+                self.assertFalse(analyzed_trial(copied, self.manifest, slot, slot['arms'][0])['cleanup_proven'])
+
+    def test_public_secrets_rejected_before_admission(self):
+        cases = ('campaign-path', 'manifest-path', 'relocated-path', 'pin', 'json-pin',
+                 'registration', 'expanded-argv', 'expanded-cwd', 'expanded-env')
+        for kind in cases:
+            secret = sha(kind.encode())
+            m = copy.deepcopy(self.manifest)
+            m['redact_env'] = ['TEST_REDACTION_SECRET']
+            if kind.startswith('expanded-'):
+                secret = 'candidate-' + secret
+                spec = m['commands'][order(m)[0]['workload']]['candidate']['cleanup']
+                value = '{arm}-' + secret.removeprefix('candidate-')
+                if kind == 'expanded-argv':
+                    spec['argv'].append(value)
+                elif kind == 'expanded-cwd':
+                    spec['cwd'] = '{trial_dir}/' + value
+                else:
+                    spec['env']['PUBLIC_VALUE'] = value
+            if kind in ('pin', 'json-pin'):
+                pin = self.source / ('private.json' if kind == 'json-pin' else 'private.log')
+                # JSON escapes must be checked as decoded values too.
+                data = ('{"value":"' + ''.join('\\u%04x' % ord(c) for c in secret) + '"}'
+                        if kind == 'json-pin' else secret)
+                pin.write_text(data)
+                m['pins'].append({'path': pin.name, 'sha256': digest(pin), 'role': 'constructed'})
+            source = self.source / (secret + '.json' if kind == 'manifest-path' else 'public.json')
+            write_json(source, m)
+            bundle = self.root / (secret if kind == 'campaign-path' else 'public-' + kind)
+            freeze(source, bundle)
+            if kind == 'relocated-path':
+                moved = self.root / secret
+                bundle.rename(moved)
+                bundle = moved
+            registration = self.root / 'public-registration.json'
+            write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
+                                     'order_sha256': digest(bundle / 'order.json'),
+                                     'registered_at': '2020-01-01T00:00:00Z',
+                                     'revision': secret if kind == 'registration' else 'constructed',
+                                     'public_url': 'https://example.invalid/constructed'})
+            before = (bundle / 'SHA256SUMS').read_bytes()
+            with self.subTest(kind=kind), patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}), \
+                    patch('collector.execute') as command:
+                with self.assertRaisesRegex(ValueError, 'secret.*public') as error:
+                    collect(bundle, self.block(bundle), registration)
+                self.assertNotIn(secret, str(error.exception))
+                command.assert_not_called()
+                self.assertFalse((bundle / 'blocks').exists())
+                self.assertFalse((bundle / 'registration.json').exists())
+                self.assertEqual((bundle / 'SHA256SUMS').read_bytes(), before)
+                verify(bundle)
+
+    def workload_manifest(self, experiment, workload, counts):
+        m = copy.deepcopy(self.manifest)
+        m['experiment'] = experiment
+        m['strata'] = {workload: counts}
+        m['dates'] = [(datetime.now(timezone.utc) + timedelta(days=index)).strftime('%Y-%m-%d')
+                      for index in range(len(counts))]
+        for key in ('commands', 'expected_facts', 'expected_exit'):
+            m[key] = {workload: m[key]['example-fixed-replay']}
+        return m
+
+    def test_block_component_length_checked_before_freeze(self):
+        for experiment in ('E3', 'E4'):
+            for length, counts in ((250, [1]), (249, [1]), (248, [1000]), (248, [1] * 100)):
+                m = self.workload_manifest(experiment, 'w' * length, counts)
+                destination = self.root / ('long-' + experiment + '-' + str(length) + '-' + str(len(counts)))
+                with self.subTest(experiment=experiment, length=length, counts=counts):
+                    with self.assertRaisesRegex(ValueError, 'block.*255'):
+                        self.frozen(m, destination.name)
+                    self.assertFalse(destination.exists())
+            for length, counts in ((248, [1]), (247, [1000]), (247, [1] * 100)):
+                validate_manifest(self.workload_manifest(experiment, 'w' * length, counts))
+            m = self.workload_manifest(experiment, 'w' * 248, [1])
+            bundle, registration = self.frozen(m, 'limit-' + experiment)
+            self.assertEqual(len(self.block(bundle).encode()), 255)
+            self.assertTrue(collect(bundle, self.block(bundle), registration))
+            verify(bundle)
+
     def test_executable_permissions_checked_before_freeze_and_admission(self):
         binary = self.source / 'pinned-python'
         shutil.copyfile(sys.executable, binary)
@@ -770,7 +872,7 @@ if step=='cleanup':
     def test_secret_bearing_paths_refuse_sealing_even_if_cleanup_removes_them(self):
         from collector import execute as real_execute
         for index, kind in enumerate(('file', 'directory', 'empty-directory')):
-            secret = 'synthetic-path-credential'
+            secret = sha(b'synthetic-path-credential')
             m = copy.deepcopy(self.manifest)
             m['redact_env'] = ['TEST_REDACTION_SECRET']
             source = self.source / 'secret-path.json'
@@ -2191,7 +2293,7 @@ if step=='observe':
 
     def test_post_check_and_cleanup_redactions_are_counted(self):
         from collector import execute as real_execute
-        secret = 'constructed-secret-for-late-redaction'
+        secret = sha(b'constructed-secret-for-late-redaction')
         m = copy.deepcopy(self.manifest)
         m['redact_env'] = ['TEST_REDACTION_SECRET']
         bundle, registration = self.frozen(m)
@@ -2555,13 +2657,13 @@ else:
                 with self.assertRaisesRegex(ValueError, 'redaction marker'):
                     sanitize(bundle, [secret.encode()])
                 verify(bundle)
-        with patch.dict(os.environ, {'TEST_REDACTION_SECRET': 'credential-containing-REDACTED'}):
+        with patch.dict(os.environ, {'TEST_REDACTION_SECRET': sha(b'credential') + '-REDACTED'}):
             self.assertTrue(collect(bundle, self.block(bundle), registration))
         verify(bundle)
 
     def test_original_command_named_evidence_is_not_a_collector_receipt(self):
         from collector import execute as real_execute
-        secret = 'original-command-evidence-secret'
+        secret = sha(b'original-command-evidence-secret')
         m = copy.deepcopy(self.manifest)
         m['redact_env'] = ['TEST_REDACTION_SECRET']
         bundle, registration = self.frozen(m)
@@ -2686,7 +2788,7 @@ else:
             with self.subTest(queue=queue), self.assertRaisesRegex(ValueError, 'provider timestamps'):
                 receipt_valid(m, row, receipt, directory)
 
-    def test_short_secret_redaction_preserves_collector_json_and_slot_identity(self):
+    def test_short_secrets_colliding_with_public_data_reject_admission(self):
         for index, secret in enumerate(('0', '1', 'a')):
             m = self.make_manifest()
             m['redact_env'] = ['TEST_REDACTION_SECRET']
@@ -2700,32 +2802,14 @@ else:
                                      'registered_at': '2020-01-01T00:00:00Z',
                                      'revision': 'constructed', 'public_url': 'https://example.invalid/constructed'})
             with patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}):
-                if secret == 'a':
-                    # Public control paths are exempt; hook-owned cleanup paths
-                    # containing this short value must still refuse sealing.
-                    with self.assertRaisesRegex(ValueError, 'refusing to reseal'):
-                        collect(bundle, self.block(bundle), registration)
-                else:
+                with self.assertRaisesRegex(ValueError, 'secret.*public'):
                     collect(bundle, self.block(bundle), registration)
-            slot = order(m)[0]
-            directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
-            for path in directory.glob('*.command.json'):
-                command = read_json(path)
-                self.assertIs(type(command['started']), bool)
-                self.assertIs(type(command['seconds']), float)
-            self.assertIn('[REDACTED]', (directory / 'run.stdout').read_text())
-            self.assertNotIn(secret, (directory / 'run.stdout').read_text())
-            if secret == 'a':
-                with self.assertRaises(ValueError):
-                    verify(bundle)
-                continue
+            self.assertFalse((bundle / 'blocks').exists())
+            self.assertFalse((bundle / 'registration.json').exists())
             verify(bundle)
-            row = read_json(directory / 'trial.json')
-            self.assertEqual(row['block'], slot['block'])
-            self.assertEqual(row['arm'], slot['arms'][0])
-            self.assertIs(type(row['attempt']), int)
             result = analyze(bundle, self.root / ('short-analysis-%d' % index))
-            self.assertEqual(result['accounting'][slot['workload']][slot['arms'][0]]['started'], 1)
+            self.assertTrue(all(counts['started'] == 0 for arms in result['accounting'].values()
+                                for counts in arms.values()))
 
     def test_wait_budget_includes_process_creation_delay(self):
         spec = self.manifest['commands']['example-fixed-replay']['baseline']['run']
