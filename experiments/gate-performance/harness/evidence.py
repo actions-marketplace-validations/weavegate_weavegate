@@ -85,14 +85,13 @@ def cleanup_inventory(directory):
     """Capture paths and inode identities before teardown can introduce aliases."""
     from common import bundle_inventory
     paths = bundle_inventory(directory)
-    # Mutable control metadata is atomically replaced; its freed inode may be
-    # reused by a new cleanup original. Completed command receipts and output
-    # stay immutable, so their identities must also be excluded from proof.
+    # Keep all pre-cleanup files, including controls. The collector defers their
+    # replacement until proof validation so freed inodes cannot be reused by
+    # new cleanup originals while these identities are authoritative.
     identities = []
     for name, value in paths.items():
         path = child(directory, name)
-        if (value is not None and
-                not (path.parent == directory and path.name in CONTROL)):
+        if value is not None:
             stat = path.stat()
             identities.append([stat.st_dev, stat.st_ino])
     return {'paths': paths, 'identities': identities}
@@ -112,6 +111,13 @@ def cleanup_valid(directory):
         raise ValueError('missing cleanup input inventory')
     identities = inputs['identities']
     inputs = inputs['paths']
+    # The inventory cannot record its own inode before it is written. Reject
+    # aliases of live controls too, including cleanup-inputs.json itself.
+    for name in CONTROL:
+        path = directory / name
+        if path.exists():
+            stat = path.stat()
+            identities.append([stat.st_dev, stat.st_ino])
     if 'cleanup.json' in inputs or any(
             str(child(directory, name).relative_to(directory)) in inputs for name in proof['evidence']):
         raise ValueError('cleanup proof must retain originals created by cleanup')

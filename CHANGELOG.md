@@ -29,10 +29,13 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   before collection, and validate retained
   registrations before measurements begin. Original evidence excludes collector
   metadata, cleanup requires newly retained proof without pre-cleanup hard-link
-  aliases (including command output), and command output replacement prevents
-  sealing. Non-executable command paths fail before consuming a block; composed
-  block names exceeding 255 bytes fail before campaign creation.
+  aliases (including command output and control receipts), and command output
+  replacement prevents sealing. Non-executable command paths fail before
+  consuming a block; composed block names exceeding 255 bytes fail before
+  campaign creation.
   Observation evidence must exist before the checker runs.
+  Sanitization rejects residual secrets in JSON scalars or protected controls
+  without changing their types; cleanup cannot clear a sanitization failure.
   Sanitization and aggregate replacement preserve hard-linked originals;
   admission, ownership updates, cleanup and final sealing defer interruption.
   Analysis locks its inputs through output sealing, and lock-file replacement

@@ -47,6 +47,7 @@ def sanitize(root, secrets, owned=()):
     """Sanitize retained bytes before computing evidence hashes."""
     validate_redaction_secrets(secrets)
     validate_paths(root, secrets, owned)
+    variants = secret_variants(secrets)
     removed = 0
     for path in files(root):
         data = path.read_bytes()
@@ -58,12 +59,19 @@ def sanitize(root, secrets, owned=()):
             else:
                 replacements = [0]
                 redacted = redact_metadata(value, secrets, path.name if path in owned else '', replacements)
+                serialized = canonical(redacted)
+                retained = serialized if replacements[0] else data
+                # Strings can be redacted without changing their JSON type;
+                # numbers/booleans/null and protected controls cannot. Check
+                # both decoded and retained spellings without rewriting them.
+                if any(value in serialized or value in retained for value in variants):
+                    raise ValueError('secret remains in JSON after string redaction')
                 if replacements[0]:
-                    write_bytes(path, canonical(redacted))
+                    write_bytes(path, serialized)
                 removed += replacements[0]
                 continue
         original = data
-        for value in secret_variants(secrets):
+        for value in variants:
             removed += data.count(value)
             data = data.replace(value, REDACTION_MARKER)
         if data != original:

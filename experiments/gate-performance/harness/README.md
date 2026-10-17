@@ -211,10 +211,13 @@ or command paths at the arm root; nested originals with those names remain valid
 The collector records paths, hashes and file identities in `cleanup-inputs.json`
 immediately before teardown. Both `cleanup.json` and every referenced cleanup original must be newly retained by
 that step; the inventory also records pre-cleanup device/inode identities to
-reject hard-link aliases of earlier files, including immutable command receipts
-and stdout/stderr. Only replaceable control metadata is excluded from that
-identity set, since its freed inode may be reused. Earlier product evidence or
-command output cannot substitute for teardown evidence.
+reject hard-link aliases of earlier files, including command receipts,
+stdout/stderr and control receipts. Control files stay live until cleanup proof
+validation; their replacement, including the final redaction count, happens
+afterward so freed inodes cannot be reused by new cleanup originals. Validation
+also rejects aliases of live controls, including `cleanup-inputs.json`, which
+cannot inventory its own inode before it is written. Earlier product evidence,
+command output or control receipts cannot substitute for teardown evidence.
 Malformed observations, operational exits and timeouts remain failed attempts;
 the mate still runs after proven cleanup. Unproven cleanup leaves the mate not
 started, writes `stopped.json` and prohibits further collection.
@@ -268,7 +271,12 @@ frozen inputs before publishing them.
 Empty values and values contained in the literal `[REDACTED]` marker also fail
 before entering a slot. Longer overlapping
 values are replaced first. JSON string redaction preserves numeric/boolean
-syntax; non-JSON payloads receive byte redaction, including JSON-escaped forms.
+syntax. Both the reserialized JSON and the bytes to be retained are checked for
+remaining secret variants. A secret represented as a number, boolean, null or
+protected control value rejects sanitization instead of changing its type or
+public meaning. Cleanup is still attempted, and the rejection prevents sealing
+even if cleanup removes the offending payload. Non-JSON payloads receive byte
+redaction, including JSON-escaped forms.
 No payload is exempt merely because its filename resembles a control file.
 Only the collector's exact owned paths retain public identity/control fields.
 Additional payload encodings and domain-specific sanitization belong in hooks.

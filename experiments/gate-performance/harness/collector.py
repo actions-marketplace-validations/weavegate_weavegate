@@ -230,7 +230,13 @@ class Collection:
             write_json(path, value)
 
     def sanitize(self, directory):
-        removed = sanitize(directory, self.secrets, self.guard.owned_paths(directory))
+        try:
+            removed = sanitize(directory, self.secrets, self.guard.owned_paths(directory))
+        except (OSError, ValueError) as error:
+            # Cleanup may remove the offending payload, but cannot turn failed
+            # sanitization into a publishable evidence checkpoint.
+            self.guard.error = self.guard.error or str(error)
+            raise
         self.redactions[directory] = self.redactions.get(directory, 0) + removed
 
     def command(self, directory, context, step, spec, teardown=False):
@@ -260,8 +266,11 @@ class Collection:
                     if receipt.get('containment_proven') is not True:
                         self.contained = False
                     self.redactions[directory] += receipt.get('redactions', 0)
-                self.save(directory / 'redactions.json',
-                          {'replacements': self.redactions[directory]})
+                if not teardown:
+                    self.save(directory / 'redactions.json',
+                              {'replacements': self.redactions[directory]})
+                # Cleanup keeps pre-teardown controls live through proof
+                # validation; finish() persists the final replacement count.
                 self.guard.checkpoint()
 
     def finish(self, directory, state, slot, arm):

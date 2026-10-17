@@ -287,6 +287,33 @@ if step=='cleanup':
                 verify(copied)
                 self.assertFalse(analyzed_trial(copied, self.manifest, slot, slot['arms'][0])['cleanup_proven'])
 
+    def test_cleanup_rejects_hard_links_to_control_receipts(self):
+        original = self.hook.read_text()
+        for name in ('attempt.json', 'redactions.json', 'cleanup-inputs.json'):
+            self.hook.write_text(original + '''
+if step=='cleanup':
+ os.link(p/%r,p/'teardown.log')
+ (p/'cleanup.json').write_text(json.dumps({'proven':True,
+ 'evidence':{'teardown.log':hashlib.sha256((p/'teardown.log').read_bytes()).hexdigest()}}))
+''' % name)
+            m = self.make_manifest()
+            bundle, registration = self.frozen(m, 'control-alias-' + name)
+            slot = order(m)[0]
+            with self.subTest(name=name):
+                self.assertFalse(collect(bundle, slot['block'], registration))
+                verify(bundle)
+                self.assertTrue((bundle / 'stopped.json').exists())
+                directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+                self.assertEqual(read_json(directory / 'cleanup.command.json')['exit'], 0)
+                row = analyzed_trial(bundle, m, slot, slot['arms'][0])
+                self.assertFalse(row['cleanup_proven'])
+                self.assertEqual(row['reason'], 'cleanup_unproven')
+                self.assertFalse(analyzed_trial(bundle, m, slot, slot['arms'][1])['started'])
+                copied = self.root / ('copied-control-alias-' + name)
+                shutil.copytree(bundle, copied, copy_function=shutil.copyfile)
+                verify(copied)
+                self.assertFalse(analyzed_trial(copied, m, slot, slot['arms'][0])['cleanup_proven'])
+
     def test_public_secrets_rejected_before_admission(self):
         cases = ('campaign-path', 'manifest-path', 'relocated-path', 'pin', 'json-pin',
                  'registration', 'expanded-argv', 'expanded-cwd', 'expanded-env')
@@ -2641,6 +2668,69 @@ else:
             self.assertEqual(sanitize(directory, secrets), 3)
             self.assertEqual(read_json(directory / 'original.json'), expected)
             self.assertEqual(sanitize(directory, secrets), 0)
+
+    def test_json_scalar_secrets_reject_sanitization_without_changing_types(self):
+        from redaction import sanitize
+        cases = [(b'123456789', b'{"metrics":{"artifact_bytes":123456789}}'),
+                 (b'123456789', b'{"text":"123456789","nested":[123456789]}'),
+                 (b'123456789', b'{"value":123456789.25}'),
+                 (b'true', b'{"value":[true]}'),
+                 (b'false', b'false'), (b'null', b'null'),
+                 # Canonicalization may change the spelling without rewriting
+                 # an unchanged original: both representations must be checked.
+                 (b'123456789', b'1.23456789e8'),
+                 (b'123456789e0', b'123456789e0')]
+        for index, (secret, data) in enumerate(cases):
+            directory = self.root / ('scalar-%d' % index)
+            directory.mkdir()
+            path = directory / 'original.json'
+            path.write_bytes(data)
+            with self.subTest(data=data):
+                with self.assertRaisesRegex(ValueError, 'secret.*JSON') as error:
+                    sanitize(directory, [secret])
+                self.assertNotIn(secret.decode(), str(error.exception))
+                self.assertEqual(path.read_bytes(), data)
+        directory = self.root / 'owned-scalar'
+        directory.mkdir()
+        path = directory / 'trial.json'
+        write_json(path, {'metrics': {'artifact_bytes': 123456789}})
+        with self.assertRaisesRegex(ValueError, 'secret.*JSON'):
+            sanitize(directory, [b'123456789'], owned={path})
+
+    def test_json_scalar_secrets_prevent_sealing_after_trusted_cleanup(self):
+        original = self.hook.read_text()
+        for remove in (False, True):
+            self.hook.write_text(original + '''
+if step=='observe':
+ receipt=json.loads((p/'receipt.json').read_text())
+ receipt['metrics']['artifact_bytes']=int(os.environ['TEST_REDACTION_SECRET'])
+ (p/'receipt.json').write_text(json.dumps(receipt))
+if step=='cleanup' and %r:
+ (p/'receipt.json').unlink()
+''' % remove)
+            m = self.make_manifest()
+            m['redact_env'] = ['TEST_REDACTION_SECRET']
+            bundle, registration = self.frozen(m, 'scalar-collection-' + str(remove))
+            slot = order(m)[0]
+            # Keep the decimal credential out of frozen source/public data.
+            secret = str(int(sha(b'constructed-scalar-credential'), 16))
+            with self.subTest(remove=remove), patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}):
+                with self.assertRaisesRegex(ValueError, 'refusing to reseal') as error:
+                    collect(bundle, slot['block'], registration)
+                self.assertNotIn(secret, str(error.exception))
+                directory = bundle / 'blocks' / slot['block'] / slot['arms'][0]
+                self.assertEqual(read_json(directory / 'cleanup.command.json')['exit'], 0)
+                self.assertFalse((directory / 'check.command.json').exists())
+                self.assertFalse((directory.parent / slot['arms'][1]).exists())
+                self.assertTrue((bundle / 'stopped.json').exists())
+                diagnostic = read_json(directory.parent / 'integrity-error.json')['reason']
+                self.assertIn('secret', diagnostic)
+                self.assertIn('JSON', diagnostic)
+                self.assertNotIn(secret, diagnostic)
+                with self.assertRaisesRegex(ValueError, 'checksum inventory differs'):
+                    verify(bundle)
+                with self.assertRaisesRegex(ValueError, 'checksum inventory differs'):
+                    analyze(bundle, self.root / ('scalar-analysis-' + str(remove)))
 
     def test_marker_overlapping_secrets_fail_before_entering_a_block(self):
         from redaction import redact_value, sanitize
