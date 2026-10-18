@@ -1,0 +1,512 @@
+{
+  "estimates": {
+    "example-fixed-explore": {
+      "B_seconds": null,
+      "Bplus_over_B_geometric_mean": null,
+      "Bplus_seconds": null,
+      "artifact_matched_pairs": 0,
+      "exclusive_stage_seconds": {},
+      "exclusive_stage_wall_fraction": {},
+      "log_ratio_sample_sd": null,
+      "planned_pairs": 8
+    },
+    "example-fixed-replay": {
+      "B_seconds": null,
+      "Bplus_over_B_geometric_mean": null,
+      "Bplus_seconds": null,
+      "artifact_matched_pairs": 0,
+      "exclusive_stage_seconds": {},
+      "exclusive_stage_wall_fraction": {},
+      "log_ratio_sample_sd": null,
+      "planned_pairs": 8
+    },
+    "example-vulnerable-explore": {
+      "B_seconds": null,
+      "Bplus_over_B_geometric_mean": null,
+      "Bplus_seconds": null,
+      "artifact_matched_pairs": 0,
+      "exclusive_stage_seconds": {},
+      "exclusive_stage_wall_fraction": {},
+      "log_ratio_sample_sd": null,
+      "planned_pairs": 8
+    },
+    "example-vulnerable-replay": {
+      "B_seconds": null,
+      "Bplus_over_B_geometric_mean": null,
+      "Bplus_seconds": null,
+      "artifact_matched_pairs": 0,
+      "exclusive_stage_seconds": {},
+      "exclusive_stage_wall_fraction": {},
+      "log_ratio_sample_sd": null,
+      "planned_pairs": 8
+    }
+  },
+  "scope": "descriptive local tuning; no E1 quality or improvement claim",
+  "status": {
+    "last_block": "example-fixed-replay-007",
+    "stopped": "artifact_or_execution_check_failed",
+    "updated_at": "2026-10-18T12:46:56.587043+00:00"
+  },
+  "trials": [
+    {
+      "arm": "B",
+      "block": "example-fixed-explore-002",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-explore-002",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-explore-006",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-explore-006",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-explore-003",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-explore-003",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-explore-001",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-explore-001",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-explore-007",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-explore-007",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-explore-005",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-explore-005",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-explore-004",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-explore-004",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-explore-008",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-explore-008",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-replay-007",
+      "result": {
+        "duration_ns": 16505916,
+        "problems": [
+          "unexpected_exit_or_timeout",
+          "missing_unique_run"
+        ]
+      },
+      "state": "observed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-replay-007",
+      "result": {
+        "duration_ns": 16037021,
+        "problems": [
+          "unexpected_exit_or_timeout",
+          "missing_unique_run"
+        ]
+      },
+      "state": "observed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-replay-008",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-replay-008",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-replay-002",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-replay-002",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-replay-001",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-replay-001",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-replay-004",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-replay-004",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-replay-005",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-replay-005",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-replay-006",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-replay-006",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-fixed-replay-003",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-fixed-replay-003",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-explore-003",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-explore-003",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-explore-006",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-explore-006",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-explore-007",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-explore-007",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-explore-002",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-explore-002",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-explore-004",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-explore-004",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-explore-001",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-explore-001",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-explore-008",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-explore-008",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-explore-005",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-explore-005",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-replay-001",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-replay-001",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-replay-008",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-replay-008",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-replay-007",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-replay-007",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-replay-005",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-replay-005",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-replay-003",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-replay-003",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-replay-002",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-replay-002",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-replay-004",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-replay-004",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "Bplus",
+      "block": "example-vulnerable-replay-006",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arm": "B",
+      "block": "example-vulnerable-replay-006",
+      "result": null,
+      "state": "not_completed",
+      "workload": "example-vulnerable-replay"
+    }
+  ]
+}

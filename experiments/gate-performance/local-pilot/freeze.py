@@ -25,8 +25,10 @@ if not java.exists():
     java.symlink_to(Path(shutil.which('java')).resolve())
 (workspace / 'home').mkdir(exist_ok=True)
 image = command(['docker', 'image', 'inspect', 'mysql:8.4', '--format', '{{index .RepoDigests 0}}'])
+image = 'mysql:8.4@' + image.split('@', 1)[1]
 seed = 'weavegate-e1-e2-v1-20261013'
-plan = {'campaign_id': 'local-tuning-20261018', 'phase': 'tuning', 'created_at': utc(),
+plan = {'campaign_id': sys.argv[3] if len(sys.argv) > 3 else 'local-tuning-20261018',
+        'phase': 'tuning', 'created_at': utc(),
         'not_registered_E1_pilot': True, 'pairs_per_workload': 8, 'seed': seed,
         'baseline_commit': 'ee10c7de2114086f14258037703dbd4b104e5908',
         'instrumentation_commit': '8d4bf3506d6af2ad432c5d31e4948f87709b22a0',
