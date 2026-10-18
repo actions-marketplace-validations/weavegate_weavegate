@@ -6,7 +6,20 @@ repo_root=$(git rev-parse --show-toplevel)
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 
-GOBIN="$work_dir/bin" go install github.com/google/go-licenses@v1.6.0
+# Tool installation can fail on transient module proxy/checksum transport errors.
+# Retry the same pinned, checksum-verified install; persistent failures stay fatal.
+for attempt in 1 2 3; do
+  if GOBIN="$work_dir/bin" go install github.com/google/go-licenses@v1.6.0; then
+    break
+  else
+    install_status=$?
+    if [[ "$attempt" == 3 ]]; then
+      printf 'go-licenses installation failed after 3 attempts\n' >&2
+      exit "$install_status"
+    fi
+    printf 'Retrying go-licenses installation after attempt %s\n' "$attempt" >&2
+  fi
+done
 license_tool="$work_dir/bin/go-licenses"
 targets=(linux/amd64 linux/arm64 darwin/amd64 darwin/arm64)
 

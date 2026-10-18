@@ -137,8 +137,23 @@ git diff --exit-code -- NOTICE
 ```
 
 The generator needs the Go toolchain and network access; it installs its
-pinned license tool into a temporary directory. The second command exits 0
+pinned license tool into a temporary directory, with at most three attempts
+for transient download failures. Checksum verification stays enabled and a
+persistent install failure stops generation. The second command exits 0
 when the committed inventory is already current.
+The template uses yaml.v3's known, versioned upstream license URL so remote
+`gopkg.in` metadata failures cannot add duplicate `Unknown` rows across targets;
+detected licenses and local license texts still come from the pinned module.
+Changes to this template or installer also run their Go/Python boundary checks
+(no Docker):
+
+```bash
+python3 -B scripts/test-notice-template.py
+```
+
+The `notice` job checks their fixed `NOTICE_TEMPLATE_RESULT` and
+`NOTICE_INSTALL_RESULT` markers before
+regenerating and comparing the complete inventory.
 
 An automated Go module update changes only `go.mod` and `go.sum`, so its
 `notice` check fails until a maintainer adds the regenerated inventory to the
