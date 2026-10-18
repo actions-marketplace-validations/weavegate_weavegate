@@ -323,6 +323,11 @@ jobs:
           python3 -B experiments/gate-performance/harness/test_harness.py | tee /tmp/campaign-harness.out
           grep -F 'CAMPAIGN_HARNESS_RESULT order=registered accounting=all_slots cleanup=quarantine analysis=deterministic ci=attempt_scoped' /tmp/campaign-harness.out
 
+      - name: Check local pilot timing analysis
+        run: |
+          python3 -B experiments/gate-performance/local-pilot/test_pilot.py | tee /tmp/local-pilot.out
+          grep -F 'LOCAL_PILOT_TEST_RESULT overlap=union evidence=checksummed missing=unknown' /tmp/local-pilot.out
+
       - name: Check the documentation index
         run: |
           bash scripts/docs-index.sh --self-test | tee /tmp/docs-index-selftest.out
