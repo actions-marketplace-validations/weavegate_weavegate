@@ -158,6 +158,42 @@
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-gpg-plugin</artifactId>
             <version>3.2.8</version>
+            <!-- Upgrade the plugin's existing Bouncy Castle artifacts to the
+                 patched 1.85 release. Replace transitive ranges with exact
+                 dependencies so signing needs no version-list metadata. -->
+            <dependencies>
+              <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcpg-jdk18on</artifactId>
+                <version>1.85</version>
+                <exclusions>
+                  <exclusion>
+                    <groupId>org.bouncycastle</groupId>
+                    <artifactId>bcprov-jdk18on</artifactId>
+                  </exclusion>
+                  <exclusion>
+                    <groupId>org.bouncycastle</groupId>
+                    <artifactId>bcutil-jdk18on</artifactId>
+                  </exclusion>
+                </exclusions>
+              </dependency>
+              <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>1.85</version>
+              </dependency>
+              <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcutil-jdk18on</artifactId>
+                <version>1.85</version>
+                <exclusions>
+                  <exclusion>
+                    <groupId>org.bouncycastle</groupId>
+                    <artifactId>bcprov-jdk18on</artifactId>
+                  </exclusion>
+                </exclusions>
+              </dependency>
+            </dependencies>
             <executions>
               <execution>
                 <id>sign-artifacts</id>

@@ -276,6 +276,11 @@ jobs:
 
       - name: Check the generated NOTICE inventory
         run: |
+          python3 -B scripts/test-notice-template.py | tee "$RUNNER_TEMP/notice-template.log"
+          grep -F 'NOTICE_TEMPLATE_RESULT yaml_source=stable target_duplicates=deduplicated license_changes=preserved' \
+            "$RUNNER_TEMP/notice-template.log"
+          grep -F 'NOTICE_INSTALL_RESULT transient=retried permanent=failed checksum_verification=preserved' \
+            "$RUNNER_TEMP/notice-template.log"
           ./scripts/gen-notice.sh
           git ls-files --error-unmatch NOTICE > /dev/null
           git diff --exit-code -- NOTICE
@@ -312,6 +317,11 @@ jobs:
           bash scripts/diagnostic-namespace.sh . | tee /tmp/diagnostic-namespace.out
           grep -qF 'DIAGNOSTIC_NAMESPACE_RESULT prefix=WG legacy=rejected scope=tracked_files' \
             /tmp/diagnostic-namespace.out
+
+      - name: Check experiment collection and analysis accounting
+        run: |
+          python3 -B experiments/gate-performance/harness/test_harness.py | tee /tmp/campaign-harness.out
+          grep -F 'CAMPAIGN_HARNESS_RESULT order=registered accounting=all_slots cleanup=quarantine analysis=deterministic ci=attempt_scoped' /tmp/campaign-harness.out
 
       - name: Check the documentation index
         run: |

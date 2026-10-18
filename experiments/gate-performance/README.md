@@ -4,8 +4,9 @@ Protocol revision: **1**. These are prospective measurement contracts for
 [`#172`](https://github.com/weavegate/weavegate/issues/172) and
 [`#175`](https://github.com/weavegate/weavegate/issues/175), published through
 [`#176`](https://github.com/weavegate/weavegate/issues/176). They contain no new
-observations. The collector, analyzer and measurement campaigns are follow-up
-work; no experiment runner is shipped in this directory yet.
+observations. The standalone [collector and analyzer](harness/README.md) now
+implement frozen campaign collection and E1/E2 analysis. Measurement campaigns
+remain follow-up work; the runnable demo contains constructed evidence only.
 
 - [E1: product gate time](e1-gate.md) fixes the released baseline, workloads,
   sampling plan and product performance claim.
@@ -204,9 +205,10 @@ make no positive confirmatory improvement claim.
 
 ## Evidence bundle and publication
 
-The following is a **planned collector layout**, not current CLI output or an
-implemented schema. It must live outside product artifacts; adding an experiment
-field does not change the [report schema](../../docs/reference/report-schema.md).
+The following is the protocol's **planned bundle layout**, not product CLI
+output. The [collector reference](harness/README.md#sanitization-and-bundle-layout)
+documents its concrete schema, including per-block directories. It must live
+outside product artifacts; adding an experiment field does not change the [report schema](../../docs/reference/report-schema.md).
 
 ```text
 campaign/
@@ -248,8 +250,9 @@ JSON and test XML, environment identities, hashes and executable analysis in a
 durable repository or release archive before CI artifacts expire. A link to
 an expired workflow artifact is insufficient. Include the exact collection
 and analysis commands from `commands.jsonl`, prerequisites and exit handling;
-the collector implementation must supply runnable reproduction commands before
-measurement. This protocol does not invent a command for the unbuilt collector.
+the [collector reference](harness/README.md) supplies runnable tool commands and
+the hook/evidence contract. Each campaign must freeze its actual infrastructure
+commands and prerequisites before measurement.
 
 Every result page must carry the registered comparison, observed and planned
 counts, all failures/exclusions/deviations, effect and uncertainty, resources,

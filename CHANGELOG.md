@@ -20,6 +20,36 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Added
 
+- Standalone experiment tools freeze campaign inputs and arm order, retain
+  original command/observation/cleanup evidence at immutable hook boundaries,
+  and reproduce E1/E2 paired analysis from the same evidence rules used during
+  collection. Failed, interrupted and missing attempts remain in the accounting;
+  interruptions and unproven cleanup stop further collection. Bundles authenticate
+  empty directories, reject secret-bearing evidence paths and public metadata
+  before collection, validate retained
+  registrations before measurements begin and reject changes to optional
+  registration metadata, including scalar types, between blocks. Original evidence
+  excludes collector metadata and its hard-link aliases; cleanup requires newly
+  retained proof without pre-cleanup hard-link aliases (including command output
+  and control receipts), and command output
+  replacement prevents sealing. Non-executable command paths fail before
+  consuming a block; composed block names exceeding 255 bytes fail before
+  campaign creation.
+  Observation evidence must exist before the checker runs.
+  All live execution pins must still match after cleanup, including the final arm,
+  before the allocation can be reused.
+  Sanitization rejects residual secrets in JSON scalars or protected controls
+  without changing their types; cleanup cannot clear a sanitization failure.
+  Sanitization and aggregate replacement preserve hard-linked originals;
+  admission, ownership updates, cleanup and final sealing defer interruption.
+  Analysis locks its inputs through output sealing, and lock-file replacement
+  cannot admit another writer. Plans bind executable resolution to live pins,
+  including the cleanup executable, and
+  provider pagination requires integer totals.
+  Retained analyzer sources reproduce
+  tables without a live checkout. See
+  `experiments/gate-performance/harness/README.md`; its runnable demo is
+  constructed evidence, not a performance result.
 - Completed CLI runs retain stage timings in `manifest.json` and `report.json`,
   including every explored candidate and replay repetition, database preparation,
   external JAR/startup, execution, Oracle and cleanup. Timings stop before artifact
