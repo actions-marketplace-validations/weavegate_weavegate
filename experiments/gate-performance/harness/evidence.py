@@ -73,10 +73,19 @@ def hashes_valid(directory, evidence):
     directory = Path(directory)
     if not isinstance(evidence, dict) or not evidence:
         raise ValueError('missing original evidence')
+    owned_identities = set()
+    for name in CONTROL | COMMAND_FILES:
+        path = directory / name
+        if path.exists():
+            stat = path.stat()
+            owned_identities.add((stat.st_dev, stat.st_ino))
     for name, expected in evidence.items():
         path = child(directory, name)
         if path.parent == directory and path.name in CONTROL | COMMAND_FILES:
             raise ValueError('collector-owned file is not original evidence: ' + name)
+        stat = path.stat()
+        if (stat.st_dev, stat.st_ino) in owned_identities:
+            raise ValueError('original evidence aliases collector-owned file: ' + name)
         if not isinstance(expected, str) or digest(path) != expected:
             raise ValueError('retained evidence hash mismatch: ' + str(name))
 

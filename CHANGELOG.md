@@ -26,14 +26,18 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   collection. Failed, interrupted and missing attempts remain in the accounting;
   interruptions and unproven cleanup stop further collection. Bundles authenticate
   empty directories, reject secret-bearing evidence paths and public metadata
-  before collection, and validate retained
-  registrations before measurements begin. Original evidence excludes collector
-  metadata, cleanup requires newly retained proof without pre-cleanup hard-link
-  aliases (including command output and control receipts), and command output
+  before collection, validate retained
+  registrations before measurements begin and reject changes to optional
+  registration metadata, including scalar types, between blocks. Original evidence
+  excludes collector metadata and its hard-link aliases; cleanup requires newly
+  retained proof without pre-cleanup hard-link aliases (including command output
+  and control receipts), and command output
   replacement prevents sealing. Non-executable command paths fail before
   consuming a block; composed block names exceeding 255 bytes fail before
   campaign creation.
   Observation evidence must exist before the checker runs.
+  All live execution pins must still match after cleanup, including the final arm,
+  before the allocation can be reused.
   Sanitization rejects residual secrets in JSON scalars or protected controls
   without changing their types; cleanup cannot clear a sanitization failure.
   Sanitization and aggregate replacement preserve hard-linked originals;

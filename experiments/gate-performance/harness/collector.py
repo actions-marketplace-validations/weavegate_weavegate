@@ -106,7 +106,7 @@ def collect_locked(root, block, registration):
             timestamp(reg['registered_at']) >= timestamp(utc())):
         raise ValueError('invalid public registration receipt')
     receipt_path = root / 'registration.json'
-    if receipt_path.exists() and read_json(receipt_path) != reg:
+    if receipt_path.exists() and canonical(read_json(receipt_path)) != canonical(reg):
         raise ValueError('registration receipt cannot change')
     slots = [r for r in order(m) if r['block'] == block]
     if len(slots) != 1:
@@ -266,11 +266,12 @@ class Collection:
                     if receipt.get('containment_proven') is not True:
                         self.contained = False
                     self.redactions[directory] += receipt.get('redactions', 0)
-                if not teardown:
+                if not teardown and step != 'observe':
                     self.save(directory / 'redactions.json',
                               {'replacements': self.redactions[directory]})
-                # Cleanup keeps pre-teardown controls live through proof
-                # validation; finish() persists the final replacement count.
+                # Observation and cleanup keep controls live through proof
+                # validation so aliases cannot outlive their source inode.
+                # finish() persists the final replacement count.
                 self.guard.checkpoint()
 
     def finish(self, directory, state, slot, arm):
@@ -326,6 +327,7 @@ class Collection:
             finally:
                 self.command(directory, context, 'cleanup', commands['cleanup'], teardown=True)
             cleanup_valid(directory)
+            verify_execution_pins(self.manifest)
             state['cleanup_inputs_valid'] = pins_match and self.contained and self.guard.error is None
         except EVIDENCE_ERRORS:
             state['cleanup_inputs_valid'] = False

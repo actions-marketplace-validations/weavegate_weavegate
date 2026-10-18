@@ -93,8 +93,10 @@ and pins in a public commit or immutable archive. Supply a registration object:
 | `revision` | Nonempty public registration revision |
 | `public_url` | Absolute HTTP/HTTPS URL with a hostname and no credentials, whitespace or control characters |
 
-The receipt cannot change after collection begins. Syntax, hashes and temporal
-precedence are checked; public availability and timestamp authenticity require
+The receipt cannot change after collection begins, including optional nested
+metadata. Canonical JSON comparison distinguishes `true`, `1` and `1.0`, while
+ignoring object key order and whitespace. Syntax, hashes and temporal precedence
+are checked; public availability and timestamp authenticity require
 independent audit. The demo registration is explicitly constructed.
 
 Run blocks in assigned sequence within each workload/date slot, on their UTC
@@ -170,9 +172,10 @@ provider deadline and cancellation. Product timeouts remain unchanged.
 Live pins are checked before each non-cleanup hook. Cleanup may declare its own
 nonempty `execution_pins` subset of registered paths, including its executable;
 without it, all live pins are required. This permits trusted teardown after
-unrelated input drift. Any
-live drift still prevents allocation reuse and stops the campaign. Changed
-cleanup dependencies are never executed.
+unrelated input drift. The complete live pin set is checked both before teardown
+and after the cleanup command and its proof validation. Drift at either boundary
+prevents allocation reuse and stops the campaign, including after the final arm.
+Changed cleanup dependencies are never executed.
 SIGINT/SIGTERM delivery is deferred across cleanup pin verification, the bounded
 cleanup command and its final evidence checkpoint, so a signal cannot bypass
 trusted teardown or interrupt its startup.
@@ -207,7 +210,10 @@ cannot supply evidence retroactively. Trusted cleanup still runs.
 Cleanup requires successful command execution plus `cleanup.json` with
 `proven: true` and a nonempty `evidence` path/hash map. Exit 0 alone is inadequate.
 Observation and cleanup evidence cannot reference the collector's exact control
-or command paths at the arm root; nested originals with those names remain valid.
+or command paths at the arm root, or hard-link aliases of those files. Independent
+nested originals with those names remain valid. The observation boundary keeps
+the redaction control file live until validation; a rejected alias remains a
+quality failure when the bundle is copied or control files are later replaced.
 The collector records paths, hashes and file identities in `cleanup-inputs.json`
 immediately before teardown. Both `cleanup.json` and every referenced cleanup original must be newly retained by
 that step; the inventory also records pre-cleanup device/inode identities to

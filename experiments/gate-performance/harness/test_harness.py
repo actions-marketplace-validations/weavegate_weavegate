@@ -318,13 +318,16 @@ if step=='cleanup':
         cases = ('campaign-path', 'manifest-path', 'relocated-path', 'pin', 'json-pin',
                  'registration', 'expanded-argv', 'expanded-cwd', 'expanded-env')
         for kind in cases:
-            secret = sha(kind.encode())
+            # Public, deterministic test data; never load a credential here.
+            # The fixture intentionally puts this value in files that admission
+            # must reject when it is configured as a redaction target.
+            fixture_value = 'constructed-public-value-' + sha(kind.encode())
             m = copy.deepcopy(self.manifest)
             m['redact_env'] = ['TEST_REDACTION_SECRET']
             if kind.startswith('expanded-'):
-                secret = 'candidate-' + secret
+                fixture_value = 'candidate-' + fixture_value
                 spec = m['commands'][order(m)[0]['workload']]['candidate']['cleanup']
-                value = '{arm}-' + secret.removeprefix('candidate-')
+                value = '{arm}-' + fixture_value.removeprefix('candidate-')
                 if kind == 'expanded-argv':
                     spec['argv'].append(value)
                 elif kind == 'expanded-cwd':
@@ -334,30 +337,30 @@ if step=='cleanup':
             if kind in ('pin', 'json-pin'):
                 pin = self.source / ('private.json' if kind == 'json-pin' else 'private.log')
                 # JSON escapes must be checked as decoded values too.
-                data = ('{"value":"' + ''.join('\\u%04x' % ord(c) for c in secret) + '"}'
-                        if kind == 'json-pin' else secret)
+                data = ('{"value":"' + ''.join('\\u%04x' % ord(c) for c in fixture_value) + '"}'
+                        if kind == 'json-pin' else fixture_value)
                 pin.write_text(data)
                 m['pins'].append({'path': pin.name, 'sha256': digest(pin), 'role': 'constructed'})
-            source = self.source / (secret + '.json' if kind == 'manifest-path' else 'public.json')
+            source = self.source / (fixture_value + '.json' if kind == 'manifest-path' else 'public.json')
             write_json(source, m)
-            bundle = self.root / (secret if kind == 'campaign-path' else 'public-' + kind)
+            bundle = self.root / (fixture_value if kind == 'campaign-path' else 'public-' + kind)
             freeze(source, bundle)
             if kind == 'relocated-path':
-                moved = self.root / secret
+                moved = self.root / fixture_value
                 bundle.rename(moved)
                 bundle = moved
             registration = self.root / 'public-registration.json'
             write_json(registration, {'campaign_sha256': digest(bundle / 'campaign.json'),
                                      'order_sha256': digest(bundle / 'order.json'),
                                      'registered_at': '2020-01-01T00:00:00Z',
-                                     'revision': secret if kind == 'registration' else 'constructed',
+                                     'revision': fixture_value if kind == 'registration' else 'constructed',
                                      'public_url': 'https://example.invalid/constructed'})
             before = (bundle / 'SHA256SUMS').read_bytes()
-            with self.subTest(kind=kind), patch.dict(os.environ, {'TEST_REDACTION_SECRET': secret}), \
+            with self.subTest(kind=kind), patch.dict(os.environ, {'TEST_REDACTION_SECRET': fixture_value}), \
                     patch('collector.execute') as command:
                 with self.assertRaisesRegex(ValueError, 'secret.*public') as error:
                     collect(bundle, self.block(bundle), registration)
-                self.assertNotIn(secret, str(error.exception))
+                self.assertNotIn(fixture_value, str(error.exception))
                 command.assert_not_called()
                 self.assertFalse((bundle / 'blocks').exists())
                 self.assertFalse((bundle / 'registration.json').exists())
@@ -725,6 +728,60 @@ if step=='observe':
             self.assertEqual(row['classification'], 'quality_failure')
             self.assertIn('collector-owned', row['reason'])
             self.assertEqual(row, analyzed_trial(bundle, m, slot, arm))
+
+    def test_observation_rejects_hard_links_to_collector_files(self):
+        original = self.hook.read_text()
+        for name in ('run.stdout', 'run.stderr', 'run.command.json',
+                     'prepare.command.json', 'attempt.json', 'redactions.json'):
+            self.hook.write_text(original + '''
+if step=='observe':
+ os.link(p/%r,p/'product.log')
+ receipt=json.loads((p/'receipt.json').read_text())
+ receipt['evidence']={'product.log':hashlib.sha256((p/'product.log').read_bytes()).hexdigest()}
+ (p/'receipt.json').write_text(json.dumps(receipt))
+ (p/'evidence.log').unlink()
+''' % name)
+            m = self.make_manifest()
+            bundle, registration = self.frozen(m, 'observation-alias-' + name)
+            slot = order(m)[0]
+            with self.subTest(name=name):
+                self.assertTrue(collect(bundle, slot['block'], registration))
+                verify(bundle)
+                for arm in slot['arms']:
+                    directory = bundle / 'blocks' / slot['block'] / arm
+                    row = read_json(directory / 'trial.json')
+                    self.assertEqual(row['classification'], 'quality_failure')
+                    self.assertIn('aliases collector-owned', row['reason'])
+                    self.assertFalse((directory / 'check.command.json').exists())
+                    self.assertTrue(row['cleanup_proven'])
+                    self.assertEqual(row, analyzed_trial(bundle, m, slot, arm))
+                copied = self.root / ('copied-observation-alias-' + name)
+                shutil.copytree(bundle, copied, copy_function=shutil.copyfile)
+                verify(copied)
+                for arm in slot['arms']:
+                    self.assertEqual(analyzed_trial(copied, m, slot, arm),
+                                     analyzed_trial(bundle, m, slot, arm))
+
+    def test_original_hashes_reject_collector_aliases_but_allow_independent_files(self):
+        from evidence import hashes_valid
+        from storage import COMMAND_FILES, CONTROL
+        directory = self.root / 'originals'
+        directory.mkdir()
+        for name in sorted(COMMAND_FILES | CONTROL):
+            path = directory / name
+            path.write_text('constructed collector metadata')
+            nested = directory / 'product' / name
+            nested.parent.mkdir(exist_ok=True)
+            os.link(path, nested)
+            reference = str(nested.relative_to(directory))
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, 'aliases collector-owned'):
+                    hashes_valid(directory, {reference: digest(nested)})
+                nested.unlink()
+                # Identical bytes and a reserved basename are allowed when the
+                # nested original is a separate file, not a collector alias.
+                shutil.copyfile(path, nested)
+                hashes_valid(directory, {reference: digest(nested)})
 
     def assert_cleanup_rejects_old_evidence(self, name):
         self.hook.write_text(self.hook.read_text() + '''
@@ -2297,6 +2354,50 @@ if step=='observe':
                 freeze(source, bundle)
             self.assertFalse(bundle.exists())
 
+    def test_cleanup_rechecks_all_live_pins_before_reuse(self):
+        original = self.hook.read_text()
+        other = self.source / 'checker-input.txt'
+        for target in (self.hook, other):
+            for arm_index in (0, 1):
+                other.write_text('registered input')
+                self.hook.write_text(original + '''
+if step=='cleanup' and 'DRIFT_TARGET' in os.environ:
+ Path(os.environ['DRIFT_TARGET']).write_text('changed during cleanup')
+''')
+                m = self.make_manifest()
+                m['execution_pins'].append({'path': str(other), 'sha256': digest(other),
+                                            'role': 'checker input'})
+                for arms in m['commands'].values():
+                    for commands in arms.values():
+                        commands['cleanup']['execution_pins'] = [str(self.hook), sys.executable]
+                slot = order(m)[0]
+                arm = slot['arms'][arm_index]
+                m['commands'][slot['workload']][arm]['cleanup']['env']['DRIFT_TARGET'] = str(target)
+                name = 'cleanup-drift-%s-%s' % (target.name, arm_index)
+                bundle, registration = self.frozen(m, name)
+                with self.subTest(target=target.name, arm_index=arm_index):
+                    self.assertFalse(collect(bundle, slot['block'], registration))
+                    directory = bundle / 'blocks' / slot['block'] / arm
+                    self.assertEqual(read_json(directory / 'cleanup.command.json')['exit'], 0)
+                    self.assertTrue(read_json(directory / 'cleanup.json')['proven'])
+                    self.assertFalse(read_json(directory / 'attempt.json')['cleanup_inputs_valid'])
+                    row = analyzed_trial(bundle, m, slot, arm)
+                    self.assertEqual(row['classification'], 'quality_failure')
+                    self.assertEqual(row['reason'], 'cleanup_unproven')
+                    self.assertFalse(row['cleanup_proven'])
+                    self.assertTrue((bundle / 'stopped.json').exists())
+                    if arm_index == 0:
+                        self.assertFalse(analyzed_trial(bundle, m, slot, slot['arms'][1])['started'])
+                    else:
+                        self.assertTrue(analyzed_trial(bundle, m, slot, slot['arms'][0])['cleanup_proven'])
+                    verify(bundle)
+                    copied = self.root / ('copied-' + name)
+                    shutil.copytree(bundle, copied, copy_function=shutil.copyfile)
+                    verify(copied)
+                    self.assertEqual(row, analyzed_trial(copied, m, slot, arm))
+                    with self.assertRaisesRegex(ValueError, 'campaign stopped'):
+                        collect(bundle, order(m)[1]['block'], registration)
+
     def test_changed_cleanup_execution_pin_prevents_untrusted_teardown(self):
         from collector import execute as real_execute
         m = copy.deepcopy(self.manifest)
@@ -2614,6 +2715,35 @@ else:
         write_json(registration, reg)
         with self.assertRaises(ValueError):
             collect(bundle, self.block(bundle), registration)
+
+    def test_registration_preserves_nested_scalar_types_between_blocks(self):
+        cases = ((True, 1), (1, True), (True, 1.0), (False, 0), (1, 1.0))
+        for index, (before, after) in enumerate(cases):
+            bundle, registration = self.frozen(name='registration-types-%d' % index)
+            reg = read_json(registration)
+            reg['extra'] = {'values': [before]}
+            write_json(registration, reg)
+            slots = order(self.manifest)
+            with self.subTest(before=repr(before), after=repr(after)):
+                self.assertTrue(collect(bundle, slots[0]['block'], registration))
+                retained = (bundle / 'registration.json').read_bytes()
+                checksum = (bundle / 'SHA256SUMS').read_bytes()
+                reg['extra']['values'][0] = after
+                write_json(registration, reg)
+                with patch('collector.execute') as command:
+                    with self.assertRaisesRegex(ValueError, 'registration receipt cannot change'):
+                        collect(bundle, slots[1]['block'], registration)
+                    command.assert_not_called()
+                self.assertEqual((bundle / 'registration.json').read_bytes(), retained)
+                self.assertEqual((bundle / 'SHA256SUMS').read_bytes(), checksum)
+                self.assertFalse((bundle / 'blocks' / slots[1]['block']).exists())
+                verify(bundle)
+                reg['extra']['values'][0] = before
+                # Key ordering/whitespace do not change the registration object.
+                registration.write_text(json.dumps(reg, sort_keys=False))
+                self.assertTrue(collect(bundle, slots[1]['block'], registration))
+                self.assertEqual((bundle / 'registration.json').read_bytes(), retained)
+                verify(bundle)
 
     def test_cold_timer_and_wrapper_duration_stay_separate(self):
         m = self.make_manifest(phase='adoption-cold')
