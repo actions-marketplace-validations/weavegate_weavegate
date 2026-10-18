@@ -6,7 +6,44 @@ observations for choosing a later optimization. It does not complete the
 [registered E1 pilot](../e1-gate.md), change protocol revision 1, or establish
 an improvement over `v0.2.0`. No optimized candidate is measured.
 
-## Prospective scope
+The shared harness enforces the registered E1 phase counts and date slots.
+This narrow runner keeps the authorized same-day local tuning observations in
+a separate ledger, preserving that harness and the registered E1 protocol.
+
+## Results and evidence
+
+The [generated tables](results/local-r2.md) and [full reduction](results/local-r2.json)
+come from [the original run bundle](results/local-r2.tar). Each workload
+retains its own denominator and dispersion; the whole-gate ratio is descriptive.
+The [first stopped bundle](results/stopped-r1.tar.gz) and
+[its accounting](results/stopped-r1.json) remain separate. The
+[correction note](AMENDMENT.md) identifies the preflight error and the second
+registration. [FINDINGS.md](FINDINGS.md) states the measured scope and limits.
+
+The first registration was public at commit
+`530233d9bba03e7f0d7c42199a61e00b8861c08c`, before its two failed attempts.
+The second was public at `8c939a224852aa6f8e85324a7d17ab8819eb0649`, before
+any of its measurements. `registration/` and `registration-r2/` preserve both.
+The original collector/analyzer source is unchanged from those commits.
+The later renderer only formats the already-defined descriptive estimates.
+
+Recompute both reductions and the result tables, with no Docker or downloads:
+
+```bash
+python3 -B experiments/gate-performance/local-pilot/verify_results.py
+```
+
+This verifies every retained file against the bundle's checksum inventory,
+derives results from original command receipts and artifacts, and compares
+the regenerated JSON and Markdown byte for byte with the committed outputs.
+CI checks its fixed `LOCAL_PILOT_EVIDENCE_RESULT` marker.
+
+The completed campaign uses an uncompressed tar: the repository's diagnostic
+namespace scan found a coincidental legacy token in gzip bytes. Keeping the
+original text uncompressed permits that scan without changing its rules or any
+evidence file or checksum. The smaller stopped campaign retains its gzip bundle.
+
+## Registered scope
 
 Before the first measurement, publish this document, the scripts,
 `instrumentation.patch`, and `registration/` in a Git commit. There are **8
@@ -105,5 +142,18 @@ python3 -B experiments/gate-performance/local-pilot/pilot.py analyze \
   /tmp/weavegate-a1/evidence /tmp/weavegate-a1/results.json
 ```
 
-Measured results and the durable raw bundle are added after collection; the
-registration commit preserves this pre-measurement statement.
+The actual second collection command was:
+
+```bash
+python3 -B experiments/gate-performance/local-pilot/pilot.py collect \
+  experiments/gate-performance/local-pilot/registration-r2/plan.json \
+  /tmp/weavegate-a1/evidence-r2 --registration 8c939a2
+```
+
+The published bundle retains original run artifacts and command/cleanup
+receipts, not executable binaries or generated application JARs. Their hashes,
+resolved dependency hashes, sources and build commands are retained; the
+published B binary remains available from the `v0.2.0` release. Rebuilding
+inputs for a new measurement requires a new freeze, not pretending the rebuilt
+bytes are the old artifacts. The two Go build identities are retained beside
+the results as `baseline-build-identity.txt` and `bplus-build-identity.txt`.

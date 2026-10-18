@@ -327,6 +327,8 @@ jobs:
         run: |
           python3 -B experiments/gate-performance/local-pilot/test_pilot.py | tee /tmp/local-pilot.out
           grep -F 'LOCAL_PILOT_TEST_RESULT overlap=union evidence=checksummed missing=unknown' /tmp/local-pilot.out
+          python3 -B experiments/gate-performance/local-pilot/verify_results.py | tee /tmp/local-pilot-evidence.out
+          grep -F 'LOCAL_PILOT_EVIDENCE_RESULT bundles=2 analysis=reproduced raw=checksummed' /tmp/local-pilot-evidence.out
 
       - name: Check the documentation index
         run: |

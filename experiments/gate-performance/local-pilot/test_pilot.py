@@ -4,7 +4,7 @@ import unittest
 import sys
 from pathlib import Path
 
-from pilot import decomposition, inventory, run_command, summary, verify, write
+from pilot import decomposition, inspect_trial, inventory, run_command, summary, verify, write
 
 
 def span(i, parent, name, start, duration):
@@ -64,6 +64,33 @@ class TimingTest(unittest.TestCase):
             self.assertEqual(receipt['exit'], 2)
             self.assertIsNone(receipt['error'])
             self.assertGreater(receipt['duration_ns'], 0)
+
+    def test_artifact_checker_rejects_missing_timing_counts_and_cleanup(self):
+        # Entirely constructed artifacts: this tests accounting, not the product.
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            run = root / 'output/runs/constructed'
+            run.mkdir(parents=True)
+            write(root / 'command.json', dict(exit=0, timed_out=False, interrupted=False,
+                                            error=None, duration_ns=200))
+            write(root / 'cleanup.json', dict(no_new_containers=True, no_new_snapshot_jvms=True))
+            manifest = {k: 'constructed' for k in ('schema_version', 'seed_data', 'isolation_level',
+                        'engine', 'adapter', 'variant', 'image', 'sut_sha256')}
+            manifest['cleanup_failed'] = False
+            write(run / 'manifest.json', manifest)
+            write(run / 'observation.json', dict(repeat=20, diagnostics=[], assertion_violations=[]))
+            write(run / 'scenario.json', {})
+            write(run / 'trace.json', {})
+            (run / 'report.md').write_text('Constructed evidence\n')
+            spec = dict(exit=0, observation={'repeat': 20}, schedule_id=None)
+            self.assertEqual(inspect_trial(root, spec, 'B')['problems'], [])
+            self.assertIn('missing_timing', inspect_trial(root, spec, 'Bplus')['problems'])
+            spec['observation']['repeat'] = 21
+            self.assertIn('observation:repeat', inspect_trial(root, spec, 'B')['problems'])
+            write(root / 'cleanup.json', dict(no_new_containers=False, no_new_snapshot_jvms=True))
+            self.assertIn('cleanup_not_observed', inspect_trial(root, spec, 'B')['problems'])
+            (run / 'trace.json').unlink()
+            self.assertIn('missing_artifact', inspect_trial(root, spec, 'B')['problems'])
 
 
 if __name__ == '__main__':
