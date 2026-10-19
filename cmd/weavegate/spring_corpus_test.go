@@ -48,7 +48,8 @@ func TestSpringRegressionCorpus(t *testing.T) {
 
 	for _, fixtureCase := range []struct {
 		name, scenario, assertion, query string
-		seed, serial, overlap, fixed     map[string]string
+		// row is the violating row of the vulnerable overlapping replay.
+		seed, serial, overlap, fixed, row map[string]string
 	}{
 		{
 			name: "spring-quota", scenario: "concurrent-reserve", assertion: "quota-is-conserved",
@@ -61,6 +62,7 @@ WHERE a.id = 42 GROUP BY a.capacity, a.remaining`,
 			serial:  map[string]string{"capacity": "1", "remaining": "0", "receipts": "2", "accepted": "1", "snapshots": "1,0"},
 			overlap: map[string]string{"capacity": "1", "remaining": "0", "receipts": "2", "accepted": "2", "snapshots": "1,1"},
 			fixed:   map[string]string{"capacity": "1", "remaining": "0", "receipts": "2", "accepted": "1", "snapshots": "1,1"},
+			row:     map[string]string{"account_id": "42", "capacity": "1", "remaining": "0", "accepted_units": "2"},
 		},
 		{
 			name: "spring-job-claim", scenario: "complete-and-reassign", assertion: "completion-requires-current-lease",
@@ -74,6 +76,7 @@ WHERE j.id = 42 GROUP BY j.epoch, j.status, j.completed_epoch`,
 			serial:  map[string]string{"epoch": "1", "status": "DONE", "completed_epoch": "1", "receipts": "2", "snapshots": "complete:1:RUNNING:1,reassign:1:DONE:0"},
 			overlap: map[string]string{"epoch": "2", "status": "DONE", "completed_epoch": "1", "receipts": "2", "snapshots": "reassign:1:RUNNING:1,complete:1:RUNNING:1"},
 			fixed:   map[string]string{"epoch": "2", "status": "RUNNING", "completed_epoch": "NULL", "receipts": "2", "snapshots": "reassign:1:RUNNING:1,complete:1:RUNNING:0"},
+			row:     map[string]string{"job_id": "42", "epoch": "2", "status": "DONE", "completed_epoch": "1"},
 		},
 	} {
 		t.Run(fixtureCase.name, func(t *testing.T) {
@@ -139,6 +142,14 @@ WHERE j.id = 42 GROUP BY j.epoch, j.status, j.completed_epoch`,
 								len(observation.AssertionViolations) != 1 || observation.AssertionViolations[0].OracleID != fixtureCase.assertion ||
 								len(observation.AssertionViolations[0].Rows) != 1 {
 								t.Fatalf("violation evidence=%+v", observation)
+							}
+							// Row values are JSON numbers or strings depending on the SQL type.
+							row := make(map[string]string, len(observation.AssertionViolations[0].Rows[0]))
+							for column, value := range observation.AssertionViolations[0].Rows[0] {
+								row[column] = fmt.Sprint(value)
+							}
+							if !reflect.DeepEqual(row, fixtureCase.row) {
+								t.Fatalf("violating row=%v want=%v", row, fixtureCase.row)
 							}
 						} else if len(observation.Diagnostics) != 0 || len(observation.AssertionViolations) != 0 {
 							t.Fatalf("unexpected violation evidence=%+v", observation)
