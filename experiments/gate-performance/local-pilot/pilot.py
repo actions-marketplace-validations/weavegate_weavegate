@@ -10,6 +10,7 @@ import signal
 import statistics
 import subprocess
 import time
+from collections import Counter
 from datetime import datetime, timezone
 
 
@@ -145,7 +146,9 @@ def decomposition(spans, wall_ns):
         category = next((a['name'] for a in ancestry if a['name'] in STAGES), 'bookkeeping')
         categorized.append((s, len(ancestry), category))
     edges = sorted({t for s in spans for t in (s['start_ns'], s['start_ns'] + s['duration_ns'])})
-    exclusive = {'outside_timing': wall_ns - root['duration_ns']}
+    # An observed span can have zero exclusive coverage; absence is unknown.
+    exclusive = dict.fromkeys((category for _, _, category in categorized), 0)
+    exclusive['outside_timing'] = wall_ns - root['duration_ns']
     for start, end in zip(edges, edges[1:]):
         active = [(depth, category) for s, depth, category in categorized
                   if s['start_ns'] <= start and end <= s['start_ns'] + s['duration_ns']]
@@ -160,6 +163,26 @@ def decomposition(spans, wall_ns):
     return {'exclusive_ns': exclusive, 'cumulative_ns': cumulative,
             'schedule_runs': sum(s['name'] == 'schedule_run' for s in spans),
             'schedule_ids': [s['schedule_id'] for s in spans if s['name'] == 'schedule_run']}
+
+
+def timing_stage_problems(spans, executions):
+    """Require lifecycle observations in each execution, not just in aggregate."""
+    required = {
+        'command': ('preflight', 'fixture_provision', 'fixture_teardown'),
+        'schedule_run': ('fixture_reset', 'adapter_create', 'adapter_start',
+                         'schedule_execute', 'oracle_evaluate', 'adapter_stop'),
+        'adapter_start': ('jar_snapshot', 'process_start_to_ready'),
+    }
+    counts = Counter(s['name'] for s in spans)
+    children = Counter((s['parent_id'], s['name']) for s in spans)
+    problems = []
+    for parent_name, stages in required.items():
+        parents = [s['id'] for s in spans if s['name'] == parent_name]
+        expected = 1 if parent_name == 'command' else executions
+        for stage in stages:
+            if counts[stage] != expected or any(children[parent, stage] != 1 for parent in parents):
+                problems.append('timed_stage_count:' + stage)
+    return problems
 
 
 def inspect_trial(path, spec, arm):
@@ -191,7 +214,8 @@ def inspect_trial(path, spec, arm):
     if not cleanup['no_new_containers'] or not cleanup['no_new_snapshot_jvms']:
         problems.append('cleanup_not_observed')
     hashes = {n: sha(run / n) if (run / n).exists() else None for n in DETERMINISTIC}
-    if any(hashes[n] is None for n in DETERMINISTIC if n != 'schedule.json'):
+    required = [n for n in DETERMINISTIC if n != 'schedule.json' or spec['schedule_id'] is not None]
+    if any(hashes[n] is None for n in required):
         problems.append('missing_artifact')
     result = {'problems': problems, 'duration_ns': receipt['duration_ns'],
               'deterministic_sha256': hashes, 'artifact_bytes': sum(p.stat().st_size for p in run.iterdir()),
@@ -207,6 +231,7 @@ def inspect_trial(path, spec, arm):
                 problems.append('timed_execution_count')
             if result['stages']['schedule_ids'] != spec['schedule_ids']:
                 problems.append('timed_candidate_order')
+            problems.extend(timing_stage_problems(timing['spans'], spec['schedule_runs']))
     return result
 
 
@@ -299,6 +324,8 @@ def summary(values):
 def analyze(root, output):
     root = Path(root)
     verify(root)
+    if sha(root / 'plan.json') != read(root / 'registration.json').get('plan_sha256'):
+        raise ValueError('plan differs from registration receipt')
     plan = read(root / 'plan.json')
     rows, estimates = [], {}
     for workload, spec in plan['workloads'].items():
@@ -327,8 +354,10 @@ def analyze(root, output):
             'Bplus_seconds': summary([p['Bplus']['duration_ns'] / 1e9 for p in pairs]),
             'Bplus_over_B_geometric_mean': math.exp(statistics.mean(map(math.log, ratios))) if ratios else None,
             'log_ratio_sample_sd': statistics.stdev(map(math.log, ratios)) if len(ratios) > 1 else None,
-            'exclusive_stage_seconds': {k: summary([t['stages']['exclusive_ns'].get(k, 0) / 1e9 for t in stages]) for k in stage_names},
-            'exclusive_stage_wall_fraction': {k: summary([t['stages']['exclusive_ns'].get(k, 0) / t['duration_ns'] for t in stages]) for k in stage_names}}
+            'exclusive_stage_seconds': {k: summary([t['stages']['exclusive_ns'][k] / 1e9 for t in stages
+                                                   if k in t['stages']['exclusive_ns']]) for k in stage_names},
+            'exclusive_stage_wall_fraction': {k: summary([t['stages']['exclusive_ns'][k] / t['duration_ns'] for t in stages
+                                                         if k in t['stages']['exclusive_ns']]) for k in stage_names}}
     write(output, {'scope': 'descriptive local tuning; no E1 quality or improvement claim',
                    'estimates': estimates, 'trials': rows, 'status': read(root / 'status.json')})
     print('LOCAL_PILOT_ANALYSIS_RESULT checksums=verified planned_pairs=' + str(len(plan['order'])))

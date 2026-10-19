@@ -24,8 +24,10 @@ The first registration was public at commit
 `530233d9bba03e7f0d7c42199a61e00b8861c08c`, before its two failed attempts.
 The second was public at `8c939a224852aa6f8e85324a7d17ab8819eb0649`, before
 any of its measurements. `registration/` and `registration-r2/` preserve both.
-The original collector/analyzer source is unchanged from those commits.
-The later renderer only formats the already-defined descriptive estimates.
+Collection used the collector/analyzer source pinned by those commits.
+The current analyzer adds the post-collection evidence checks documented in
+[AMENDMENT.md](AMENDMENT.md#post-collection-analysis-validation).
+The renderer only formats the already-defined descriptive estimates.
 
 Recompute both reductions and the result tables, with no Docker or downloads:
 
@@ -33,9 +35,10 @@ Recompute both reductions and the result tables, with no Docker or downloads:
 python3 -B experiments/gate-performance/local-pilot/verify_results.py
 ```
 
-This verifies every retained file against the bundle's checksum inventory,
-derives results from original command receipts and artifacts, and compares
-the regenerated JSON and Markdown byte for byte with the committed outputs.
+This verifies every retained file against the bundle's checksum inventory and
+the plan against the registration receipt's SHA-256, derives results from
+original command receipts and artifacts, and compares the regenerated JSON
+and Markdown byte for byte with the committed outputs.
 CI checks its fixed `LOCAL_PILOT_EVIDENCE_RESULT` marker.
 
 The completed campaign uses an uncompressed tar: the repository's diagnostic
@@ -87,14 +90,24 @@ unrelated container is removed. These checks and `cleanup_failed=false` are
 limited cleanup observations, not a replacement for the full repeated Go/Java
 acceptance manifests required by E1 confirmation.
 
-Pair checks compare the five deterministic artifacts byte for byte (including
-absence of `schedule.json` on exhausted exploration), plus schema/seed,
+Pair checks compare the five deterministic artifacts byte for byte (allowing
+absence of `schedule.json` only when the registered schedule ID is null, as on
+exhausted fixed exploration), plus schema/seed,
 isolation, engine, adapter, variant, image, and JAR identity. Expected mode,
 repeat, exploration counts, violation counts, flaky flag, schedule ID and WG001
 assertion are checked against the product's Oracle evidence. B+ span counts
 also check 20 replay executions, 18 fixed exploration executions, or 21
 vulnerable discovery/confirmation executions. This tool does not evaluate SQL
 or introduce verdict logic.
+
+The current analyzer requires one preflight, provision, and teardown span per
+command; one reset, adapter create/start/stop, schedule execution, and oracle
+span per execution; and one JAR snapshot and start-to-ready span per adapter
+start. Missing or duplicate required spans exclude that trial from pair and
+stage estimates while retaining its problems in the accounting. Variable
+categories, such as waits and overlaps, contribute only where observed; their
+absence is unknown, not zero. An observed span with zero exclusive coverage
+still contributes a measured zero, and each stage retains its own sample count.
 
 Analysis partitions intervals on the Go recorder's single clock. Nested
 intervals are assigned to the most specific named stage; simultaneous intervals
@@ -142,13 +155,18 @@ python3 -B experiments/gate-performance/local-pilot/pilot.py analyze \
   /tmp/weavegate-a1/evidence /tmp/weavegate-a1/results.json
 ```
 
-The actual second collection command was:
+The actual second collection command, run with the collector pinned at that
+registration revision, was:
 
 ```bash
 python3 -B experiments/gate-performance/local-pilot/pilot.py collect \
   experiments/gate-performance/local-pilot/registration-r2/plan.json \
   /tmp/weavegate-a1/evidence-r2 --registration 8c939a2
 ```
+
+The current collector includes the review validation changes and therefore
+does not match the historical collector hash. New collection requires a new
+freeze and published registration; offline reanalysis uses the retained files.
 
 The published bundle retains original run artifacts and command/cleanup
 receipts, not executable binaries or generated application JARs. Their hashes,

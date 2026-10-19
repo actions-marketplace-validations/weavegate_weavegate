@@ -80,8 +80,9 @@ python3 -B experiments/gate-performance/local-pilot/verify_results.py
 ```
 
 That command extracts both original bundles into a temporary directory,
-verifies every file checksum, reruns the frozen collector's analysis, and
-compares the generated JSON and Markdown with the committed result files.
+verifies every file checksum and the plan's registration hash, reruns the
+analysis with the [review validation corrections](AMENDMENT.md#post-collection-analysis-validation),
+and compares the generated JSON and Markdown with the committed result files.
 The source numbers for the rounded table above are in
 `results/local-r2.json` under `estimates`. Collection commands, environment,
 input identities and deviations are in the [campaign README](README.md)

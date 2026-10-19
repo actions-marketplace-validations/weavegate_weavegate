@@ -24,3 +24,31 @@ python3 -B experiments/gate-performance/local-pilot/freeze.py \
   /tmp/weavegate-a1 experiments/gate-performance/local-pilot/registration-r2 \
   local-tuning-20261018-r2
 ```
+
+## Post-collection analysis validation
+
+PR #182 review reproduced three gaps in the original analyzer: both arms could
+omit an expected `schedule.json` and still match; a changed plan could pass a
+regenerated checksum inventory despite its registration receipt; and missing
+stage spans could enter summaries as zero observations.
+
+The current analyzer requires schedules when the registered schedule ID is
+present, binds the retained plan to `registration.json`'s `plan_sha256`, and
+checks required lifecycle span counts within each command and execution.
+Invalid trials remain in the accounting and are excluded from estimates.
+Variable stage categories use only observed coverage; absent categories do
+not contribute zeros, while recorded zero coverage remains an observation.
+
+These are post-collection validation corrections. Both preregistrations,
+original bundles, collection order, and measured inputs remain intact. The
+current source differs from the collector hash pinned for those collections;
+its use for a new collection requires a new registration. The corrected
+analyzer reproduces both committed JSON reductions and the Markdown tables
+byte for byte, so the published measurements and findings are unchanged.
+
+Reproduce the regression checks and the comparison with retained results:
+
+```bash
+python3 -B experiments/gate-performance/local-pilot/test_pilot.py
+python3 -B experiments/gate-performance/local-pilot/verify_results.py
+```
