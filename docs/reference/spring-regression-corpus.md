@@ -52,10 +52,16 @@ each reset and teardown.
 
 No point lies between a command's first write and its commit. A worker
 released at `before_write` runs its update, its receipt insert and the commit
-before it next arrives, at `after_commit`. Any schedule over these points,
-selected or enumerated, therefore never parks a worker that holds InnoDB row
-locks. Interleavings with uncommitted writes, lock waits and deadlocks are
-outside these fixtures.
+before it next arrives, at `after_commit`, so no schedule parks a worker that
+holds InnoDB row locks. That does not serialize the writes. A valid schedule
+that releases the second worker's `before_write` before the first worker's
+`after_commit`, such as `w1/before_write` immediately followed by
+`w2/before_write`, lets both write segments run at once; InnoDB, not the
+schedule, then orders them through row-lock waits. Both selected schedules
+place one worker's `after_commit` before the other worker's `before_write`, so
+the first commit is observed before the second write is released and the
+writes never overlap. Concurrent writes, lock waits and deadlocks are outside
+what these selected schedules cover.
 
 ## Selected schedules
 
