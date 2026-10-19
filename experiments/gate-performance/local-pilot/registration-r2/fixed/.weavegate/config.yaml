@@ -1,0 +1,42 @@
+target:
+  db: mysql:8.4@sha256:8dbcf531a03aade657e181b9cf2f1d1803ce621a1d55610cb44cb531ab7d7db6
+  schema:
+    migrations: ../db/migration
+    seed: ../db/seed.sql
+  sut:
+    adapter: external
+    variant: main
+    external:
+      java: java
+      jar: ../target/booking-0.0.1-SNAPSHOT-weavegate.jar
+      capacity: 2
+      startup_timeout_ms: 30000
+      cancel_timeout_ms: 5000
+      stop_timeout_ms: 20000
+scenarios:
+  double-booking:
+    workers:
+      - id: alice
+        command: reserve
+        args:
+          seat_id: "7"
+      - id: bob
+        command: reserve
+        args:
+          seat_id: "7"
+    sync_points:
+      - after_seat_read
+      - before_reservation_insert
+oracle:
+  assertions:
+    - id: one-active-reservation-per-seat
+      sql: |
+        SELECT seat_id, COUNT(*) AS active_reservations
+        FROM reservation
+        WHERE status = 'ACTIVE'
+        GROUP BY seat_id
+        HAVING COUNT(*) > 1
+        ORDER BY seat_id;
+      expect_rows: 0
+run:
+  arrive_timeout_ms: 1000

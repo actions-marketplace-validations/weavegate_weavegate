@@ -1,0 +1,21 @@
+{
+  "id": "sch_6f1ffd61cc07",
+  "steps": [
+    {
+      "worker": "alice",
+      "point": "after_seat_read"
+    },
+    {
+      "worker": "alice",
+      "point": "before_reservation_insert"
+    },
+    {
+      "worker": "bob",
+      "point": "after_seat_read"
+    },
+    {
+      "worker": "bob",
+      "point": "before_reservation_insert"
+    }
+  ]
+}
