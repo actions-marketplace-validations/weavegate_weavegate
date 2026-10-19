@@ -50,6 +50,19 @@ The SDK emits a terminal only after proxy exit, transaction completion and lease
 return; the test separately checks JVM exit and server session absence before
 each reset and teardown.
 
+No point lies between a command's first write and its commit. A worker
+released at `before_write` runs its update, its receipt insert and the commit
+before it next arrives, at `after_commit`, so no schedule parks a worker that
+holds InnoDB row locks. That does not serialize the writes. A valid schedule
+that releases the second worker's `before_write` before the first worker's
+`after_commit`, such as `w1/before_write` immediately followed by
+`w2/before_write`, lets both write segments run at once; InnoDB, not the
+schedule, then orders them through row-lock waits. Both selected schedules
+place one worker's `after_commit` before the other worker's `before_write`, so
+the first commit is observed before the second write is released and the
+writes never overlap. Concurrent writes, lock waits and deadlocks are outside
+what these selected schedules cover.
+
 ## Selected schedules
 
 `serial.json` releases all four points of `w1` before allowing `w2` to read.
@@ -68,12 +81,23 @@ job-claim commits reassignment (`w2`) before completion (`w1`) writes.
 | Job / serial | PASS: epoch 1 DONE by epoch 1; reassignment rejected | Same |
 | Job / overlap | WG001: epoch 2 DONE by stale epoch 1 | PASS: epoch 2 RUNNING; stale completion rejected |
 
+Each command reads its row once, before any write. The overlapping violations
+come from the application acting on a value read before the other worker's
+commit; they do not depend on REPEATABLE READ reusing that snapshot for a later
+statement. The corpus makes no claim that its outcomes are sensitive to the
+isolation level.
+
 These are two deliberately selected schedules per new fixture, not exhaustive
 schedule coverage. The test requires their realized releases to equal the saved
 intent exactly, with no timeout-inferred or skipped steps. It checks a single
 normalized fingerprint across all repetitions and records receipt snapshots to
 make the first-read premise inspectable. No sleep or timeout is used to choose
 the application interleaving.
+
+A saved schedule ID is content-addressed over its steps alone. The two
+`serial.json` files have identical steps and therefore share
+`sch_3d0889b6860a`; a schedule identifies a corpus case only together with its
+fixture.
 
 ## Reproduce and retain the acceptance evidence
 
@@ -90,8 +114,8 @@ WEAVEGATE_SPRING_CORPUS=1 WEAVEGATE_SPRING_CORPUS_OUT=/tmp/spring-corpus-evidenc
 `TestSpringRegressionCorpus` runs each of the eight fixture/schedule/variant
 combinations 20 times through the CLI run path. Each repetition resets MySQL and
 starts a fresh JVM. The test checks PASS/exit 0 or WG001/exit 2, the violating
-assertion and row, byte-identical saved schedules, fingerprints and terminal
-success. It also verifies the seed after every reset, captures the committed
+assertion and the exact values of its violating row, byte-identical saved
+schedules, fingerprints and terminal success. It also verifies the seed after every reset, captures the committed
 state before the next reset or teardown, and requires no surviving child JVM,
 Connector/J sessions or JAR snapshots. Polling for server session retirement is
 only a cleanup observation, never worker coordination.
