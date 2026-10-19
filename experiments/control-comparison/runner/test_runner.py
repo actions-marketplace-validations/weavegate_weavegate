@@ -100,10 +100,77 @@ class RunnerTests(unittest.TestCase):
         m = self.manifest(); (self.root/'arm.py').write_text('raise SystemExit(0)\n')
         with self.assertRaisesRegex(ValueError, 'pin changed'): validate(m)
 
+    def test_measurement_t_commands_require_candidate_executable(self):
+        m = self.measurement_manifest()
+        validate(m)
+        other = self.root / 'other-cli'
+        other.write_text('different pinned executable\n')
+        m['pins'][str(other)] = digest(other)
+        for workload in WORKLOADS:
+            for variant in ('vulnerable', 'fixed'):
+                for arm in ('T-R', 'T-E'):
+                    with self.subTest(workload=workload, variant=variant, arm=arm):
+                        changed = copy.deepcopy(m)
+                        changed['commands'][workload][variant][arm]['argv'][0] = str(other)
+                        with self.assertRaisesRegex(ValueError, 'registered CLI'):
+                            validate(changed)
+
+    def test_cleanup_script_must_be_in_trusted_subset(self):
+        m = self.measurement_manifest()
+        hook = m['hooks']['cleanup']
+        script = hook['argv'][1]
+        for globally_pinned in (False, True):
+            with self.subTest(globally_pinned=globally_pinned):
+                changed = copy.deepcopy(m)
+                if not globally_pinned: del changed['pins'][script]
+                changed['hooks']['cleanup']['execution_pins'] = [hook['argv'][0]]
+                with self.assertRaisesRegex(ValueError, 'cleanup.*dependenc'):
+                    validate(changed)
+
+    def test_cleanup_file_arguments_must_be_in_trusted_subset(self):
+        m = self.measurement_manifest()
+        dependency = self.root / 'cleanup-config.json'
+        dependency.write_text('{}')
+        m['pins'][str(dependency)] = digest(dependency)
+        for argument in (str(dependency), dependency.name, '--config=' + str(dependency)):
+            with self.subTest(argument=argument):
+                changed = copy.deepcopy(m)
+                changed['hooks']['cleanup']['argv'].append(argument)
+                with self.assertRaisesRegex(ValueError, 'cleanup.*dependenc'):
+                    validate(changed)
+                changed['hooks']['cleanup']['execution_pins'].append(str(dependency))
+                validate(changed)
+
     def test_frozen_inputs_tamper_rejected_offline(self):
         bundle, _ = self.bundle()
         (bundle/'frozen/order.json').write_text('[]')
         with self.assertRaises(ValueError): analyze(bundle, self.root/'analysis')
+
+    def test_cleanup_environment_file_must_be_in_trusted_subset(self):
+        m = self.measurement_manifest()
+        dependency = self.root / 'cleanup-config.json'
+        dependency.write_text('{}')
+        m['pins'][str(dependency)] = digest(dependency)
+        m['hooks']['cleanup']['env']['CLEANUP_CONFIG'] = str(dependency)
+        with self.assertRaisesRegex(ValueError, 'cleanup.*dependenc'): validate(m)
+        m['hooks']['cleanup']['execution_pins'].append(str(dependency))
+        validate(m)
+
+    def test_changed_cleanup_dependency_is_never_executed(self):
+        bundle, registration = self.measurement_bundle()
+        from tool import execute as real_execute
+        calls = []
+        def drift(spec, context, directory, label, secrets):
+            calls.append(label)
+            result = real_execute(spec, context, directory, label, secrets)
+            if label == 'prepare':
+                (self.root/'hook.py').write_text('raise SystemExit(0)\n')
+            return result
+        with patch('tool.execute', side_effect=drift): collect(bundle, registration)
+        self.assertEqual(calls, ['prepare'])
+        state = read_json(bundle/'slots'/order()[0]['id']/'slot.json')
+        self.assertFalse(state['cleanup_proven'])
+        self.assertIn('live pin changed', state['cleanup_error'])
 
     def test_failed_process_quarantines_and_preserves_all_slots(self):
         bundle, _ = self.bundle()
@@ -113,6 +180,101 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result['slots'][0]['status'], 'operational_failed')
         self.assertEqual(sum(s['status'] == 'not_started' for s in result['slots']), 599)
         with self.assertRaisesRegex(ValueError, 'stopped'): collect(bundle, max_slots=1)
+
+    def test_deleted_stop_marker_cannot_resume_unproven_cleanup(self):
+        bundle, _ = self.bundle()
+        collect(bundle, max_slots=1)
+        before = analyze(bundle, self.root/'before')
+        (bundle/'stopped.json').unlink()
+        with patch('tool.execute') as execute:
+            with self.assertRaisesRegex(ValueError, 'stopped|cleanup unproven'):
+                collect(bundle, max_slots=1)
+            execute.assert_not_called()
+        after = analyze(bundle, self.root/'after')
+        self.assertEqual(before, after)
+
+    def test_deleted_stop_marker_cannot_resume_interruption_after_cleanup(self):
+        bundle, registration = self.measurement_bundle()
+        from tool import execute as real_execute
+        def interrupt_observer(spec, context, directory, label, secrets):
+            if label == 'observe': raise KeyboardInterrupt('constructed interruption')
+            return real_execute(spec, context, directory, label, secrets)
+        with patch('tool.execute', side_effect=interrupt_observer):
+            collect(bundle, registration)
+        self.assertTrue(read_json(bundle/'slots'/order()[0]['id']/'slot.json')['cleanup_proven'])
+        (bundle/'stopped.json').unlink()
+        with patch('tool.execute') as execute:
+            with self.assertRaisesRegex(ValueError, 'stopped'):
+                collect(bundle, registration)
+            execute.assert_not_called()
+
+    def test_offline_analysis_rejects_missing_consumed_slot(self):
+        bundle, registration = self.measurement_bundle()
+        collect(bundle, registration)
+        for index in (0, 1):
+            with self.subTest(index=index):
+                slot = bundle/'slots'/order()[index]['id']
+                retained = self.root/'retained-slot'
+                slot.rename(retained)
+                with self.assertRaisesRegex(ValueError, 'prefix|checkpoint'):
+                    analyze(bundle, self.root/'analysis')
+                retained.rename(slot)
+
+    def test_offline_analysis_rejects_mismatched_stop_marker(self):
+        bundle, _ = self.bundle()
+        collect(bundle, max_slots=1)
+        stopped = read_json(bundle/'stopped.json')
+        stopped['slot'] = order()[1]['id']
+        write_json(bundle/'stopped.json', stopped)
+        with self.assertRaisesRegex(ValueError, 'stop.*checkpoint'):
+            analyze(bundle, self.root/'analysis')
+
+    def test_partial_checkpoint_continues_only_the_next_slot(self):
+        bundle, _ = self.bundle()
+        def clean_evidence(*args): return {'cleanup_proven': True}
+        with patch('analyze.baseline', side_effect=clean_evidence), patch('analyze.product', side_effect=clean_evidence):
+            collect(bundle, max_slots=1)
+            collect(bundle, max_slots=1)
+        self.assertEqual(set(p.name for p in (bundle/'slots').iterdir()), {s['id'] for s in order()[:2]})
+        result = analyze(bundle, self.root/'analysis')
+        self.assertEqual(sum(s['status'] == 'not_started' for s in result['slots']), 598)
+
+    def test_missing_or_corrupt_progress_cannot_be_recreated(self):
+        bundle, _ = self.bundle()
+        path = bundle/'progress/checkpoint.json'
+        path.write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'checksum'): analyze(bundle, self.root/'analysis')
+        path.unlink()
+        with self.assertRaises((ValueError, OSError)): collect(bundle, max_slots=1)
+
+    def test_removed_active_slot_is_never_retried(self):
+        bundle, _ = self.bundle()
+        save_progress(bundle, {}, active=order()[0]['id'])
+        with patch('tool.execute') as execute:
+            with self.assertRaisesRegex(ValueError, 'unfinished checkpoint'):
+                collect(bundle, max_slots=1)
+            execute.assert_not_called()
+        with self.assertRaisesRegex(ValueError, 'unfinished checkpoint'):
+            analyze(bundle, self.root/'analysis')
+
+    def test_complete_checkpoint_requires_every_consumed_slot(self):
+        m = self.manifest()
+        m['unsupported'] = {w + '/' + a: 'constructed unsupported' for w in WORKLOADS for a in ARMS}
+        write_json(self.root/'input.json', m)
+        bundle = self.root/'bundle'
+        freeze(self.root/'input.json', bundle)
+        consumed = {}
+        for slot in order():
+            directory = bundle/'slots'/slot['id']; directory.mkdir()
+            write_json(directory/'slot.json', {'slot': slot, 'unsupported': 'constructed unsupported'})
+            seal(directory)
+            consumed[slot['id']] = digest(directory/'SHA256SUMS')
+        save_progress(bundle, consumed)
+        self.assertTrue(retained_progress(bundle, m, order())['complete'])
+        analyze(bundle, self.root/'complete')
+        shutil.rmtree(bundle/'slots'/order()[-1]['id'])
+        with self.assertRaisesRegex(ValueError, 'checkpoint'):
+            analyze(bundle, self.root/'analysis')
 
     def test_offline_regeneration_is_byte_identical(self):
         bundle, _ = self.bundle()
@@ -173,6 +335,23 @@ class RunnerTests(unittest.TestCase):
         root, slot, _=self.raw(dict(order()[0], workload='quota', variant='fixed', arm='B2'))
         r=reduce_slot(root,slot,self.manifest())
         self.assertEqual(r['status'],'quality_failed')
+
+    def test_baseline_domain_rows_must_match_frozen_expectation(self):
+        root, slot, cmd = self.raw()
+        m = self.manifest()
+        expected = m['inputs']['quota']['vulnerable']
+        expected['expected_domain_rows'] = [{'synthetic': '1'}]
+        self.assertFalse(baseline(root, slot, cmd, expected)['quality_reasons'])
+        expected['expected_domain_rows'] = [{'synthetic': '2'}]
+        for arm in ('B1', 'B2'):
+            with self.subTest(arm=arm):
+                current = dict(slot, arm=arm)
+                write_json(root/'slot.json', {'cleanup_proven': True, 'slot': current})
+                seal(root)
+                result = reduce_slot(root, current, m)
+                self.assertEqual(result['status'], 'quality_failed')
+                self.assertIn('domain assertion rows differ', result['reasons'])
+                self.assertEqual(result['attempted'], 2)
 
     def test_corrupt_raw_cannot_be_reclassified_by_cached_status(self):
         root, slot, _=self.raw()
@@ -241,7 +420,7 @@ class RunnerTests(unittest.TestCase):
         seal(wrong)
         with self.assertRaisesRegex(ValueError,'ordered prefix'):collect(bundle,max_slots=1)
 
-    def test_measurement_cleanup_allows_next_slot_then_quarantines(self):
+    def measurement_manifest(self):
         m=self.manifest()
         m['phase']='measurement'
         m['fixture_revision']='e1bd8ba3fc07d024b8cb4037aa2263d24044dbb0'
@@ -275,13 +454,21 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
         m['hooks']={k:{'argv':[executable,str(hook),k,'{trial_dir}','{arm}'],
             'cwd':str(self.root),'env':{},'timeout_seconds':10} for k in ('prepare','observe','cleanup','warm_cleanup')}
         m['hooks']['cleanup']['execution_pins']=[executable,str(hook)]
+        return m
+
+    def measurement_bundle(self, m=None):
+        m = m or self.measurement_manifest()
         write_json(self.root/'measurement.json',m)
         bundle=self.root/'measurement';freeze(self.root/'measurement.json',bundle)
         registration={'manifest_sha256':digest(bundle/'frozen/manifest.json'),
             'order_sha256':digest(bundle/'frozen/order.json'),'registered_at':'2020-01-01T00:00:00Z',
             'public_url':'https://example.com/constructed','revision':'constructed'}
         write_json(self.root/'registration.json',registration)
-        collect(bundle,self.root/'registration.json')
+        return bundle, self.root/'registration.json'
+
+    def test_measurement_cleanup_allows_next_slot_then_quarantines(self):
+        bundle, registration = self.measurement_bundle()
+        collect(bundle, registration)
         self.assertEqual(len(list((bundle/'slots').iterdir())),2)
         self.assertTrue((bundle/'stopped.json').exists())
         self.assertTrue(read_json(bundle/'slots'/order()[0]['id']/'slot.json')['cleanup_proven'])

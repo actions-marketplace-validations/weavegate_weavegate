@@ -96,6 +96,9 @@ Freeze retains all pinned bytes, deduplicated by SHA-256, and copies the analyze
 and shared process/bundle primitives into `frozen/source/`. It generates exactly
 120 blocks and 600 invocation slots with the protocol's hash ordering. Changed
 counts, candidate order, settings or caps are rejected for measurement.
+Every measurement T-R/T-E executable must hash to `candidate.cli_sha256`,
+including the T-R command used for warm-up. An unused candidate pin does not
+authenticate a command that invokes a different executable.
 
 To prepare a measurement manifest, use the template's schema and replace its
 development artifacts/commands with the actual E1 candidate and registered
@@ -119,9 +122,10 @@ or manufacture successful prerequisite evidence.
 
 Baseline counts are 20/100; T replay is 20 and exploration is three passes with
 automatic confirmation. Freeze commands and all their transitive inputs. A
-transport wrapper may run the pinned command in the restored guest; keep its
-source, exact command and remote observations in the inventory. The collector
-and evidence storage must survive restoration outside the guest. Aggregate
+measurement T command invokes the registered CLI directly; transport wrappers
+cannot replace that executable. Infrastructure hooks and their remote
+observations belong in the inventory. The collector and evidence storage must
+survive restoration outside the guest. Aggregate
 resource caps include Java, Go, MySQL and observers.
 
 Hooks receive single-pass `{trial_dir}`, `{campaign_dir}`, `{workload}`,
@@ -142,6 +146,13 @@ Original hook proof files live under `proof/`; cleanup proof must be newly
 retained by that hook. It cannot cite an earlier command's receipt as proof of
 later cleanup. Cleanup can run after unrelated input drift when every dependency
 in its separately pinned subset still matches; the campaign stops afterward.
+The subset must include the interpreter, script and all transitive cleanup
+inputs. Freeze checks literal file arguments (including relative paths,
+`--option=path`, path lists and directory contents) and file-valued environment
+entries against `execution_pins`; cleanup repeats that check before execution.
+Imports, subprocesses selected through `PATH` and dynamically opened files still
+require explicit dependency pins and independent audit. The runner does not
+infer arbitrary program dependencies.
 
 The runner performs exactly one T-R warm-up after restoration for warm slots,
 validates its expected outcome and cleanup, and retains it separately. A failed
@@ -177,12 +188,25 @@ quarantines the allocation and preserves remaining slots as not started. A new
 feasibility ID is required for diagnostic reruns. `--max-slots` exists only for
 feasibility, including the automated five-arm check above.
 
+The sealed `progress/checkpoint.json` records the consumed slot seals, any active
+attempt, completion and stop state. A slot also seals its own stop reason before
+the checkpoint advances. `stopped.json` is a convenience copy: omitting it cannot
+clear quarantine or erase an interruption. Both collection and analysis require
+the exact ordered prefix recorded by the checkpoint; missing middle or final
+slots, inconsistent stop/completion state and unfinished checkpoints fail closed.
+Keep `progress/` with the bundle during transfer. Bundles frozen before this
+checkpoint format must use their original frozen tools; they cannot be resumed
+or analyzed by the updated runner.
+
 Analysis reads only the frozen manifest/order and sealed original slot evidence;
 it does not run Java, Go, Docker or registered hooks. `results.json` contains all
 600 slot statuses, first-event bounds, per-execution outcomes, resource
 disclosures, stage durations and within-block pairs. `report.md` renders the
 stratified accounting and timing table. Regenerating into another new directory
 produces byte-identical files. Corrupt or missing sealed originals fail analysis.
+Baseline and product domain rows use the same string-normalized comparison
+against the frozen expectation. Unexpected rows remain recorded observations
+and make the invocation quality-failed.
 
 The collector observes baseline execution JSON every 100 ms and retains its
 receipt times/hashes. Publication and polling delay remain visible. Product

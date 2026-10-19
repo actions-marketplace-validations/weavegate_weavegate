@@ -34,15 +34,15 @@ def validate(m):
                 command_valid(command)
                 require(command['timeout_seconds'] == CAPS[arm], 'arm collection cap differs')
                 require(command['argv'][0] in m['pins'], 'command executable is unpinned')
+                if m['phase'] == 'measurement' and arm in ('T-R', 'T-E'):
+                    require(m['pins'][command['argv'][0]] == m['candidate']['cli_sha256'],
+                            'T command executable differs from registered CLI')
     for hook in m.get('hooks', {}).values():
         command_valid(hook)
         require(hook['argv'][0] in m['pins'], 'hook executable is unpinned')
     if m['phase'] == 'measurement':
         require(set(m['hooks']) == {'prepare', 'warm_cleanup', 'observe', 'cleanup'}, 'measurement lifecycle hooks required')
-        require(m['hooks']['cleanup'].get('execution_pins'), 'cleanup dependency subset required')
-        require(set(m['hooks']['cleanup']['execution_pins']) <= set(m['pins'])
-                and m['hooks']['cleanup']['argv'][0] in m['hooks']['cleanup']['execution_pins'],
-                'cleanup dependencies must include executable and be pinned')
+        cleanup_dependencies(m)
         require(m['environment']['vcpus'] == 4 and m['environment']['memory_bytes'] == 16 * 1024**3,
                 'protocol resource caps required')
         for key in ('host_id', 'vm_image', 'cpu_model', 'kernel', 'docker', 'background_policy'):
@@ -84,6 +84,7 @@ def freeze(source, destination):
         shutil.copyfile(SHARED / name, shared / name)
     seal(frozen)
     (destination / 'slots').mkdir()
+    save_progress(destination, {})
     print('E5_FREEZE_RESULT slots=600 blocks=120 attempts=1')
 
 
@@ -101,6 +102,7 @@ def proof(directory, filename, expected, previous=None):
 def protect(bundle, active):
     """Authenticate frozen inputs and every previously sealed slot at boundaries."""
     verify(bundle / 'frozen')
+    verify(bundle / 'progress')
     for path in (bundle / 'slots').iterdir():
         if path != active: verify(path)
 
@@ -129,7 +131,10 @@ def collect(bundle, registration=None, max_slots=None):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         verify(bundle / 'frozen')
         m = read_json(bundle / 'frozen' / 'manifest.json')
-        require(not (bundle / 'stopped.json').exists(), 'campaign stopped; no replacement attempts')
+        slots = read_json(bundle / 'frozen' / 'order.json')
+        require(slots == order(), 'order differs')
+        progress = retained_progress(bundle, m, slots)
+        require(progress['stopped'] is None, 'campaign stopped; no replacement attempts')
         for path in (bundle / 'frozen/source').glob('*.py'):
             require(digest(HERE / path.name) == digest(path), 'collector/analyzer source changed after freeze')
         for path in (bundle / 'frozen/source/shared').glob('*.py'):
@@ -137,18 +142,14 @@ def collect(bundle, registration=None, max_slots=None):
         require(max_slots is None or (m['phase'] == 'feasibility' and max_slots > 0), 'positive slot limit is feasibility-only')
         registered(bundle, m, registration)
         live_pins(m)
-        # Every already consumed slot must be sealed. A crash is never a retry.
-        for p in (bundle / 'slots').iterdir(): verify(p)
-        slots = read_json(bundle / 'frozen' / 'order.json')
-        require(slots == order(), 'order differs')
-        consumed = {p.name for p in (bundle / 'slots').iterdir()}
-        require(consumed == {s['id'] for s in slots[:len(consumed)]}, 'consumed slots are not an ordered prefix')
+        consumed = progress['slots']
         done = 0
         for slot in slots:
             directory = bundle / 'slots' / slot['id']
             if directory.exists(): continue
             if max_slots is not None and done >= max_slots: break
             live_pins(m)
+            save_progress(bundle, consumed, active=slot['id'])
             directory.mkdir()
             context = dict(slot, trial_dir=str(directory), campaign_dir=str(bundle), redact_env=[])
             state = {'slot': slot, 'started_at': utc(), 'cleanup_proven': False}
@@ -159,6 +160,8 @@ def collect(bundle, registration=None, max_slots=None):
                 state['unsupported'] = unsupported
                 write_json(directory / 'slot.json', state)
                 seal(directory)
+                consumed[slot['id']] = digest(directory / 'SHA256SUMS')
+                save_progress(bundle, consumed)
                 done += 1
                 continue
             try:
@@ -223,7 +226,7 @@ def collect(bundle, registration=None, max_slots=None):
                         # are not trusted. No reuse follows a failed proof.
                         with defer_interrupts():
                             try:
-                                trusted = m['hooks']['cleanup']['execution_pins']
+                                trusted = cleanup_dependencies(m)
                                 live_pins({'pins': {p: m['pins'][p] for p in trusted}})
                                 before_cleanup = inventory(directory)
                                 cleanup = execute(m['hooks']['cleanup'], context, directory, 'cleanup', [])
@@ -240,10 +243,13 @@ def collect(bundle, registration=None, max_slots=None):
                 try: protect(bundle, directory)
                 except (ValueError, OSError) as error: stop_reason = str(error)
                 state['ended_at'] = utc()
+                stopped = {'reason': stop_reason, 'slot': slot['id'], 'at': utc()} if stop_reason else None
+                state['stop'] = stopped
                 write_json(directory / 'slot.json', state)
                 seal(directory)
-                if stop_reason:
-                    write_json(bundle / 'stopped.json', {'reason': stop_reason, 'slot': slot['id'], 'at': utc()})
+                consumed[slot['id']] = digest(directory / 'SHA256SUMS')
+                save_progress(bundle, consumed, stopped=stopped)
+                if stopped: write_json(bundle / 'stopped.json', stopped)
             done += 1
             if stop_reason: break
         print('E5_COLLECT_RESULT consumed=%d stopped=%s phase=%s' % (done, (bundle / 'stopped.json').exists(), m['phase']))

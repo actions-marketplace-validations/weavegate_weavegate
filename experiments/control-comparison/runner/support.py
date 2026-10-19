@@ -1,4 +1,5 @@
 """Reuse the E1/E2 standard-library process and bundle primitives, not its design."""
+import os
 import sys
 from pathlib import Path
 
@@ -79,6 +80,77 @@ def live_pins(manifest):
     for name, expected in manifest['pins'].items():
         require(Path(name).is_absolute() and Path(name).is_file(), 'missing live pin: ' + name)
         require(digest(name) == expected, 'live pin changed: ' + name)
+
+
+def cleanup_dependencies(manifest):
+    """Check literal file inputs as well as the declared transitive inventory.
+
+    Hooks are trusted adapters: imports and dynamically opened files still need
+    explicit pins and audit. Do not silently omit a script or config in argv/env.
+    """
+    hook = manifest['hooks']['cleanup']
+    pins = hook.get('execution_pins')
+    require(isinstance(pins, list) and pins and all(isinstance(p, str) for p in pins),
+            'cleanup dependency subset required')
+    require(len(pins) == len(set(pins)) and set(pins) <= set(manifest['pins'])
+            and hook['argv'][0] in pins, 'cleanup dependencies must include executable and be pinned')
+    values = [(v, True) for v in hook['argv']] + [(v, False) for v in hook['env'].values()]
+    for value, include_directory in values:
+        # Accept --config=/path and path lists as well as ordinary positional
+        # files. Runtime receipt/output placeholders are not frozen inputs.
+        for name in value.split('=', 1)[-1].split(os.pathsep):
+            if not name or '{' in name: continue
+            path = Path(os.path.abspath(Path(hook['cwd']) / name))
+            dependencies = (files(path) if include_directory and path.is_dir()
+                            else [path] if path.is_file() else [])
+            require(all(str(p) in pins for p in dependencies),
+                    'cleanup file dependency is absent from execution_pins: ' + name)
+    return pins
+
+
+def save_progress(bundle, consumed, active=None, stopped=None):
+    checkpoint = bundle / 'progress'
+    checkpoint.mkdir(exist_ok=True)
+    write_json(checkpoint / 'checkpoint.json', {
+        'slots': consumed, 'active': active, 'stopped': stopped,
+        'complete': len(consumed) == len(order()) and active is None and stopped is None,
+    })
+    seal(checkpoint)
+
+
+def retained_progress(bundle, manifest, slots):
+    """Fail closed on gaps, lost suffixes, crashes, or continuation after a stop."""
+    paths = list((bundle / 'slots').iterdir())
+    consumed = {p.name for p in paths}
+    require(consumed == {s['id'] for s in slots[:len(consumed)]},
+            'consumed slots are not an ordered prefix')
+    for path in paths: verify(path)
+    verify(bundle / 'progress')
+    progress = read_json(bundle / 'progress' / 'checkpoint.json')
+    require(progress['slots'] == {p.name: digest(p / 'SHA256SUMS') for p in paths},
+            'retained slots differ from progress checkpoint')
+    require(progress['active'] is None, 'unfinished checkpoint; no replacement attempts')
+    stopped = None
+    for index, slot in enumerate(slots[:len(consumed)]):
+        state = read_json(bundle / 'slots' / slot['id'] / 'slot.json')
+        require(state.get('slot') == slot, 'slot identity differs')
+        if state.get('unsupported'):
+            require(state['unsupported'] == manifest.get('unsupported', {}).get(slot['workload'] + '/' + slot['arm'])
+                    and not (bundle / 'slots' / slot['id'] / 'run.command.json').exists(),
+                    'unsupported slot was executed/unregistered')
+        else:
+            require(state.get('cleanup_proven') is True or state.get('stop'),
+                    'allocation cleanup unproven without sealed stop checkpoint')
+        if state.get('stop'):
+            stopped = state['stop']
+            require(stopped.get('slot') == slot['id'] and stopped.get('reason')
+                    and index == len(consumed) - 1, 'slot follows sealed stop checkpoint')
+    require(json_equal(progress['stopped'], stopped), 'stop differs from sealed checkpoint')
+    require(progress['complete'] is (len(consumed) == len(slots) and stopped is None),
+            'completion checkpoint differs from retained slots')
+    if (bundle / 'stopped.json').exists():
+        require(json_equal(read_json(bundle / 'stopped.json'), stopped), 'stop marker differs from sealed checkpoint')
+    return progress
 
 
 def candidates(workload):

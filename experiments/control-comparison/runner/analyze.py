@@ -57,6 +57,12 @@ def stages(spans, seconds):
             'remainder_seconds': remainder, 'clock': 'arm-process-monotonic'}
 
 
+def domain_rows_match(violations, assertion, expected):
+    actual = [{k: str(v) for k, v in row.items()} for violation in violations
+              if violation['oracle_id'] == assertion for row in violation['rows']]
+    return not expected.get('expected_domain_rows') or actual == expected['expected_domain_rows']
+
+
 def baseline(root, slot, command, expected):
     result = {'valid_evaluations': 0, 'domain_violations': 0, 'attempted': 0,
               'quality_reasons': [], 'operational_reasons': [], 'first_event_seconds': None,
@@ -99,6 +105,8 @@ def baseline(root, slot, command, expected):
         else:
             violations = []
         domain = any(v['oracle_id'] == assertion and v['rows'] for v in violations)
+        if domain and not domain_rows_match(violations, assertion, expected):
+            result['quality_reasons'].append('domain assertion rows differ')
         if any(v['oracle_id'] != assertion for v in violations):
             result['quality_reasons'].append('receipt assertion failed')
         if domain and slot['variant'] == 'fixed': result['quality_reasons'].append('fixed domain violation')
@@ -220,10 +228,8 @@ def product(root, slot, command, expected):
         if not stable: result['quality_reasons'].append('repeat/fingerprint mismatch')
         want = repeat if slot['variant'] == 'vulnerable' else 0
         if o['violation_runs'] != want or (want > 0) != domain: result['quality_reasons'].append('unexpected domain outcome')
-        if domain and expected.get('expected_domain_rows'):
-            actual = [{k: str(v) for k,v in row.items()} for violation in violations
-                      if violation['oracle_id'] == assertion for row in violation['rows']]
-            if actual != expected['expected_domain_rows']: result['quality_reasons'].append('domain assertion rows differ')
+        if domain and not domain_rows_match(violations, assertion, expected):
+            result['quality_reasons'].append('domain assertion rows differ')
         result['stable_confirmation'] = stable and domain and slot['arm'] == 'T-E'
     elif slot['arm'] == 'T-R': result['quality_reasons'].append('missing replay')
     elif o['schedules_explored'] != len(expected['candidates']) * 3 or o['explore_passes'] != 3:
@@ -321,9 +327,9 @@ def analyze(bundle, output):
     manifest = read_json(bundle / 'frozen' / 'manifest.json')
     slots = read_json(bundle / 'frozen' / 'order.json')
     require(slots == order(), 'order differs from protocol')
-    require(set(p.name for p in (bundle / 'slots').iterdir()) <= {s['id'] for s in slots}, 'unplanned slot directory')
+    progress = retained_progress(bundle, manifest, slots)
     rows = [reduce_slot(bundle / 'slots' / s['id'], s, manifest) for s in slots]
-    stopped = read_json(bundle / 'stopped.json') if (bundle / 'stopped.json').exists() else None
+    stopped = progress['stopped']
     if stopped:
         for r in rows:
             if r['status'] == 'not_started': r['reasons'] = ['campaign stopped: ' + stopped['reason']]
