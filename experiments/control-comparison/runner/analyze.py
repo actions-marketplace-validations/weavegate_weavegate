@@ -70,6 +70,8 @@ def baseline(root, slot, command, expected):
     raw = root / 'raw'
     if (raw / 'run.json').is_file():
         run = read_json(raw / 'run.json')
+        require(run.get('arm') == slot['arm'] and run.get('variant') == slot['variant'],
+                'baseline identity differs from requested slot')
     else:
         # A killed process may have already published valid evaluations. Keep
         # those observations; missing final cleanup/timing cannot erase them.
@@ -196,6 +198,8 @@ def product(root, slot, command, expected):
             'merged product evidence differs')
     require((directory / 'report.md').is_file(), 'missing product report')
     require(m['variant'] == slot['variant'] and m['adapter'] == 'external', 'product identity differs')
+    require(o.get('mode') == {'T-R': 'replay', 'T-E': 'explore'}[slot['arm']],
+            'product mode differs from requested arm')
     require(m['sut_sha256'] == 'sha256:' + expected['jar_sha256'] and m['isolation_level'] == 'REPEATABLE-READ', 'product input/isolation differs')
     require(o['oracles'] == [{'id': a['ID'], 'sql': a['SQL'], 'expect_rows': a['ExpectRows']}
                              for a in expected['config']['Oracle']['Assertions']], 'product assertions differ')

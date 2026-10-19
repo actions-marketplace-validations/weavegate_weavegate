@@ -17,7 +17,7 @@ def validate(m):
     require(m.get('seed') == SEED, 'protocol seed differs')
     require(m.get('protocol', {}).get('sha256') == PROTOCOL_SHA256, 'frozen protocol differs')
     require(m.get('pins'), 'live input inventory required')
-    live_pins(m)
+    live_pins({'pins': m['pins']})
     for workload, spec in WORKLOADS.items():
         for variant in ('vulnerable', 'fixed'):
             inp = m['inputs'][workload][variant]
@@ -59,6 +59,7 @@ def validate(m):
             p = m['prerequisites'][key]
             require(p in m['pins'], 'missing prerequisite evidence: ' + key)
         require(m.get('fixture_revision') == 'e1bd8ba3fc07d024b8cb4037aa2263d24044dbb0', 'fixture revision differs')
+        measurement_dependencies(m)
 
 
 def freeze(source, destination):
@@ -80,7 +81,8 @@ def freeze(source, destination):
     sources = frozen / 'source'; sources.mkdir()
     for p in HERE.glob('*.py'): shutil.copyfile(p, sources / p.name)
     shared = sources / 'shared'; shared.mkdir()
-    for name in ('common.py', 'execution.py', 'redaction.py'):
+    for module in SHARED_MODULES:
+        name = module + '.py'
         shutil.copyfile(SHARED / name, shared / name)
     seal(frozen)
     (destination / 'slots').mkdir()
@@ -94,7 +96,7 @@ def proof(directory, filename, expected, previous=None):
     require(receipt.get('evidence'), filename + ' needs original evidence')
     for name, checksum in receipt['evidence'].items():
         require('/' in name and name.split('/')[0] == 'proof', 'proof originals must be under proof/')
-        require(previous is None or name not in previous, 'cleanup proof must be newly retained')
+        require(previous is None or name not in previous, filename + ' proof must be newly retained')
         require(digest(child(directory, name)) == checksum, filename + ' original differs')
     return receipt
 
@@ -103,6 +105,7 @@ def protect(bundle, active):
     """Authenticate frozen inputs and every previously sealed slot at boundaries."""
     verify(bundle / 'frozen')
     verify(bundle / 'progress')
+    retained_registration(bundle, read_json(bundle / 'progress' / 'checkpoint.json'))
     for path in (bundle / 'slots').iterdir():
         if path != active: verify(path)
 
@@ -114,6 +117,11 @@ def unchanged(directory, before):
 
 def registered(bundle, m, registration):
     if m['phase'] == 'feasibility': return
+    verify(bundle / 'progress')
+    progress = read_json(bundle / 'progress' / 'checkpoint.json')
+    retained_value = retained_registration(bundle, progress)
+    require(retained_value is not None or (not progress['slots'] and progress['active'] is None),
+            'registration missing after collection began')
     require(registration is not None, 'public registration required before measurement')
     value = read_json(registration)
     for key, name in (('manifest_sha256', 'manifest.json'), ('order_sha256', 'order.json')):
@@ -123,6 +131,10 @@ def registered(bundle, m, registration):
     retained = bundle / 'registration.json'
     if retained.exists(): require(canonical(read_json(retained)) == canonical(value), 'registration changed')
     else: write_json(retained, value)
+    if retained_value is None:
+        progress['registration'] = value
+        write_json(bundle / 'progress' / 'checkpoint.json', progress)
+        seal(bundle / 'progress')
 
 
 def collect(bundle, registration=None, max_slots=None):
@@ -179,7 +191,8 @@ def collect(bundle, registration=None, max_slots=None):
                         cmd = execute(m['commands'][slot['workload']][slot['variant']]['T-R'], warm_context, warm, 'run', [])
                         from analyze import product
                         observed = product(warm, dict(slot, arm='T-R'), cmd, m['inputs'][slot['workload']][slot['variant']])
-                        require(cmd['exit'] in (0, 2) and not cmd['timeout'] and observed['cleanup_proven']
+                        require(cmd['exit'] in (0, 2) and succeeded(dict(cmd, exit=0))
+                                and cmd.get('containment_proven') is True and observed['cleanup_proven']
                                 and not observed['quality_reasons'] and not observed['operational_reasons'], 'warm-up failed')
                         state['warmup'] = {'seconds': cmd['seconds'], 'exit': cmd['exit']}
                         before = inventory(directory)
@@ -212,7 +225,7 @@ def collect(bundle, registration=None, max_slots=None):
                     observed_files = inventory(directory)
                     observer = execute(m['hooks']['observe'], context, directory, 'observe', [])
                     require(succeeded(observer), 'observation failed')
-                    receipt = proof(directory, 'observation.json', {'host_id': m['environment']['host_id']})
+                    receipt = proof(directory, 'observation.json', {'host_id': m['environment']['host_id']}, previous=observed_files)
                     state['resources'] = receipt['resources']
                     unchanged(directory, observed_files)
                     protect(bundle, directory)

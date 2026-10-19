@@ -93,8 +93,10 @@ python3 -B experiments/control-comparison/runner/tool.py freeze \
 ```
 
 Freeze retains all pinned bytes, deduplicated by SHA-256, and copies the analyzer
-and shared process/bundle primitives into `frozen/source/`. It generates exactly
-120 blocks and 600 invocation slots with the protocol's hash ordering. Changed
+and shared process/bundle primitives into `frozen/source/`, including the
+redaction module's `plan.py` dependency. Shared imports take precedence over
+ambient Python packages and their resolved locations are checked before use.
+It generates exactly 120 blocks and 600 invocation slots with the protocol's hash ordering. Changed
 counts, candidate order, settings or caps are rejected for measurement.
 Every measurement T-R/T-E executable must hash to `candidate.cli_sha256`,
 including the T-R command used for warm-up. An unused candidate pin does not
@@ -121,7 +123,13 @@ or manufacture successful prerequisite evidence.
 | `unsupported` | Optional workload/arm to issue URL and reason; planned denominators are retained |
 
 Baseline counts are 20/100; T replay is 20 and exploration is three passes with
-automatic confirmation. Freeze commands and all their transitive inputs. A
+automatic confirmation. Freeze commands and all their transitive inputs.
+Measurement validation checks literal argv/environment files, classpath
+directories and Java `lib/*` entries, plus the effective config's Java executable,
+JAR, migrations and seed. These checks repeat at live-input boundaries so adding
+an unpinned class or library after freeze also stops collection. Effective config
+snapshots must describe the command's actual config; dynamic imports, subprocess
+lookup and other runtime dependencies still require explicit pins and audit. A
 measurement T command invokes the registered CLI directly; transport wrappers
 cannot replace that executable. Infrastructure hooks and their remote
 observations belong in the inventory. The collector and evidence storage must
@@ -142,10 +150,11 @@ Exit zero or an unsubstantiated boolean is insufficient.
 | `observe` | `observation.json`: registered `host_id`, `resources`, original runtime/version/cache/counter evidence |
 | `cleanup` | `cleanup.json`: `proven: true` plus newly retained proof of child exit, retired connections and fixture removal |
 
-Original hook proof files live under `proof/`; cleanup proof must be newly
-retained by that hook. It cannot cite an earlier command's receipt as proof of
-later cleanup. Cleanup can run after unrelated input drift when every dependency
-in its separately pinned subset still matches; the campaign stops afterward.
+Original hook proof files live under `proof/`; observation and cleanup proofs
+must be newly retained by their respective hooks. Neither can cite an earlier
+preparation or warm-up file as evidence of a later observation or cleanup.
+Cleanup can run after unrelated input drift when every dependency in its
+separately pinned subset still matches; the campaign stops afterward.
 The subset must include the interpreter, script and all transitive cleanup
 inputs. Freeze checks literal file arguments (including relative paths,
 `--option=path`, path lists and directory contents) and file-valued environment
@@ -155,9 +164,13 @@ require explicit dependency pins and independent audit. The runner does not
 infer arbitrary program dependencies.
 
 The runner performs exactly one T-R warm-up after restoration for warm slots,
-validates its expected outcome and cleanup, and retains it separately. A failed
-warm-up consumes the slot as preparation-failed. Hooks must preserve evidence
-outside the restored image and verify no live database/data volume remains.
+validates its expected outcome and cleanup, and retains it separately. Its
+command receipt must show a started, finished, uninterrupted execution with no
+operational error or timeout and proven process containment. Clean exit 0 and
+domain-violation exit 2 remain valid. A failed warm-up consumes the slot as
+preparation-failed before the measured command can run. Hooks must preserve
+evidence outside the restored image and verify no live database/data volume
+remains.
 Resource values unavailable at the aggregate scope are null with reasons. Report
 sampled memory at 100 ms with its missed-peak limitation. The schema checks and
 hashes cannot independently establish that a VM was restored, that a prerequisite
@@ -169,7 +182,11 @@ the frozen commands and original evidence need the protocol's independent audit.
 Publish `frozen/` in a commit or immutable archive before collection. A separate
 registration JSON names `manifest_sha256`, `order_sha256`, `registered_at` (UTC),
 `revision` and `public_url`. The hashes cover `frozen/manifest.json` and
-`frozen/order.json`. Keep its identity unchanged after collection starts.
+`frozen/order.json`. Before consuming the first slot, collection also stores the
+registration identity in the sealed progress checkpoint. Every subsequent
+checkpoint preserves it. Missing or replaced `registration.json` fails both
+continuation and offline analysis; it cannot be recreated with a later
+registration after collection starts.
 
 These are command templates for a real, previously prepared measurement bundle:
 
@@ -189,8 +206,8 @@ feasibility ID is required for diagnostic reruns. `--max-slots` exists only for
 feasibility, including the automated five-arm check above.
 
 The sealed `progress/checkpoint.json` records the consumed slot seals, any active
-attempt, completion and stop state. A slot also seals its own stop reason before
-the checkpoint advances. `stopped.json` is a convenience copy: omitting it cannot
+attempt, registration identity, completion and stop state. A slot also seals its
+own stop reason before the checkpoint advances. `stopped.json` is a convenience copy: omitting it cannot
 clear quarantine or erase an interruption. Both collection and analysis require
 the exact ordered prefix recorded by the checkpoint; missing middle or final
 slots, inconsistent stop/completion state and unfinished checkpoints fail closed.
@@ -204,6 +221,9 @@ it does not run Java, Go, Docker or registered hooks. `results.json` contains al
 disclosures, stage durations and within-block pairs. `report.md` renders the
 stratified accounting and timing table. Regenerating into another new directory
 produces byte-identical files. Corrupt or missing sealed originals fail analysis.
+Baseline receipts must match the requested arm and variant. Product observations
+must declare `replay` for T-R and `explore` for T-E, including warm-up. Evidence
+from another slot or mode cannot count as a completed observation.
 Baseline and product domain rows use the same string-normalized comparison
 against the frozen expectation. Unexpected rows remain recorded observations
 and make the invocation quality-failed.

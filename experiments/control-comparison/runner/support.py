@@ -1,13 +1,28 @@
 """Reuse the E1/E2 standard-library process and bundle primitives, not its design."""
 import os
 import sys
+import importlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SHARED = HERE / 'shared'
 if not SHARED.is_dir():
     SHARED = HERE.parents[1] / 'gate-performance' / 'harness'
-sys.path.append(str(SHARED))
+SHARED = SHARED.resolve()
+SHARED_MODULES = ('common', 'plan', 'redaction', 'execution')
+sys.path.insert(0, str(SHARED))
+# Check cached modules before execution can import them transitively, too.
+for name in SHARED_MODULES:
+    module = sys.modules.get(name)
+    if module is not None and Path(getattr(module, '__file__', '') or '').resolve() != SHARED / (name + '.py'):
+        raise ValueError('shared module location differs: ' + name)
+for name in SHARED_MODULES:
+    module = importlib.import_module(name)
+    if Path(getattr(module, '__file__', '') or '').resolve() != SHARED / (name + '.py'):
+        raise ValueError('shared module location differs: ' + name)
+# The shared harness also has a tool.py. Restore runner import precedence once
+# its required modules (including redaction's plan dependency) are loaded.
+sys.path.pop(0)
 from common import (canonical, child, digest, files, json_equal, read_json, seal, sha,
                     timestamp, utc, verify, write_json)  # noqa: E402
 from execution import defer_interrupts, execute, succeeded  # noqa: E402
@@ -80,6 +95,44 @@ def live_pins(manifest):
     for name, expected in manifest['pins'].items():
         require(Path(name).is_absolute() and Path(name).is_file(), 'missing live pin: ' + name)
         require(digest(name) == expected, 'live pin changed: ' + name)
+    if manifest.get('phase') == 'measurement':
+        measurement_dependencies(manifest)
+
+
+def file_dependencies(spec, pins, label, inputs=()):
+    """Check visible file inputs; dynamic imports/subprocesses remain audited pins."""
+    values = [(v, True, False) for v in spec['argv']]
+    values += [(v, k in ('CLASSPATH', 'PYTHONPATH'), False) for k, v in spec['env'].items()]
+    values += [(v, True, True) for v in inputs]
+    for value, include_directory, required in values:
+        require(isinstance(value, str) and (value or not required), label + ' dependency path required')
+        # Options, classpath lists and Java lib/* wildcards are input paths.
+        # Runtime receipt/output placeholders are not frozen inputs.
+        for name in value.split('=', 1)[-1].split(os.pathsep):
+            if not name or '{' in name:
+                require(not required, label + ' dependency must be a frozen path')
+                continue
+            path = Path(os.path.abspath(Path(spec['cwd']) / name))
+            if path.name == '*' and path.parent.is_dir():
+                dependencies = sorted(p for p in path.parent.iterdir() if p.suffix.lower() == '.jar' and p.is_file())
+            else:
+                dependencies = (files(path) if include_directory and path.is_dir()
+                                else [path] if path.is_file() else [])
+            require(not required or path.is_file() or path.is_dir(), label + ' dependency missing: ' + name)
+            require(all(str(p) in pins for p in dependencies), label + ' file dependency is unpinned: ' + name)
+
+
+def measurement_dependencies(manifest):
+    for workload, variants in manifest['commands'].items():
+        for variant, commands in variants.items():
+            target = manifest['inputs'][workload][variant]['config']['Target']
+            external = target['SUT']['External']
+            schema = target['Schema']
+            inputs = [external['Java'], external['JAR'], schema['Migrations'], schema['Seed']]
+            for arm, command in commands.items():
+                file_dependencies(command, manifest['pins'], workload + '/' + variant + '/' + arm, inputs)
+    for name, hook in manifest['hooks'].items():
+        file_dependencies(hook, manifest['pins'], name)
 
 
 def cleanup_dependencies(manifest):
@@ -94,28 +147,32 @@ def cleanup_dependencies(manifest):
             'cleanup dependency subset required')
     require(len(pins) == len(set(pins)) and set(pins) <= set(manifest['pins'])
             and hook['argv'][0] in pins, 'cleanup dependencies must include executable and be pinned')
-    values = [(v, True) for v in hook['argv']] + [(v, False) for v in hook['env'].values()]
-    for value, include_directory in values:
-        # Accept --config=/path and path lists as well as ordinary positional
-        # files. Runtime receipt/output placeholders are not frozen inputs.
-        for name in value.split('=', 1)[-1].split(os.pathsep):
-            if not name or '{' in name: continue
-            path = Path(os.path.abspath(Path(hook['cwd']) / name))
-            dependencies = (files(path) if include_directory and path.is_dir()
-                            else [path] if path.is_file() else [])
-            require(all(str(p) in pins for p in dependencies),
-                    'cleanup file dependency is absent from execution_pins: ' + name)
+    file_dependencies(hook, pins, 'cleanup')
     return pins
 
 
 def save_progress(bundle, consumed, active=None, stopped=None):
     checkpoint = bundle / 'progress'
+    registration = None
+    if checkpoint.exists():
+        verify(checkpoint)
+        registration = read_json(checkpoint / 'checkpoint.json')['registration']
     checkpoint.mkdir(exist_ok=True)
     write_json(checkpoint / 'checkpoint.json', {
         'slots': consumed, 'active': active, 'stopped': stopped,
+        'registration': registration,
         'complete': len(consumed) == len(order()) and active is None and stopped is None,
     })
     seal(checkpoint)
+
+
+def retained_registration(bundle, progress):
+    value = progress['registration']
+    path = bundle / 'registration.json'
+    if value is not None:
+        require(path.is_file(), 'retained registration missing')
+        require(json_equal(read_json(path), value), 'registration differs from sealed checkpoint')
+    return value
 
 
 def retained_progress(bundle, manifest, slots):
@@ -127,6 +184,9 @@ def retained_progress(bundle, manifest, slots):
     for path in paths: verify(path)
     verify(bundle / 'progress')
     progress = read_json(bundle / 'progress' / 'checkpoint.json')
+    registration = retained_registration(bundle, progress)
+    if manifest['phase'] == 'measurement' and (consumed or progress['active'] is not None):
+        require(registration is not None, 'registration missing from consumed checkpoint')
     require(progress['slots'] == {p.name: digest(p / 'SHA256SUMS') for p in paths},
             'retained slots differ from progress checkpoint')
     require(progress['active'] is None, 'unfinished checkpoint; no replacement attempts')

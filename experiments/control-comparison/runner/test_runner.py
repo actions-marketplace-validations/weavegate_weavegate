@@ -3,12 +3,13 @@
 import copy
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 from support import *
-from analyze import analyze, baseline, bound, membership, reduce_slot, stages, stats, validate_trace
-from tool import collect, freeze, validate, proof
+from analyze import analyze, baseline, bound, membership, product, reduce_slot, stages, stats, validate_trace
+from tool import collect, freeze, registered, validate, proof
 
 
 class RunnerTests(unittest.TestCase):
@@ -48,7 +49,8 @@ class RunnerTests(unittest.TestCase):
     def raw(self, slot=None):
         slot = slot or dict(order()[0], workload='quota', variant='vulnerable', arm='B2')
         root = self.root / 'slot'; root.mkdir(); raw = root / 'raw'; raw.mkdir()
-        run = {'cleanup_proven': True, 'executions': 2, 'seed': {'synthetic': []}, 'process_elapsed_ns': 900000000,
+        run = {'arm': slot['arm'], 'variant': slot['variant'],
+               'cleanup_proven': True, 'executions': 2, 'seed': {'synthetic': []}, 'process_elapsed_ns': 900000000,
                'timings': {'spans': [{'id': 1, 'parent_id': 0, 'name': 'command', 'start_ns': 0, 'duration_ns': 900000000}]}}
         write_json(raw / 'run.json', run)
         for i in (1, 2):
@@ -346,6 +348,8 @@ class RunnerTests(unittest.TestCase):
         for arm in ('B1', 'B2'):
             with self.subTest(arm=arm):
                 current = dict(slot, arm=arm)
+                run = read_json(root/'raw/run.json'); run['arm'] = arm
+                write_json(root/'raw/run.json', run)
                 write_json(root/'slot.json', {'cleanup_proven': True, 'slot': current})
                 seal(root)
                 result = reduce_slot(root, current, m)
@@ -420,6 +424,254 @@ class RunnerTests(unittest.TestCase):
         seal(wrong)
         with self.assertRaisesRegex(ValueError,'ordered prefix'):collect(bundle,max_slots=1)
 
+    def product_raw(self, arm):
+        """Construct a valid vulnerable replay/discovery, including stage/trace evidence."""
+        root = self.root / arm; root.mkdir()
+        directory = root/'raw/runs/constructed'; directory.mkdir(parents=True)
+        slot = dict(order()[0], arm=arm, variant='vulnerable')
+        expected = self.manifest()['inputs']['matching']['vulnerable']
+        expected['jar_sha256'] = 'b'*64
+        expected['config']['Oracle']['Assertions'][0].update(SQL='constructed', ExpectRows=0)
+        saved = next(c for c in expected['candidates'] if c['id'] == WORKLOADS['matching'][6])
+        spans = [{'id': 1, 'parent_id': 0, 'name': 'command', 'start_ns': 0, 'duration_ns': 900000000}]
+        def span(name, parent, **extra):
+            spans.append(dict(id=len(spans)+1, parent_id=parent, name=name, start_ns=0, duration_ns=0, **extra))
+            return len(spans)
+        def execution(parent, schedule):
+            child = span('schedule_run', parent, schedule_id=schedule['id'])
+            for name in ('fixture_reset','adapter_create','adapter_start','schedule_execute','oracle_evaluate','adapter_stop'):
+                span(name, child)
+        explored = 0
+        if arm == 'T-E':
+            parent = span('explore_pass', 1)
+            for candidate in expected['candidates']:
+                execution(parent, candidate); explored += 1
+                if candidate == saved: break
+        parent = span('replay', 1)
+        for _ in range(2): execution(parent, saved)
+        manifest = {'variant': 'vulnerable', 'adapter': 'external', 'sut_sha256': 'sha256:'+'b'*64,
+                    'isolation_level': 'REPEATABLE-READ', 'cleanup_failed': False, 'timings': {'spans': spans}}
+        observation = {'mode': 'explore' if arm == 'T-E' else 'replay',
+            'oracles': [{'id': WORKLOADS['matching'][2], 'sql': 'constructed', 'expect_rows': 0}],
+            'violation_runs': 2, 'fingerprints': {'a'*64: 2}, 'schedules_explored': explored,
+            'discovery_fingerprint': 'a'*64 if explored else None, 'flaky': False, 'repeat': 2,
+            'explore_passes': int(bool(explored)),
+            'assertion_violations': [{'oracle_id': WORKLOADS['matching'][2], 'rows': [{'synthetic': 1}]}]}
+        scenario = {'schedule': saved}
+        trace = {'schedule_ref': saved['id'], 'terminals': [{'state': 'done', 'failure_class': 'none'}]*2,
+                 'events': [dict(s, seq=i+1, kind='point_released', step=i) for i,s in enumerate(saved['steps'])]}
+        for name, value in (('manifest',manifest),('observation',observation),('scenario',scenario),('trace',trace),
+                            ('report',{'manifest':manifest,'observation':observation,'scenario':scenario})):
+            write_json(directory/(name+'.json'), value)
+        (directory/'report.md').write_text('Constructed product evidence\n')
+        command = {'seconds': 1, 'started': True, 'timeout': False, 'exit': 2, 'error': None,
+                   'containment_proven': True, 'finished': True, 'interrupted': False}
+        write_json(root/'run.command.json', command)
+        write_json(root/'slot.json', {'slot':slot, 'cleanup_proven':True})
+        seal(root)
+        return root, slot, command, expected
+
+    def test_product_artifact_mode_must_match_requested_arm(self):
+        for arm, other in (('T-R','T-E'), ('T-E','T-R')):
+            with self.subTest(arm=arm):
+                root, slot, command, expected = self.product_raw(arm)
+                valid = product(root, slot, command, expected)
+                self.assertFalse(valid['quality_reasons'] + valid['operational_reasons'])
+                with self.assertRaisesRegex(ValueError, 'mode'):
+                    product(root, dict(slot, arm=other), command, expected)
+
+    def test_baseline_receipt_identity_must_match_requested_slot(self):
+        root, slot, command = self.raw()
+        expected = self.manifest()['inputs']['quota']['vulnerable']
+        original = read_json(root/'raw/run.json')
+        # A clean fixed non-detection must not count as vulnerable exposure.
+        for path in (root/'raw').glob('execution-*.json'):
+            value = read_json(path); value['evaluation']['results'][0]['violations'] = []
+            write_json(path, value)
+        for arm in ('B0','B1','B2'):
+            for key, value in (('arm','T-R'), ('variant','fixed'), ('arm',None), ('variant',None)):
+                with self.subTest(arm=arm, key=key, value=value):
+                    run = dict(original, arm=arm)
+                    if arm == 'B0': run['executions'] = 0
+                    run[key] = value
+                    write_json(root/'raw/run.json', run)
+                    with self.assertRaisesRegex(ValueError, 'baseline identity'):
+                        baseline(root, dict(slot, arm=arm), command, expected)
+
+    def test_registration_cannot_be_replaced_after_partial_collection(self):
+        m = self.measurement_manifest()
+        m['unsupported'] = {'matching/B2': 'constructed unsupported'}
+        bundle, registration = self.measurement_bundle(m)
+        registered(bundle, m, registration)
+        slot = order()[0]
+        directory = bundle/'slots'/slot['id']; directory.mkdir()
+        write_json(directory/'slot.json', {'slot':slot, 'unsupported':'constructed unsupported'})
+        seal(directory)
+        save_progress(bundle, {slot['id']:digest(directory/'SHA256SUMS')})
+        replacement = read_json(registration)
+        replacement.update(public_url='https://example.com/replaced', revision='replacement', registered_at='2021-01-01T00:00:00Z')
+        write_json(registration, replacement)
+        for missing in (True, False):
+            with self.subTest(missing=missing):
+                trial = self.root/('missing-registration' if missing else 'replaced-registration')
+                shutil.copytree(bundle, trial)
+                retained = trial/'registration.json'
+                if missing: retained.unlink()
+                else: write_json(retained, replacement)
+                with patch('tool.execute') as execute:
+                    with self.assertRaisesRegex(ValueError, 'registration'):
+                        collect(trial, registration)
+                    execute.assert_not_called()
+                with self.assertRaisesRegex(ValueError, 'registration'):
+                    analyze(trial, self.root/'analysis')
+
+    def test_registration_is_preserved_across_checkpoint_updates(self):
+        m = self.measurement_manifest()
+        bundle, registration = self.measurement_bundle(m)
+        registered(bundle, m, registration)
+        original = read_json(registration)
+        save_progress(bundle, {}, active=order()[0]['id'])
+        self.assertEqual(read_json(bundle/'progress/checkpoint.json')['registration'], original)
+        save_progress(bundle, {})
+        registered(bundle, m, registration)
+        self.assertEqual(retained_progress(bundle, m, order())['registration'], original)
+
+    def test_unregistered_consumed_checkpoint_cannot_register_late(self):
+        m = self.measurement_manifest()
+        m['unsupported'] = {'matching/B2':'constructed unsupported'}
+        bundle, registration = self.measurement_bundle(m)
+        slot = order()[0]
+        directory = bundle/'slots'/slot['id']; directory.mkdir()
+        write_json(directory/'slot.json', {'slot':slot, 'unsupported':'constructed unsupported'})
+        seal(directory)
+        save_progress(bundle, {slot['id']:digest(directory/'SHA256SUMS')})
+        with patch('tool.execute') as execute:
+            with self.assertRaisesRegex(ValueError, 'registration'): collect(bundle, registration)
+            execute.assert_not_called()
+
+    def test_measurement_literal_and_config_dependencies_must_be_pinned(self):
+        m = self.measurement_manifest()
+        inputs = self.root/'command-inputs'; inputs.mkdir()
+        classes = inputs/'classes'; classes.mkdir()
+        (classes/'Business.class').write_bytes(b'constructed business class')
+        (classes/'BaselineMain.class').write_bytes(b'constructed launcher')
+        libraries = inputs/'lib'; libraries.mkdir()
+        for name in ('sdk.jar','spring.jar'): (libraries/name).write_bytes(b'constructed '+name.encode())
+        migrations = inputs/'migrations'; migrations.mkdir()
+        (migrations/'001.sql').write_text('constructed migration')
+        for name in ('config.yaml','seed.sql','app.jar','schedule.json'):
+            (inputs/name).write_text('constructed '+name)
+        for p in files(inputs): m['pins'][str(p)] = digest(p)
+        inp = m['inputs']['matching']['vulnerable']
+        inp['config']['Target']['Schema'] = {'Migrations':str(migrations), 'Seed':str(inputs/'seed.sql')}
+        inp['config']['Target']['SUT']['External'].update(Java=str(Path(sys.executable).resolve()), JAR=str(inputs/'app.jar'))
+        for arm in ARMS:
+            spec = m['commands']['matching']['vulnerable'][arm]
+            spec['argv'] += ['--config='+str(inputs/'config.yaml'), '--replay', str(inputs/'schedule.json')]
+            if arm.startswith('B'):
+                spec['argv'] += ['--classpath', os.pathsep.join(map(str,[classes,libraries/'*']))]
+        validate(m)
+        for p in files(inputs):
+            with self.subTest(missing=p.name):
+                changed = copy.deepcopy(m); del changed['pins'][str(p)]
+                with self.assertRaisesRegex(ValueError, 'dependenc'):
+                    validate(changed)
+
+    def test_new_classpath_file_after_freeze_prevents_execution(self):
+        m = self.measurement_manifest()
+        classes = self.root/'classes'; classes.mkdir()
+        original = classes/'Business.class'; original.write_bytes(b'original')
+        m['pins'][str(original)] = digest(original)
+        m['commands']['matching']['fixed']['B2']['argv'] += ['--classpath',str(classes)]
+        bundle, registration = self.measurement_bundle(m)
+        (classes/'Added.class').write_bytes(b'unpinned addition')
+        with patch('tool.execute') as execute:
+            with self.assertRaisesRegex(ValueError, 'dependenc'):
+                collect(bundle, registration)
+            execute.assert_not_called()
+
+    def warm_collection(self, receipt_change):
+        m = self.measurement_manifest()
+        warm = next(s for s in order() if s['cache'] == 'warm')
+        # Retain the preceding consumed prefix without spending runtime on it.
+        m['unsupported'] = {w+'/'+a:'constructed unsupported' for w in WORKLOADS for a in ARMS}
+        del m['unsupported'][warm['workload']+'/'+warm['arm']]
+        bundle, registration = self.measurement_bundle(m)
+        registered(bundle, m, registration)
+        consumed = {}
+        for slot in order()[:warm['ordinal']-1]:
+            directory = bundle/'slots'/slot['id']; directory.mkdir()
+            write_json(directory/'slot.json', {'slot':slot, 'unsupported':'constructed unsupported'})
+            seal(directory); consumed[slot['id']] = digest(directory/'SHA256SUMS')
+        save_progress(bundle, consumed)
+        from tool import execute as real_execute
+        calls = []
+        def execute(spec, context, directory, label, secrets):
+            calls.append((label,directory.name))
+            if directory.name == 'warmup':
+                return dict({'seconds':1, 'exit':2, 'timeout':False, 'error':None, 'started':True, 'finished':True,
+                             'interrupted':False, 'containment_proven':True}, **receipt_change)
+            if label == 'cleanup': raise KeyboardInterrupt('end constructed test')
+            return real_execute(spec, context, directory, label, secrets)
+        with patch('tool.execute', side_effect=execute), patch('analyze.product', return_value={
+                'cleanup_proven':True, 'quality_reasons':[], 'operational_reasons':[]}):
+            collect(bundle, registration)
+        state = read_json(bundle/'slots'/warm['id']/'slot.json')
+        return state, calls
+
+    def test_operationally_failed_warmup_prevents_measured_command(self):
+        changes = ({'error':'descendants remained'}, {'started':False}, {'containment_proven':False},
+                   {'finished':False}, {'interrupted':True})
+        for change in changes:
+            with self.subTest(change=change):
+                state, calls = self.warm_collection(change)
+                self.assertIn('warm-up failed', state['error'])
+                self.assertNotIn('warmup', state)
+                self.assertEqual([label for label,_ in calls], ['prepare','run','cleanup'])
+            shutil.rmtree(self.root/'measurement')
+
+    def test_clean_warmup_accepts_pass_and_domain_violation_exits(self):
+        for code in (0, 2):
+            with self.subTest(exit=code):
+                state, calls = self.warm_collection({'exit':code})
+                self.assertEqual(state['warmup']['exit'], code)
+                self.assertIn(('warm-cleanup',state['slot']['id']), calls)
+            shutil.rmtree(self.root/'measurement')
+
+    def test_observation_hook_cannot_reuse_preparation_proof(self):
+        bundle, registration = self.measurement_bundle()
+        from tool import execute as real_execute
+        def reuse(spec, context, directory, label, secrets):
+            result = real_execute(spec, context, directory, label, secrets)
+            if label == 'observe':
+                value = read_json(directory/'observation.json')
+                value['evidence'] = read_json(directory/'preparation.json')['evidence']
+                write_json(directory/'observation.json', value)
+            return result
+        with patch('tool.execute', side_effect=reuse): collect(bundle, registration)
+        state = read_json(bundle/'slots'/order()[0]['id']/'slot.json')
+        self.assertIn('newly retained', state.get('error',''))
+        self.assertNotIn('resources', state)
+        self.assertTrue(state['cleanup_proven'])
+
+    def test_frozen_shared_modules_precede_ambient_pythonpath(self):
+        bundle, _ = self.bundle()
+        ambient = self.root/'ambient'; ambient.mkdir()
+        for name in ('common','plan','execution','redaction'):
+            (ambient/(name+'.py')).write_text("raise RuntimeError('ambient module executed')\n")
+        program = "import support,sys; from pathlib import Path; assert all(Path(sys.modules[n].__file__).resolve() == support.SHARED / (n+'.py') for n in ('common','plan','execution','redaction')); import tool; assert Path(tool.__file__).parent == support.HERE"
+        for source in (HERE, bundle/'frozen/source'):
+            with self.subTest(source=source):
+                result = subprocess.run([sys.executable,'-B','-c',program], cwd=source,
+                    env=dict(os.environ, PYTHONPATH=str(ambient)), text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_preloaded_ambient_shared_module_is_rejected(self):
+        program = "import sys,types; m=types.ModuleType('common'); m.__file__='/ambient/common.py'; sys.modules['common']=m; import support"
+        result = subprocess.run([sys.executable,'-B','-c',program], cwd=HERE, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('shared module location differs', result.stderr)
+
     def measurement_manifest(self):
         m=self.manifest()
         m['phase']='measurement'
@@ -434,6 +686,8 @@ class RunnerTests(unittest.TestCase):
         for values in m['inputs'].values():
             for inp in values.values():
                 inp['counts']={'B1':20,'B2':100,'T-R':20};inp['sdk_sha256']=identity
+                inp['config']['Target']['Schema'] = {'Migrations':str(self.root/'arm.py'), 'Seed':str(self.root/'arm.py')}
+                inp['config']['Target']['SUT']['External'].update(Java=str(Path(sys.executable).resolve()), JAR=str(self.root/'arm.py'))
         hook=self.root/'hook.py'
         hook.write_text("""import sys,json,hashlib
 from pathlib import Path
