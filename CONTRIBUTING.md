@@ -119,6 +119,20 @@ python3 scripts/test-external-sut-java-results.py
 See the [Java peer reference](docs/reference/external-sut-java.md) for recording
 a result manifest from the repeated run.
 
+Changes to the Spring quota or job-claim fixtures also run their corpus
+acceptance test (Docker and Java 21 required). Each saved schedule/variant is
+replayed 20 times; the output directory retains CLI artifacts and database
+observations. See the [corpus reference](docs/reference/spring-regression-corpus.md)
+for the snapshot, commit, and cleanup boundaries.
+
+```bash
+sdk/java/mvnw -B -f sdk/java/pom.xml -Dmaven.test.skip=true install
+sdk/java/mvnw -B -f fixtures/spring-quota/app/pom.xml package
+sdk/java/mvnw -B -f fixtures/spring-job-claim/app/pom.xml package
+WEAVEGATE_SPRING_CORPUS=1 WEAVEGATE_SPRING_CORPUS_OUT=/tmp/spring-corpus-evidence \
+  go test ./cmd/weavegate -run '^TestSpringRegressionCorpus$' -v -count=1 -timeout 30m
+```
+
 ## Dependency updates
 
 `NOTICE` is a generated inventory of the third-party modules linked into the

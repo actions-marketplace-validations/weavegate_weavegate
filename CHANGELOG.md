@@ -20,6 +20,12 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ### Added
 
+- Synthetic Spring quota and job-claim fixtures provide serial and overlapping
+  saved schedules: the same vulnerable application passes the serial schedule
+  and reports `WG001` for the overlapping schedule; the fixed variants pass
+  both. Repeated acceptance retains first-read values, requested and realized
+  execution order, and cleanup evidence. See
+  `docs/reference/spring-regression-corpus.md`.
 - Standalone experiment tools freeze campaign inputs and arm order, retain
   original command/observation/cleanup evidence at immutable hook boundaries,
   and reproduce E1/E2 paired analysis from the same evidence rules used during

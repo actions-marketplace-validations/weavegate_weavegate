@@ -1,0 +1,80 @@
+name: Spring regression corpus
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spring-corpus-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build the corpus at this revision
+        run: |
+          mkdir -p corpus-evidence
+          sdk/java/mvnw -B -f sdk/java/pom.xml -Dmaven.test.skip=true install | tee corpus-evidence/sdk-build.log
+          for fixture in spring-quota spring-job-claim; do
+            sdk/java/mvnw -B -f "fixtures/$fixture/app/pom.xml" package | tee "corpus-evidence/$fixture-build.log"
+          done
+          git rev-parse HEAD > corpus-evidence/revision.txt
+          go version > corpus-evidence/environment.txt
+          java -version >> corpus-evidence/environment.txt 2>&1
+          sha256sum fixtures/spring-{quota,job-claim}/app/target/spring-*.jar > corpus-evidence/jars.sha256
+
+      - name: Replay both schedules and variants with retained artifacts
+        run: |
+          command="WEAVEGATE_SPRING_CORPUS=1 WEAVEGATE_SPRING_CORPUS_OUT='$GITHUB_WORKSPACE/corpus-evidence' go test ./cmd/weavegate -run '^TestSpringRegressionCorpus\$' -v -count=1 -timeout 30m"
+          printf '%s\n' "$command" > corpus-evidence/command.txt
+          WEAVEGATE_SPRING_CORPUS=1 WEAVEGATE_SPRING_CORPUS_OUT="$GITHUB_WORKSPACE/corpus-evidence" \
+            go test ./cmd/weavegate -run '^TestSpringRegressionCorpus$' -v -count=1 -timeout 30m 2>&1 | tee corpus-evidence/replay.log
+          for fixture in spring-quota spring-job-claim; do
+            for order in serial overlap; do
+              for variant in vulnerable fixed; do
+                exit_code=0
+                violations=0
+                if [[ "$order/$variant" == overlap/vulnerable ]]; then
+                  exit_code=2
+                  violations=20
+                fi
+                grep -F "SPRING_CORPUS_RESULT fixture=$fixture order=$order variant=$variant repeat=20 exit=$exit_code violation_runs=$violations fingerprints=1 requested=realized timeouts=0 resets=checked jvm=reaped connections=closed" corpus-evidence/replay.log
+              done
+            done
+          done
+
+      - name: Record the executed MySQL image
+        if: always()
+        run: docker image inspect mysql:8.4 > corpus-evidence/mysql-image.json
+
+      - name: Upload corpus evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spring-regression-corpus
+          path: corpus-evidence/

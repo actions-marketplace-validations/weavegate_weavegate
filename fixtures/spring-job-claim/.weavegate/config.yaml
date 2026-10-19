@@ -1,0 +1,53 @@
+target:
+  db: mysql:8.4
+  schema:
+    migrations: ../db/migration
+    seed: ../db/seed.sql
+  sut:
+    adapter: external
+    variant: vulnerable
+    external:
+      java: java
+      jar: ../app/target/spring-job-claim.jar
+      capacity: 2
+      startup_timeout_ms: 30000
+      cancel_timeout_ms: 5000
+      stop_timeout_ms: 20000
+scenarios:
+  complete-and-reassign:
+    workers:
+      - id: w1
+        command: complete
+        args:
+          job_id: "42"
+          expected_epoch: "1"
+      - id: w2
+        command: reassign
+        args:
+          job_id: "42"
+          expected_epoch: "1"
+    sync_points:
+      - before_read
+      - after_read
+      - before_write
+      - after_commit
+oracle:
+  assertions:
+    - id: completion-requires-current-lease
+      sql: |
+        SELECT id AS job_id, epoch, status, completed_epoch
+        FROM job
+        WHERE (status = 'DONE' AND (completed_epoch IS NULL OR completed_epoch <> epoch))
+           OR (status = 'RUNNING' AND completed_epoch IS NOT NULL)
+        ORDER BY id;
+      expect_rows: 0
+    - id: commands-have-receipts
+      sql: |
+        SELECT COUNT(*) AS receipts,
+               COALESCE(SUM(operation = 'complete'), 0) AS completions,
+               COALESCE(SUM(operation = 'reassign'), 0) AS reassignments
+        FROM job_receipt
+        HAVING receipts <> 2 OR completions <> 1 OR reassignments <> 1;
+      expect_rows: 0
+run:
+  arrive_timeout_ms: 1000
