@@ -1,0 +1,43 @@
+"""Observe durable baseline evaluations at 100 ms; never coordinate workers."""
+import threading
+import time
+from support import digest, read_json, write_json
+
+
+class Monitor:
+    def __init__(self, directory):
+        self.directory = directory
+        self.receipts = {}
+        self.error = None
+        self.stop = threading.Event()
+
+    def scan(self):
+        for path in sorted((self.directory / 'raw').glob('execution-*.json')):
+            name = str(path.relative_to(self.directory))
+            if name in self.receipts: continue
+            # Atomic rename in the driver makes partial JSON unavailable.
+            value = read_json(path)
+            if value.get('evaluation') is not None:
+                self.receipts[name] = {'received_ns': time.monotonic_ns() - self.start,
+                                       'sha256': digest(path)}
+
+    def watch(self):
+        try:
+            while not self.stop.wait(.1): self.scan()
+        except Exception as error:
+            self.error = str(error)
+
+    def __enter__(self):
+        self.start = time.monotonic_ns()
+        self.thread = threading.Thread(target=self.watch, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *unused):
+        self.stop.set(); self.thread.join()
+        try: self.scan()
+        except Exception as error: self.error = str(error)
+        write_json(self.directory / 'stream.json', {'clock': 'collector-monotonic',
+            'envelope_ns': time.monotonic_ns() - self.start, 'cadence_ms': 100,
+            'limitation': 'receipt may lag atomic publication by polling and validation time',
+            'receipts': self.receipts, 'error': self.error})

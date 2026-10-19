@@ -67,9 +67,13 @@ jobs:
           ./internal/syncpoint/... ./internal/timing/... ./internal/sut/...
           ./fixtures/matching-slice/...
           ./cmd/weavegate/... ./internal/config/... ./internal/ci/...
+          ./experiments/control-comparison/driver/...
           ./internal/diagnostic/... ./internal/report/...
           -coverprofile=cov.out -covermode=atomic -coverpkg=./internal/...
           -v -count=1 -timeout 12m | tee fixture.log
+
+      - name: Assert experiment process cleanup
+        run: grep -F 'E5_REAP_RESULT deadline=shared kill=bounded exit=retained' fixture.log
 
       - name: Report engine coverage
         run: |
@@ -329,6 +333,11 @@ jobs:
           grep -F 'LOCAL_PILOT_TEST_RESULT overlap=union evidence=checksummed missing=unknown' /tmp/local-pilot.out
           python3 -B experiments/gate-performance/local-pilot/verify_results.py | tee /tmp/local-pilot-evidence.out
           grep -F 'LOCAL_PILOT_EVIDENCE_RESULT bundles=2 analysis=reproduced raw=checksummed' /tmp/local-pilot-evidence.out
+
+      - name: Check E5 control accounting without running measurements
+        run: |
+          python3 -B experiments/control-comparison/runner/test_runner.py 2>&1 | tee /tmp/e5-runner.out
+          grep -F 'E5_RUNNER_RESULT order=600 accounting=all_slots cleanup=quarantine analysis=deterministic' /tmp/e5-runner.out
 
       - name: Check the documentation index
         run: |

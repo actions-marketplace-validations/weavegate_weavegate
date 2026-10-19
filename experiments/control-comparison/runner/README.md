@@ -1,0 +1,209 @@
+# E5 execution and retained analysis
+
+This implements the drivers for the [revision 1 protocol](../README.md), whose
+published bytes remain unchanged. It is experiment infrastructure, not an E5
+result or an E1 confirmation candidate. Measurement still requires the reviewed
+E1 candidate, acceptance evidence and registered infrastructure. The optional
+`E5 control feasibility` workflow runs only through `workflow_dispatch`; it is
+not a required measurement gate.
+
+The tools require Linux, Go from `go.mod`, Python 3.9+, Java 21 and Docker with
+the MySQL 8.4 image already present. Python uses only its standard library. The
+launcher compiles against the dependencies already inside each fixture JAR;
+there is no new engine, SDK or analysis dependency.
+
+## Build and verify feasibility
+
+From the repository root, build the unchanged SDK and fixture applications:
+
+```bash
+sdk/java/mvnw -B -f sdk/java/pom.xml -Dmaven.test.skip=true install
+for fixture in spring-matching spring-quota spring-job-claim; do
+  sdk/java/mvnw -B -f "fixtures/$fixture/app/pom.xml" package
+done
+docker pull mysql:8.4
+python3 -B experiments/control-comparison/runner/test_runner.py
+go test ./experiments/control-comparison/driver -race -count=20
+python3 -B experiments/control-comparison/runner/smoke.py /tmp/e5-feasibility
+```
+
+Use a new output directory each time. `smoke.py` runs B1 twenty times for each
+workload/variant, then the first complete block of the frozen order: B2, T-R,
+T-E, B1, B0 for matching/fixed. B2 performs 100 executions. It compares two
+offline analyses byte for byte. Other planned slots remain explicitly unstarted.
+`--count 2` is a shorter **feasibility-only** check; it changes B1/B2/replay
+counts, never a registered measurement. Exhaustive exploration remains three
+passes. These checks do not measure cold/warm VM strata, provide a confirmation
+sample or replace the existing peer/corpus acceptance suites.
+
+The smoke workflow retains build logs and original evidence even after failure.
+The ordinary docs job runs only the constructed accounting tests and checks
+their fixed marker. No workload measurement is added to required PR checks.
+
+## Driver boundaries
+
+`driver/` imports the existing fixture, config, scenario and SQL Oracle packages.
+It provisions one fresh fixture per invocation, records its initial seed and
+checks every subsequent reset against that seed. B0 ends after readiness and
+teardown. B1/B2 create a fresh JVM for every execution and persist an execution
+JSON after every attempt, including failures. Only `internal/oracle` evaluates
+domain assertions; the driver retains its complete evaluation and fingerprint.
+
+`launcher/BaselineMain.java` loads the original business classes extracted from
+the application JAR. Its separate classpath includes that JAR's exact library
+bytes and one additional launcher class. It registers Hikari with maximum pool
+size three and minimum idle zero, matching capacity two plus a probe connection.
+It invokes the original annotated bean methods through Spring transaction
+proxies using the original worker arguments and `CommandContext`. Matching's
+default transaction isolation is checked through the actual RR session; quota
+and job retain their explicit RR annotations.
+
+The baseline uses Spring's `JdbcTransactionManager`, whereas the enabled product
+uses its SDK tracking transaction manager. The baseline never enters
+`WeavegateChild.run`; hooks and after-commit callbacks remain in business code and
+return through the SDK's existing inactive path. Both tasks exist before one
+start latch opens. There is no read/write/commit latch, delay, jitter or retry.
+This launch/supervision difference is part of the total controlled-path cost,
+not an isolated estimate of sync-point overhead.
+
+The driver waits for both proxies to return before Oracle evaluation, checks
+that no pool lease remains, closes the context/pool, reaps the JVM and checks
+that the application's database sessions retired before any reset. Startup,
+worker execution, cancellation and stop bounds are 30, 30, 5 and 20 seconds;
+fixture teardown has the same detached 30-second bound as the CLI. A worker or
+lifecycle failure stops the invocation. A domain violation alone does not stop
+B1 or B2. The outer collector owns cancellation at the protocol's arm cap.
+
+Database credentials travel on private stdin, never in argv or retained input
+files. Captured Java stderr replaces the generated password and JDBC URL before
+retention. All data are synthetic. Infrastructure hooks must also sanitize their
+own outputs before they enter the bundle; do not put credentials in their argv
+or allowlisted environment values.
+
+## Prepare and freeze
+
+The local preparer supplies a **feasibility template**, including effective
+configs, the complete Go-exported candidate inventory, dependency and business
+class hashes, exact argv arrays and live input pins:
+
+```bash
+python3 -B experiments/control-comparison/runner/prepare.py /tmp/e5-input
+python3 -B experiments/control-comparison/runner/tool.py freeze \
+  /tmp/e5-input/manifest.json /tmp/e5-campaign
+```
+
+Freeze retains all pinned bytes, deduplicated by SHA-256, and copies the analyzer
+and shared process/bundle primitives into `frozen/source/`. It generates exactly
+120 blocks and 600 invocation slots with the protocol's hash ordering. Changed
+counts, candidate order, settings or caps are rejected for measurement.
+
+To prepare a measurement manifest, use the template's schema and replace its
+development artifacts/commands with the actual E1 candidate and registered
+infrastructure. Do this **before** freezing or running any warm-up. The local
+preparer does not provision a VM, confer candidate status on a development build,
+or manufacture successful prerequisite evidence.
+
+| Manifest field | Required content |
+| --- | --- |
+| `schema`, `protocol_revision`, `phase`, `campaign_id`, `seed` | `1`, `1`, `measurement`, unique ID, fixed protocol seed |
+| `protocol` | Original protocol `path` and SHA-256; its published hash is checked |
+| `fixture_revision` | The reviewed fixture commit named by the protocol |
+| `pins` | Absolute path to SHA-256 for every binary, launcher, library, script, source, config, SQL, schedule and prerequisite file used |
+| `inputs` | Each workload/variant's effective config, candidates, expected domain rows, counts, JAR/SDK and business-class hashes |
+| `commands` | Every workload/variant and B0/B1/B2/T-R/T-E command, including exact `argv`, absolute `cwd`, explicit `env`, timeout and cleanup grace |
+| `candidate`, `e1_registration` | Matching CLI/SDK digests, source revision and E1 public registration URL/revision |
+| `environment` | `host_id`, `vm_image`, `cpu_model`, `kernel`, `docker`, `background_policy`, `mysql_image`, `vcpus: 4`, `memory_bytes: 17179869184` |
+| `prerequisites` | Pinned paths for `go_acceptance`, `java_acceptance`, `paired_acceptance`, `corpus_acceptance`, `baseline_feasibility` |
+| `hooks` | `prepare`, `warm_cleanup`, `observe`, `cleanup` command specifications; cleanup declares its trusted `execution_pins` subset |
+| `unsupported` | Optional workload/arm to issue URL and reason; planned denominators are retained |
+
+Baseline counts are 20/100; T replay is 20 and exploration is three passes with
+automatic confirmation. Freeze commands and all their transitive inputs. A
+transport wrapper may run the pinned command in the restored guest; keep its
+source, exact command and remote observations in the inventory. The collector
+and evidence storage must survive restoration outside the guest. Aggregate
+resource caps include Java, Go, MySQL and observers.
+
+Hooks receive single-pass `{trial_dir}`, `{campaign_dir}`, `{workload}`,
+`{variant}`, `{cache}`, `{block}`, `{arm}` substitutions. They are trusted
+infrastructure adapters, not arbitrary user code sandboxes. Commands inherit
+only the declared environment. Every receipt below includes a nonempty
+`evidence` object mapping relative original-file paths to their sanitized SHA-256.
+Exit zero or an unsubstantiated boolean is insufficient.
+
+| Hook | Required retained receipt |
+| --- | --- |
+| `prepare` | `preparation.json`: registered `host_id`, `disk_image`, `fresh_memory: true`, `clean_data: true`, observed caps |
+| `warm_cleanup` | After the one warm-up, `warm-cleanup.json`: `outputs_removed: true`, `data_removed: true`, `cache_preserved: true` |
+| `observe` | `observation.json`: registered `host_id`, `resources`, original runtime/version/cache/counter evidence |
+| `cleanup` | `cleanup.json`: `proven: true` plus newly retained proof of child exit, retired connections and fixture removal |
+
+Original hook proof files live under `proof/`; cleanup proof must be newly
+retained by that hook. It cannot cite an earlier command's receipt as proof of
+later cleanup. Cleanup can run after unrelated input drift when every dependency
+in its separately pinned subset still matches; the campaign stops afterward.
+
+The runner performs exactly one T-R warm-up after restoration for warm slots,
+validates its expected outcome and cleanup, and retains it separately. A failed
+warm-up consumes the slot as preparation-failed. Hooks must preserve evidence
+outside the restored image and verify no live database/data volume remains.
+Resource values unavailable at the aggregate scope are null with reasons. Report
+sampled memory at 100 ms with its missed-peak limitation. The schema checks and
+hashes cannot independently establish that a VM was restored, that a prerequisite
+command passed or that public registration was published at the claimed time;
+the frozen commands and original evidence need the protocol's independent audit.
+
+## Collect and regenerate
+
+Publish `frozen/` in a commit or immutable archive before collection. A separate
+registration JSON names `manifest_sha256`, `order_sha256`, `registered_at` (UTC),
+`revision` and `public_url`. The hashes cover `frozen/manifest.json` and
+`frozen/order.json`. Keep its identity unchanged after collection starts.
+
+These are command templates for a real, previously prepared measurement bundle:
+
+```bash
+python3 -B /path/to/campaign/frozen/source/tool.py collect /path/to/campaign \
+  --registration /path/to/registration.json
+python3 -B /path/to/campaign/frozen/source/tool.py analyze /path/to/campaign \
+  /path/to/new-analysis-directory
+```
+
+The first command runs all supported registered slots in order. It admits only
+attempt one. A sealed, completed earlier slot is skipped on continuation; an
+unfinished slot is never retried. Concurrent collectors, changed input/source
+pins, changed registration and stopped campaigns are rejected. Unproven cleanup
+quarantines the allocation and preserves remaining slots as not started. A new
+feasibility ID is required for diagnostic reruns. `--max-slots` exists only for
+feasibility, including the automated five-arm check above.
+
+Analysis reads only the frozen manifest/order and sealed original slot evidence;
+it does not run Java, Go, Docker or registered hooks. `results.json` contains all
+600 slot statuses, first-event bounds, per-execution outcomes, resource
+disclosures, stage durations and within-block pairs. `report.md` renders the
+stratified accounting and timing table. Regenerating into another new directory
+produces byte-identical files. Corrupt or missing sealed originals fail analysis.
+
+The collector observes baseline execution JSON every 100 ms and retains its
+receipt times/hashes. Publication and polling delay remain visible. Product
+discovery is retrospective: its original `oracle_evaluate` span is mapped to
+the discovered schedule and checked against the retained discovery fingerprint.
+Unknown alignment uses the protocol's interval bounds; absent or ambiguous
+timing stays unknown. Domain discovery, receipt of usable evidence, stable
+confirmation and clean final completion are separate fields.
+
+Requested steps are checked against their resolved trace events. Matching's
+fixed path legitimately reports inferred database blocking and skips its final
+insert point after a successful worker terminal, as established by the existing
+paired acceptance test. Those events remain explicit counts; an unresolved
+block, missing release or unexplained skip fails quality.
+
+Statuses use operational failure, quality failure, budget exhausted, complete
+precedence. Failed/slow values remain in per-slot JSON and the started-duration
+statistics. Complete-pair cost summaries use paired differences/ratios, never a
+difference of medians. B2 retains attempted/valid/violating counts, `x/m`,
+`x/planned`, and missing exposure. Repeated executions are not independent host
+samples. Results carry no confidence intervals or significance claims.
+
+This infrastructure does not publish E5 measurements, update E1 figures or add
+a README comparison table. Those follow the registered campaign and its audit.
