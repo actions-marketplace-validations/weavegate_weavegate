@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Real Docker/JDK feasibility checks, explicitly outside any E5 measurement sample."""
 import argparse
+import runpy
+from pathlib import Path
+runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
+              init_globals={'dependencies': ('support', 'prepare', 'tool', 'analyze', 'stream')})
 from support import *
 from prepare import prepare
 from tool import freeze, collect

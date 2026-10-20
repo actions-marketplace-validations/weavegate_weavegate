@@ -114,6 +114,56 @@ class RunnerTests(unittest.TestCase):
         m = self.manifest(); (self.root/'arm.py').write_text('raise SystemExit(0)\n')
         with self.assertRaisesRegex(ValueError, 'pin changed'): validate(m)
 
+    def test_command_deadlines_are_finite_positive_numbers(self):
+        command = self.manifest()['commands']['matching']['fixed']['B0']
+        command_valid(command)  # Omitted grace retains the executor's default.
+        for field in ('timeout_seconds', 'cancel_grace_seconds'):
+            for value in (None, True, False, '25', 0, -1, float('nan'),
+                          float('inf'), -float('inf'), 10**400, [], {}):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(ValueError, field):
+                        command_valid(dict(command, **{field: value}))
+            for value in (.01, 25, 55.5):
+                command_valid(dict(command, **{field: value}))
+
+    def test_invalid_grace_cannot_freeze_commands_or_hooks(self):
+        m = self.measurement_manifest()
+        targets = [m['commands']['matching']['fixed'][a] for a in ARMS] + list(m['hooks'].values())
+        for index, command in enumerate(targets):
+            with self.subTest(command=index):
+                command['cancel_grace_seconds'] = '25'
+                write_json(self.root/'invalid-grace.json', m)
+                with self.assertRaisesRegex(ValueError, 'cancel_grace_seconds'):
+                    freeze(self.root/'invalid-grace.json', self.root/'invalid-bundle')
+                self.assertFalse((self.root/'invalid-bundle').exists())
+                del command['cancel_grace_seconds']
+
+    def test_measurement_output_is_one_active_slot_destination(self):
+        m = self.measurement_manifest()
+        for arm in ARMS:
+            argv = m['commands']['matching']['fixed'][arm]['argv']
+            index = argv.index('--out')
+            prefix, suffix = argv[:index], argv[index+2:]
+            for output in ([], ['--out'], ['--out', ''],
+                           ['--out', '{campaign_dir}/frozen/injected'],
+                           ['--out', '{campaign_dir}/slots/future/raw'],
+                           ['--out', '{trial_dir}/../other/raw'],
+                           ['--out', str(self.root/'outside')],
+                           ['--out', '{trial_dir}/raw', '--out={trial_dir}/raw'],
+                           ['--out={trial_dir}/raw', '-out={campaign_dir}/frozen/injected'],
+                           ['--', '--out', '{trial_dir}/raw']):
+                with self.subTest(arm=arm, output=output):
+                    changed = copy.deepcopy(m)
+                    changed['commands']['matching']['fixed'][arm]['argv'] = prefix + output + suffix
+                    with self.assertRaisesRegex(ValueError, 'output'):
+                        validate(changed)
+            for output in (['--out', '{trial_dir}/raw'], ['--out={trial_dir}/raw'],
+                           ['-out', '{trial_dir}/raw'], ['-out={trial_dir}/raw']):
+                with self.subTest(arm=arm, accepted=output):
+                    changed = copy.deepcopy(m)
+                    changed['commands']['matching']['fixed'][arm]['argv'] = prefix + output + suffix
+                    validate(changed)
+
     def test_measurement_t_commands_require_candidate_executable(self):
         m = self.measurement_manifest()
         validate(m)
@@ -444,12 +494,13 @@ class RunnerTests(unittest.TestCase):
         seal(wrong)
         with self.assertRaisesRegex(ValueError,'ordered prefix'):collect(bundle,max_slots=1)
 
-    def product_raw(self, arm, explored_count=None, exhausted=False, saved_index=None):
+    def product_raw(self, arm, explored_count=None, exhausted=False, saved_index=None, repeat=2):
         """Construct a valid vulnerable replay/discovery, including stage/trace evidence."""
         root = self.root / arm; root.mkdir()
         directory = root/'raw/runs/constructed'; directory.mkdir(parents=True)
         slot = dict(order()[0], arm=arm, variant='vulnerable')
         expected = self.manifest()['inputs']['matching']['vulnerable']
+        expected['counts']['T-R'] = repeat
         expected['jar_sha256'] = 'b'*64
         expected['config']['Oracle']['Assertions'][0].update(SQL='constructed', ExpectRows=0)
         saved = next(c for c in expected['candidates'] if c['id'] == WORKLOADS['matching'][6])
@@ -473,14 +524,14 @@ class RunnerTests(unittest.TestCase):
                     execution(parent, candidate); explored += 1
         if not exhausted:
             parent = span('replay', 1)
-            for _ in range(2): execution(parent, saved)
+            for _ in range(repeat): execution(parent, saved)
         manifest = {'variant': 'vulnerable', 'adapter': 'external', 'sut_sha256': 'sha256:'+'b'*64,
                     'image': expected['config']['Target']['DB'],
                     'isolation_level': 'REPEATABLE-READ', 'cleanup_failed': False, 'timings': {'spans': spans}}
         observation = {'mode': 'explore' if arm == 'T-E' else 'replay',
             'oracles': [{'id': WORKLOADS['matching'][2], 'sql': 'constructed', 'expect_rows': 0}],
-            'violation_runs': 2, 'fingerprints': {'a'*64: 2}, 'schedules_explored': explored,
-            'discovery_fingerprint': 'a'*64 if explored else None, 'flaky': False, 'repeat': 2,
+            'violation_runs': repeat, 'fingerprints': {'a'*64: repeat}, 'schedules_explored': explored,
+            'discovery_fingerprint': 'a'*64 if explored else None, 'flaky': False, 'repeat': repeat,
             'explore_passes': int(bool(explored)),
             'assertion_violations': [{'oracle_id': WORKLOADS['matching'][2], 'rows': [{'synthetic': 1}]}]}
         if exhausted:
@@ -946,6 +997,45 @@ class RunnerTests(unittest.TestCase):
             row = next(line for line in text.splitlines() if line.startswith('| matching | fixed | cold | B2 |'))
             self.assertTrue(row.endswith('| 0 / 10 | %d / 10 |' % (10 if valid else 0)))
 
+    def test_report_shows_controlled_search_counts_and_confirmation(self):
+        bundle, _ = self.bundle()
+        for outcome in ('confirmed', 'zero', 'partial', 'exhausted'):
+            with self.subTest(outcome=outcome):
+                root, slot, command, expected = self.product_raw(
+                    'T-E', exhausted=outcome == 'exhausted', repeat=20)
+                if outcome in ('zero', 'partial'):
+                    directory = root/'raw/runs/constructed'
+                    observation = read_json(directory/'observation.json')
+                    count = 0 if outcome == 'zero' else 7
+                    observation.update(violation_runs=count, flaky=True,
+                                       fingerprints={'a'*64: count, 'b'*64: 20-count} if count else {'b'*64: 20})
+                    write_json(directory/'observation.json', observation)
+                    merged = read_json(directory/'report.json'); merged['observation'] = observation
+                    write_json(directory/'report.json', merged)
+                    command['exit'] = 3
+                evidence = product(root, slot, command, expected)
+                def reduce(root, current, manifest):
+                    result = dict(current, status='not_started', started=False, reasons=[])
+                    if current['ordinal'] == 3:
+                        result.update(evidence, status='quality_failed' if evidence['quality_reasons'] else 'complete',
+                                      started=True, invocation_seconds=1,
+                                      first_event_membership=membership(evidence['first_event_seconds'], 900))
+                    return result
+                output = self.root/('search-report-'+outcome)
+                with patch('analyze.reduce_slot', side_effect=reduce): analyze(bundle, output)
+                text = (output/'report.md').read_text()
+                self.assertIn('Explored candidates', text)
+                self.assertIn('Violating confirmations / planned', text)
+                row = next(line for line in text.splitlines() if line.startswith('| '+order()[2]['id']+' |'))
+                self.assertIn('| %d |' % evidence['exploration_executions'], row)
+                if outcome == 'exhausted':
+                    self.assertIn('not run (no discovery)', row)
+                else:
+                    self.assertIn('| %d / 20 |' % evidence['violation_runs'], row)
+                    self.assertIn(evidence['selected_schedule'], row)
+                    self.assertIn('a'*64 if outcome != 'zero' else 'b'*64, row)
+                shutil.rmtree(root)
+
     def test_observation_hook_cannot_reuse_preparation_proof(self):
         bundle, registration = self.measurement_bundle()
         from tool import execute as real_execute
@@ -979,6 +1069,28 @@ class RunnerTests(unittest.TestCase):
         result = subprocess.run([sys.executable,'-B','-c',program], cwd=HERE, text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('shared module location differs', result.stderr)
+
+    def test_preloaded_local_modules_cannot_replace_frozen_tools(self):
+        bundle, _ = self.bundle()
+        ambient = self.root/'ambient'; ambient.mkdir()
+        for source in (HERE, bundle/'frozen/source'):
+            for name in ('support', 'analyze', 'stream', 'fixture_contract'):
+                with self.subTest(source=source, module=name):
+                    # A fully functional module in sys.modules used to bypass
+                    # source checks. Alter its origin, not its public interface.
+                    (ambient/'sitecustomize.py').write_text(
+                        'import importlib, sys\n'
+                        'sys.path.insert(0, '+repr(str(source))+')\n'
+                        'module = importlib.import_module('+repr(name)+')\n'
+                        'module.__file__ = '+repr(str(ambient/(name+'.py')))+'\n'
+                        'sys.path.pop(0)\n')
+                    output = self.root/('ambient-analysis-'+source.name+'-'+name)
+                    result = subprocess.run([sys.executable, '-B', str(source/'tool.py'),
+                                             'analyze', str(bundle), str(output)],
+                        env=dict(os.environ, PYTHONPATH=str(ambient)), text=True, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0, 'ambient module was accepted: '+name)
+                    self.assertIn('runner module location differs: '+name, result.stderr)
+                    self.assertFalse(output.exists())
 
     def test_fully_pinned_classpath_substitutions_are_rejected(self):
         for kind in ('business', 'declared_business', 'sdk', 'shadow', 'missing', 'extra'):
@@ -1706,6 +1818,8 @@ class RunnerTests(unittest.TestCase):
             self.library_reference['libraries'][workload] = {p.name:digest(p) for p in (library,sdk)}
         for variants in m['commands'].values():
             for commands in variants.values():
+                for command in commands.values():
+                    command['argv'] += ['--out', '{trial_dir}/raw']
                 for arm in ('B0','B1','B2'):
                     commands[arm]['argv'] += ['--classpath', os.pathsep.join(map(str,[classes,sdk,library]))]
         hook=self.root/'hook.py'
@@ -1779,6 +1893,62 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
         self.assertTrue((bundle/'stopped.json').exists())
         self.assertTrue(read_json(bundle/'slots'/order()[0]['id']/'slot.json')['cleanup_proven'])
         self.assertFalse(read_json(bundle/'slots'/order()[1]['id']/'slot.json')['cleanup_proven'])
+
+    def test_cleanup_proof_cannot_override_uncontained_process(self):
+        from tool import execute as real_execute
+        parent = self.root
+        for failed_step in ('prepare', 'run', 'observe', 'cleanup'):
+            with self.subTest(step=failed_step):
+                self.root = parent/failed_step; self.root.mkdir()
+                bundle, registration = self.measurement_bundle()
+                calls = []
+                def uncontained(spec, context, directory, label, secrets):
+                    calls.append(label)
+                    result = real_execute(spec, context, directory, label, secrets)
+                    if label == failed_step:
+                        # The actual child is already reaped. Model an owned
+                        # process whose TERM/KILL containment could not be proved.
+                        result.update(containment_proven=False, error='constructed containment failure')
+                        write_json(directory/(label+'.command.json'), result)
+                    return result
+                with patch('tool.execute', side_effect=uncontained): collect(bundle, registration)
+                self.assertEqual(len(list((bundle/'slots').iterdir())), 1)
+                if failed_step in ('prepare', 'run'): self.assertNotIn('observe', calls)
+                if failed_step == 'prepare': self.assertNotIn('run', calls)
+                result = analyze(bundle, self.root/('uncontained-'+failed_step))
+                self.assertIn('containment unproven', result['stopped']['reason'])
+                self.assertIn(failed_step, result['stopped']['reason'])
+                self.assertTrue(any('containment unproven' in r for r in result['slots'][0]['reasons']))
+                with self.assertRaisesRegex(ValueError, 'stopped'): collect(bundle, registration)
+                shutil.rmtree(bundle)
+
+    def test_stable_confirmation_requires_all_violating_replays(self):
+        parent = self.root
+        for defect in ('violation_count', 'replay_count', 'trace'):
+            with self.subTest(defect=defect):
+                self.root = parent/defect; self.root.mkdir()
+                root, slot, command, expected = self.product_raw('T-E', repeat=20)
+                directory = root/'raw/runs/constructed'
+                observation = read_json(directory/'observation.json')
+                manifest = read_json(directory/'manifest.json')
+                if defect == 'violation_count':
+                    observation['violation_runs'] = 7
+                elif defect == 'replay_count':
+                    # Drop the last confirmation with its six child stages.
+                    manifest['timings']['spans'] = manifest['timings']['spans'][:-7]
+                else:
+                    trace = read_json(directory/'trace.json')
+                    trace['terminals'][1]['worker'] = 'w1'
+                    write_json(directory/'trace.json', trace)
+                write_json(directory/'observation.json', observation)
+                write_json(directory/'manifest.json', manifest)
+                merged = read_json(directory/'report.json')
+                merged.update(observation=observation, manifest=manifest)
+                write_json(directory/'report.json', merged)
+                result = product(root, slot, command, expected)
+                self.assertTrue(result['quality_reasons'])
+                self.assertFalse(result['stable_confirmation'])
+                shutil.rmtree(root)
 
 
 if __name__ == '__main__':

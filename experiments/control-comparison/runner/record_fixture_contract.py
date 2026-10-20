@@ -10,7 +10,10 @@ from pathlib import Path
 import pprint
 import subprocess
 import tempfile
+import runpy
 
+runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
+              init_globals={'dependencies': ('support',)})
 from support import WORKLOADS, digest, files, inventory, read_json, normalized_fixture_config
 
 REVISION = 'e1bd8ba3fc07d024b8cb4037aa2263d24044dbb0'

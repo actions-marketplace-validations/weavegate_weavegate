@@ -7,8 +7,11 @@ import math
 import re
 import zipfile
 import copy
+import runpy
 from contextlib import contextmanager
 from pathlib import Path
+runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
+              init_globals={'dependencies': ('fixture_contract',)})
 from fixture_contract import FIXTURE_INPUTS, FIXTURE_REVISION, REFERENCE_BUILD
 
 HERE = Path(__file__).resolve().parent
@@ -30,7 +33,7 @@ for name in SHARED_MODULES:
 # The shared harness also has a tool.py. Restore runner import precedence once
 # its required modules (including redaction's plan dependency) are loaded.
 sys.path.pop(0)
-from common import (canonical, child, digest, files, json_equal, read_json, seal, sha,
+from common import (canonical, child, digest, files, json_equal, positive, read_json, seal, sha,
                     timestamp, utc, verify, write_json)  # noqa: E402
 from execution import defer_interrupts, execute, succeeded  # noqa: E402
 
@@ -251,7 +254,9 @@ def command_valid(spec):
     require(isinstance(spec.get('cwd'), str) and Path(spec['cwd']).is_absolute(), 'absolute cwd required')
     require(isinstance(spec.get('env'), dict) and all(isinstance(k, str) and k and '=' not in k
             and isinstance(v, str) and '\0' not in k + v for k, v in spec['env'].items()), 'allowlisted env required')
-    require(type(spec.get('timeout_seconds')) in (int, float) and spec['timeout_seconds'] > 0, 'positive timeout required')
+    for field in ('timeout_seconds', 'cancel_grace_seconds'):
+        if field == 'timeout_seconds' or field in spec:
+            require(positive(spec.get(field)), field + ' must be a finite positive number')
 
 
 @contextmanager
@@ -323,6 +328,21 @@ def command_config(command, expected):
             'command config differs from frozen effective config')
 
 
+def command_output(command):
+    """Both launchers must write only to the current invocation's raw tree."""
+    argv, paths = command['argv'], []
+    require('--' not in argv, 'output command option terminator is unsupported')
+    for index, arg in enumerate(argv):
+        if arg in ('--out', '-out'):
+            require(index + 1 < len(argv), 'output path required')
+            paths.append(argv[index + 1])
+        elif arg.startswith(('--out=', '-out=')):
+            paths.append(arg.split('=', 1)[1])
+    # An exact placeholder avoids cwd, traversal and other-slot interpretations,
+    # and expands identically for measured slots and their warm-up invocations.
+    require(paths == ['{trial_dir}/raw'], 'one output destination {trial_dir}/raw required')
+
+
 def live_pins(manifest):
     for name, expected in manifest['pins'].items():
         require(Path(name).is_absolute() and Path(name).is_file(), 'missing live pin: ' + name)
@@ -366,6 +386,7 @@ def measurement_dependencies(manifest):
             schema = target['Schema']
             inputs = [external['Java'], external['JAR'], schema['Migrations'], schema['Seed']]
             for arm, command in commands.items():
+                command_output(command)
                 file_dependencies(command, manifest['pins'], workload + '/' + variant + '/' + arm, inputs)
                 command_config(command, expected)
                 if arm.startswith('B'):

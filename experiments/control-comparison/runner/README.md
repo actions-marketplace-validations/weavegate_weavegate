@@ -94,8 +94,11 @@ python3 -B experiments/control-comparison/runner/tool.py freeze \
 
 Freeze retains all pinned bytes, deduplicated by SHA-256, and copies the analyzer
 and shared process/bundle primitives into `frozen/source/`, including the
-redaction module's `plan.py` dependency. Shared imports take precedence over
-ambient Python packages and their resolved locations are checked before use.
+redaction module's `plan.py` dependency. Runner and shared imports take precedence
+over ambient Python packages and their resolved locations are checked before use,
+including modules already loaded by Python startup code. Entrypoints execute the
+local import guard by absolute path so a cached guard cannot replace it. These
+origin checks do not sandbox arbitrary Python startup code.
 It generates exactly 120 blocks and 600 invocation slots with the protocol's hash ordering. Changed
 counts, candidate order, settings or caps are rejected for measurement.
 Every measurement T-R/T-E executable must hash to `candidate.cli_sha256`,
@@ -204,7 +207,14 @@ Baseline and product receipts must retain that same image identity. Each measure
 command names exactly one explicit `--config` file, using JSON-subset YAML as emitted
 by the preparer. Validation compares its entire decoded content with the effective
 snapshot, including worker arguments, sync points and timeouts, at freeze and live
-input boundaries. Measurement baseline commands cannot use `--java`, `--jar` or
+input boundaries. Every measurement command also declares exactly one `--out`
+destination with the literal value `{trial_dir}/raw`, including the T-R warm-up
+command. Single-dash and equals forms are checked too; missing, duplicate,
+traversing or other-slot destinations fail before collection. Commands and hooks
+require finite positive numeric `timeout_seconds` and, when supplied,
+`cancel_grace_seconds`; booleans and numeric strings are rejected. Omitted
+cancellation grace retains the shared executor's 25-second default.
+Measurement baseline commands cannot use `--java`, `--jar` or
 `--image` overrides (including single-dash and equals forms); those values must
 come from the checked config. The preparer may still use overrides while exporting
 that config before freeze. Scenario names and argument keys retain their original
@@ -395,6 +405,10 @@ errors and interruption/unproven-cleanup reasons even if no measured command
 started. Unsupported slots also retain lifecycle failures alongside their
 declared unsupported reason. Cleanup errors after a measured command remain
 operational failures with their original detail.
+If any preparation, warm-up, measured, observation or cleanup command cannot prove
+process-group termination, the campaign stops even when a later allocation
+cleanup receipt succeeds. The original command receipt and containment reason
+remain available to offline analysis, and no later slot can reuse that allocation.
 
 Registration defers SIGINT/SIGTERM until its retained registration and progress
 checksum agree. An interruption at that boundary leaves all slots unstarted,
@@ -415,6 +429,13 @@ The report's `Baseline exposure / 10` column shows B1/B2 blocks with at least on
 valid evaluation beside the planned detection denominator. Zero usable exposure
 is therefore visible even when the detection count is also zero; other arms show
 `N/A` in this baseline-only column.
+The search report separates B2 exposure from T-E's actual explored-candidate
+count, `violation_runs/20` confirmation result, fingerprint counts and selected
+schedule. Feasibility reports use their declared confirmation count. Exhausted
+searches explicitly show that confirmation did not run; zero or partial violating
+confirmations remain visible. Stable confirmation requires all planned replays
+to violate with one matching fingerprint, the requested schedule and a valid
+worker trace, independently of later cleanup or operational failures.
 
 This infrastructure does not publish E5 measurements, update E1 figures or add
 a README comparison table. Those follow the registered campaign and its audit.

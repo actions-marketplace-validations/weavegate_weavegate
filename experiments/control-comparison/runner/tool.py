@@ -7,7 +7,11 @@ import shutil
 import time
 import signal
 import math
+import runpy
 from contextlib import ExitStack
+from pathlib import Path
+runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
+              init_globals={'dependencies': ('support', 'analyze', 'stream')})
 from support import *
 from analyze import analyze, reduce_slot
 from stream import Monitor
@@ -220,7 +224,7 @@ def collect_locked(bundle, registration, max_slots):
                         check_boundary()
                         if m['phase'] == 'measurement':
                             prep = execute(m['hooks']['prepare'], context, directory, 'prepare', [])
-                            require(succeeded(prep), 'restore failed')
+                            require(succeeded(prep) and prep.get('containment_proven') is True, 'restore failed')
                             receipt = proof(directory, 'preparation.json', {'host_id': m['environment']['host_id'],
                                             'disk_image': m['environment']['vm_image'], 'fresh_memory': True,
                                             'clean_data': True, 'vcpus': 4, 'memory_bytes': 16 * 1024**3})
@@ -238,7 +242,8 @@ def collect_locked(bundle, registration, max_slots):
                                 state['warmup'] = {'seconds': cmd['seconds'], 'exit': cmd['exit']}
                                 before = inventory(directory)
                                 cleanup = execute(m['hooks']['warm_cleanup'], context, directory, 'warm-cleanup', [])
-                                require(succeeded(cleanup), 'warm-up output/data cleanup failed')
+                                require(succeeded(cleanup) and cleanup.get('containment_proven') is True,
+                                        'warm-up output/data cleanup failed')
                                 receipt = proof(directory, 'warm-cleanup.json', {'outputs_removed': True, 'data_removed': True,
                                                 'cache_preserved': True}, previous=before)
                                 warm_cache(receipt, directory)
@@ -251,6 +256,7 @@ def collect_locked(bundle, registration, max_slots):
                         start = time.monotonic()
                         with Monitor(directory):
                             cmd = execute(spec, context, directory, 'run', [])
+                        require(cmd.get('containment_proven') is True, 'measured process containment unproven')
                         # Baseline evaluations are persisted per execution. Product artifacts
                         # arrive at CLI completion; endpoint validation is separately timed.
                         from analyze import baseline, product
@@ -267,7 +273,7 @@ def collect_locked(bundle, registration, max_slots):
                             live_pins(m)
                             observed_files = inventory(directory)
                             observer = execute(m['hooks']['observe'], context, directory, 'observe', [])
-                            require(succeeded(observer), 'observation failed')
+                            require(succeeded(observer) and observer.get('containment_proven') is True, 'observation failed')
                             receipt = proof(directory, 'observation.json', {'host_id': m['environment']['host_id']}, previous=observed_files)
                             state['resources'] = resource_observations(receipt.get('resources'))
                             unchanged(directory, observed_files)
@@ -282,6 +288,22 @@ def collect_locked(bundle, registration, max_slots):
                         nonlocal stop_reason
                         if state['cleanup_proven'] is not True and stop_reason is None:
                             stop_reason = 'allocation cleanup unproven'
+                        # A host/fixture cleanup proof cannot establish that the
+                        # collector's own command groups have stopped writing.
+                        # Include warm-up and every infrastructure command, even
+                        # when an exception interrupted its normal return path.
+                        for name in ('prepare', 'warmup/run', 'warm-cleanup', 'run', 'observe', 'cleanup'):
+                            path = directory / (name + '.command.json')
+                            if not path.exists(): continue
+                            try:
+                                command = read_json(path)
+                                require(command.get('started') is not True
+                                        or command.get('containment_proven') is True,
+                                        'owned process group may remain alive')
+                            except (OSError, ValueError, AttributeError) as error:
+                                stop_reason = 'process containment unproven: ' + name + ': ' + str(error)
+                                errors = state.setdefault('containment_errors', [])
+                                if stop_reason not in errors: errors.append(stop_reason)
                         for check in (lambda: live_pins(m), check_boundary):
                             try: check()
                             except (ValueError, OSError) as error:
@@ -307,7 +329,8 @@ def collect_locked(bundle, registration, max_slots):
                                     live_pins({'pins': {p: m['pins'][p] for p in trusted}})
                                     before_cleanup = inventory(directory)
                                     cleanup = execute(m['hooks']['cleanup'], context, directory, 'cleanup', [])
-                                    require(succeeded(cleanup), 'cleanup command failed')
+                                    require(succeeded(cleanup) and cleanup.get('containment_proven') is True,
+                                            'cleanup command failed')
                                     proof(directory, 'cleanup.json', {'proven': True}, previous=before_cleanup)
                                     unchanged(directory, before_cleanup)
                                     state['cleanup_proven'] = True

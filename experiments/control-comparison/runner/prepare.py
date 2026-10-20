@@ -5,6 +5,10 @@ import os
 import shutil
 import subprocess
 import zipfile
+import runpy
+from pathlib import Path
+runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
+              init_globals={'dependencies': ('support',)})
 from support import *
 
 

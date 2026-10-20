@@ -1,6 +1,10 @@
 """Observe durable baseline evaluations at 100 ms; never coordinate workers."""
 import threading
 import time
+import runpy
+from pathlib import Path
+runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
+              init_globals={'dependencies': ('support',)})
 from support import digest, read_json, write_json
 
 

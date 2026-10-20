@@ -1,5 +1,9 @@
 """Reduce original Oracle/product evidence. Never infer a verdict from SQL or exits."""
 from collections import Counter, defaultdict
+import runpy
+from pathlib import Path
+runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
+              init_globals={'dependencies': ('support',)})
 from support import *
 
 
@@ -226,15 +230,18 @@ def product(root, slot, command, expected):
     if o['flaky'] or command['exit'] == 3: result['quality_reasons'].append('flaky')
     if command['exit'] not in (0, 2, 3) and not command['timeout']: result['operational_reasons'].append('product operational exit')
     repeat = expected['counts']['T-R']
+    result['planned_confirmation_executions'] = repeat
     saved = scenario.get('schedule')
     result['search_exhausted'] = slot['arm'] == 'T-E' and not saved
     result['unexpected_miss'] = False
     if saved:
         require(saved in expected['candidates'], 'unregistered schedule')
         if slot['arm'] == 'T-R': require(saved['id'] == WORKLOADS[slot['workload']][6], 'replay schedule differs')
+        trace_valid = True
         try:
             result['trace_observations'] = validate_trace(trace, saved, slot)
         except ValueError as error:
+            trace_valid = False
             result['quality_reasons'].append(str(error))
         stable = o['repeat'] == repeat and list(o['fingerprints'].values()) == [repeat] and not o['flaky']
         if not stable: result['quality_reasons'].append('repeat/fingerprint mismatch')
@@ -244,7 +251,8 @@ def product(root, slot, command, expected):
             result['quality_reasons'].append('saved exploration schedule lacks discovery evidence')
         if domain and not domain_rows_match(violations, assertion, expected):
             result['quality_reasons'].append('domain assertion rows differ')
-        result['stable_confirmation'] = stable and domain and slot['arm'] == 'T-E'
+        result['stable_confirmation'] = (stable and trace_valid and domain
+                                         and o['violation_runs'] == repeat and slot['arm'] == 'T-E')
     elif slot['arm'] == 'T-R': result['quality_reasons'].append('missing replay')
     else:
         if o['schedules_explored'] != len(expected['candidates']) * 3 or o['explore_passes'] != 3:
@@ -273,6 +281,7 @@ def product(root, slot, command, expected):
     replayed = [s for s in executions if byid.get(s['parent_id'], {}).get('name') == 'replay']
     if saved and (len(replayed) != repeat or any(s.get('schedule_id') != saved['id'] for s in replayed)):
         result['quality_reasons'].append('confirmation execution identity/count differs')
+        result['stable_confirmation'] = False
     if slot['arm'] == 'T-R' and domain and replayed and len(o['fingerprints']) == 1 and not o['flaky']:
         evaluations = [s for s in spans if s['name'] == 'oracle_evaluate' and s['parent_id'] == replayed[0]['id']]
         commands = [s for s in spans if s['name'] == 'command']
@@ -319,7 +328,7 @@ def reduce_slot(root, slot, manifest):
     state = read_json(root / 'slot.json')
     require(state.get('slot') == slot, 'slot identity differs')
     # Lifecycle failures apply even when preparation never spawned the arm.
-    operational = state.get('integrity_errors', [])[:]
+    operational = state.get('integrity_errors', [])[:] + state.get('containment_errors', [])
     for key in ('error', 'cleanup_error'):
         if state.get(key): operational.append(state[key])
     if state.get('interrupted'): operational.append('collector interrupted')
@@ -466,15 +475,29 @@ def analyze_locked(bundle, output, check_lock):
     lines += ['', '## Observed search slots', '',
               'Every unstarted slot and reason remains in the accounting above and results.json.',
               'Fixed-row detections are unexpected domain violations, not intended discoveries.', '',
-              '| Slot | Status | Attempted / valid | Violations / valid | Violations / planned | First domain bound seconds | Confirmation |',
-              '| --- | --- | --- | --- | --- | --- | --- |']
-    for r in rows:
-        if r['arm'] not in ('B2','T-E') or not r['started']: continue
+              'B2 retains uncontrolled exposure; T-E retains explored candidates and automatic confirmation separately.', '',
+              '| Slot | Status | Attempted / valid | Violations / valid | Violations / planned | First domain bound seconds |',
+              '| --- | --- | --- | --- | --- | --- |']
+    def first_bound(r):
         event = r.get('first_event_seconds')
-        interval = '[%s, %s] %s' % (fmt(event[0]),fmt(event[1]),r['first_event_membership']) if event else 'unknown / absent'
-        lines.append('| %s | %s | %s / %s | %s | %s | %s | %s |' % (
+        return ('[%s, %s] %s' % (fmt(event[0]), fmt(event[1]), r['first_event_membership'])
+                if event else 'unknown / absent')
+    for r in rows:
+        if r['arm'] != 'B2' or not r['started']: continue
+        lines.append('| %s | %s | %s / %s | %s | %s | %s |' % (
             r['id'],r['status'],r.get('attempted','N/A'),r.get('valid_evaluations','N/A'),
-            fmt(r.get('x_over_m')),fmt(r.get('x_over_planned')),interval,r.get('stable_confirmation',False)))
+            fmt(r.get('x_over_m')),fmt(r.get('x_over_planned')),first_bound(r)))
+    lines += ['', '| Slot | Status | Explored candidates | Violating confirmations / planned | Fingerprint counts | Selected schedule | First domain bound seconds | Stable confirmation |',
+              '| --- | --- | --- | --- | --- | --- | --- | --- |']
+    for r in rows:
+        if r['arm'] != 'T-E' or not r['started']: continue
+        confirmation = ('not run (no discovery)' if r.get('search_exhausted') else
+                        '%s / %s' % (r.get('violation_runs', 'N/A'), r.get('planned_confirmation_executions', 'N/A')))
+        fingerprints = ', '.join('%s=%d' % item for item in sorted(r.get('fingerprints', {}).items())) or 'none retained'
+        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s |' % (
+            r['id'], r['status'], r.get('exploration_executions', 'N/A'), confirmation,
+            fingerprints, r.get('selected_schedule') or 'none retained', first_bound(r),
+            r.get('stable_confirmation', False)))
     lines += ['', '## Stage observations', '',
               'Inclusive named spans; overlapping parents are never added together. Guest startup is not inferred by subtraction.', '',
               '| Workload | Variant | Cache | Arm | Stage | Median seconds (n) | p90 | Min | Max |',
