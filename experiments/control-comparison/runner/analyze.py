@@ -1,5 +1,6 @@
 """Reduce original Oracle/product evidence. Never infer a verdict from SQL or exits."""
 from collections import Counter, defaultdict
+import fcntl
 from support import *
 
 
@@ -72,6 +73,8 @@ def baseline(root, slot, command, expected):
         run = read_json(raw / 'run.json')
         require(run.get('arm') == slot['arm'] and run.get('variant') == slot['variant'],
                 'baseline identity differs from requested slot')
+        require(run.get('environment', {}).get('image') == expected['config']['Target']['DB'],
+                'baseline image differs from effective config')
     else:
         # A killed process may have already published valid evaluations. Keep
         # those observations; missing final cleanup/timing cannot erase them.
@@ -198,6 +201,7 @@ def product(root, slot, command, expected):
             'merged product evidence differs')
     require((directory / 'report.md').is_file(), 'missing product report')
     require(m['variant'] == slot['variant'] and m['adapter'] == 'external', 'product identity differs')
+    require(m.get('image') == expected['config']['Target']['DB'], 'product image differs from effective config')
     require(o.get('mode') == {'T-R': 'replay', 'T-E': 'explore'}[slot['arm']],
             'product mode differs from requested arm')
     require(m['sut_sha256'] == 'sha256:' + expected['jar_sha256'] and m['isolation_level'] == 'REPEATABLE-READ', 'product input/isolation differs')
@@ -220,7 +224,7 @@ def product(root, slot, command, expected):
     repeat = expected['counts']['T-R']
     saved = scenario.get('schedule')
     result['search_exhausted'] = slot['arm'] == 'T-E' and not saved
-    result['unexpected_miss'] = result['search_exhausted'] and slot['variant'] == 'vulnerable'
+    result['unexpected_miss'] = False
     if saved:
         require(saved in expected['candidates'], 'unregistered schedule')
         if slot['arm'] == 'T-R': require(saved['id'] == WORKLOADS[slot['workload']][6], 'replay schedule differs')
@@ -236,8 +240,11 @@ def product(root, slot, command, expected):
             result['quality_reasons'].append('domain assertion rows differ')
         result['stable_confirmation'] = stable and domain and slot['arm'] == 'T-E'
     elif slot['arm'] == 'T-R': result['quality_reasons'].append('missing replay')
-    elif o['schedules_explored'] != len(expected['candidates']) * 3 or o['explore_passes'] != 3:
-        result['quality_reasons'].append('incomplete exhaustive search')
+    else:
+        if o['schedules_explored'] != len(expected['candidates']) * 3 or o['explore_passes'] != 3:
+            result['quality_reasons'].append('incomplete exhaustive search')
+        if o['violation_runs'] != 0 or violations or o['flaky'] or command['exit'] != 0:
+            result['quality_reasons'].append('exhausted search has non-clean outcome')
     if (command['exit'] == 0 and (domain or o['flaky'])) or (command['exit'] == 2 and (not domain or o['flaky'])):
         result['quality_reasons'].append('exit and retained outcome disagree')
     executions = [s for s in spans if s['name'] == 'schedule_run']
@@ -267,18 +274,29 @@ def product(root, slot, command, expected):
             event, cmd = evaluations[0], commands[0]
             result['first_event_seconds'] = bound((event['start_ns'] + event['duration_ns'] - cmd['start_ns']) / 1e9,
                                                   cmd['duration_ns'] / 1e9, command['seconds'])
-    if slot['arm'] == 'T-E' and saved and domain and o.get('discovery_fingerprint') in o['fingerprints']:
+    if slot['arm'] == 'T-E' and saved:
         # Discovery is the last schedule_run inside an explore_pass; replay is a sibling.
         byid = {s['id']: s for s in spans}
         discovery = [s for s in spans if s['name'] == 'schedule_run'
                      and byid.get(s['parent_id'], {}).get('name') == 'explore_pass']
-        if len(discovery) == o['schedules_explored'] and discovery and discovery[-1].get('schedule_id') == saved['id']:
+        mapped = (len(discovery) == o['schedules_explored'] and discovery and passes
+                  and discovery[-1]['parent_id'] == passes[-1]['id']
+                  and discovery[-1].get('schedule_id') == saved['id'])
+        if not mapped:
+            result['quality_reasons'].append('discovery schedule differs from final explored execution')
+        fingerprint_matches = o.get('discovery_fingerprint') in o['fingerprints']
+        if not fingerprint_matches:
+            result['quality_reasons'].append('discovery fingerprint differs from confirmation')
+        result['stable_confirmation'] = bool(result['stable_confirmation'] and mapped and fingerprint_matches)
+        if mapped and domain and fingerprint_matches:
             evaluations = [s for s in spans if s['name'] == 'oracle_evaluate' and s['parent_id'] == discovery[-1]['id']]
             commands = [s for s in spans if s['name'] == 'command']
             if len(evaluations) == len(commands) == 1:
                 event, cmd = evaluations[0], commands[0]
                 result['first_event_seconds'] = bound((event['start_ns'] + event['duration_ns'] - cmd['start_ns']) / 1e9,
                                                       cmd['duration_ns'] / 1e9, command['seconds'])
+    result['unexpected_miss'] = (result['search_exhausted'] and slot['variant'] == 'vulnerable'
+                                and not result['quality_reasons'] and not result['operational_reasons'])
     return result
 
 
@@ -307,6 +325,7 @@ def reduce_slot(root, slot, manifest):
                     'quality_reasons': [], 'cleanup_proven': False, 'first_event_seconds': None}
     result.update(evidence)
     operational = evidence['operational_reasons'][:]
+    operational.extend(state.get('integrity_errors', []))
     if command['error'] or not command['started'] or not command['containment_proven']:
         operational.append('command spawn/containment failure')
     if manifest['phase'] == 'measurement' and state.get('cleanup_proven') is not True:
@@ -326,9 +345,20 @@ def reduce_slot(root, slot, manifest):
 
 
 def analyze(bundle, output):
+    # Match collection's lock for the entire snapshot and output publication.
+    with (Path(bundle) / '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        return analyze_locked(bundle, output)
+
+
+def analyze_locked(bundle, output):
     bundle, output = Path(bundle), Path(output)
     verify(bundle / 'frozen')
     manifest = read_json(bundle / 'frozen' / 'manifest.json')
+    if manifest['phase'] == 'measurement':
+        require(all(inp['config']['Target'].get('DB') == manifest['environment']['mysql_image']
+                    for variants in manifest['inputs'].values() for inp in variants.values()),
+                'effective config image differs from registered MySQL image')
     slots = read_json(bundle / 'frozen' / 'order.json')
     require(slots == order(), 'order differs from protocol')
     progress = retained_progress(bundle, manifest, slots)

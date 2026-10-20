@@ -2,6 +2,7 @@
 import os
 import sys
 import importlib
+import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -125,14 +126,84 @@ def file_dependencies(spec, pins, label, inputs=()):
 def measurement_dependencies(manifest):
     for workload, variants in manifest['commands'].items():
         for variant, commands in variants.items():
-            target = manifest['inputs'][workload][variant]['config']['Target']
+            expected = manifest['inputs'][workload][variant]
+            target = expected['config']['Target']
+            require(target.get('DB') == manifest['environment']['mysql_image'],
+                    'effective config image differs from registered MySQL image')
             external = target['SUT']['External']
             schema = target['Schema']
             inputs = [external['Java'], external['JAR'], schema['Migrations'], schema['Seed']]
             for arm, command in commands.items():
                 file_dependencies(command, manifest['pins'], workload + '/' + variant + '/' + arm, inputs)
+                if arm.startswith('B'):
+                    classpath_identity(command, expected)
+            fixture_identity(expected)
     for name, hook in manifest['hooks'].items():
         file_dependencies(hook, manifest['pins'], name)
+
+
+BUSINESS_PREFIX = 'io/github/weavegate/fixture/'
+SDK_PREFIX = 'io/github/weavegate/sdk/'
+
+
+def fixture_identity(expected):
+    """Bind declared business/SDK identities to the pinned product application."""
+    jar = expected['config']['Target']['SUT']['External']['JAR']
+    require(digest(jar) == expected['jar_sha256'], 'fixture JAR identity differs')
+    with zipfile.ZipFile(jar) as archive:
+        names = archive.namelist()
+        require(len(names) == len(set(names)), 'duplicate fixture JAR entries')
+        prefix = 'BOOT-INF/classes/'
+        business = {n[len(prefix):]: sha(archive.read(n)) for n in names
+                    if n.startswith(prefix + BUSINESS_PREFIX) and n.endswith('.class')}
+        require(business and business == expected['business_classes'], 'fixture business-class identity differs')
+        sdk = [n for n in names if n.startswith('BOOT-INF/lib/weavegate-spring-') and n.endswith('.jar')]
+        require(len(sdk) == 1 and sha(archive.read(sdk[0])) == expected['sdk_sha256'],
+                'fixture SDK identity differs')
+
+
+def classpath_identity(command, expected):
+    """Check every protected class source, rejecting shadow copies as well as drift."""
+    argv = command['argv']
+    values = []
+    for i, arg in enumerate(argv):
+        if arg in ('--classpath', '-classpath'):
+            require(i+1 < len(argv), 'classpath value required')
+            values.append(argv[i+1])
+        elif arg.startswith(('--classpath=', '-classpath=')):
+            values.append(arg.split('=',1)[1])
+    require(len(values) == 1 and values[0], 'one explicit baseline classpath required')
+    paths = []
+    for name in values[0].split(os.pathsep):
+        require(name and '{' not in name, 'classpath must use frozen paths')
+        path = Path(command['cwd']) / name
+        if path.name == '*':
+            require(path.parent.is_dir(), 'classpath wildcard directory missing')
+            paths.extend(sorted(p for p in path.parent.iterdir() if p.suffix.lower() == '.jar'))
+        else: paths.append(path)
+    classes, sdk_sources = {}, []
+    for path in paths:
+        selected = {}
+        if path.is_dir():
+            for prefix in (BUSINESS_PREFIX, SDK_PREFIX):
+                for file in (path / prefix).rglob('*.class'):
+                    selected[str(file.relative_to(path))] = digest(file)
+        else:
+            require(path.is_file() and zipfile.is_zipfile(path), 'classpath JAR missing/invalid: ' + str(path))
+            with zipfile.ZipFile(path) as archive:
+                for name in archive.namelist():
+                    if not name.endswith('.class') or not any(p in name for p in (BUSINESS_PREFIX, SDK_PREFIX)): continue
+                    require(name.startswith((BUSINESS_PREFIX, SDK_PREFIX)), 'versioned/nested identity class in classpath')
+                    require(name not in selected, 'duplicate classpath identity class: ' + name)
+                    selected[name] = sha(archive.read(name))
+        require(not set(classes).intersection(selected), 'duplicate business/SDK class in classpath')
+        classes.update(selected)
+        if any(n.startswith(SDK_PREFIX) for n in selected):
+            require(path.is_file(), 'SDK must use the registered JAR')
+            sdk_sources.append(digest(path))
+    require({n:h for n,h in classes.items() if n.startswith(BUSINESS_PREFIX)} == expected['business_classes']
+            and expected['business_classes'], 'classpath business-class identity differs')
+    require(sdk_sources == [expected['sdk_sha256']], 'classpath SDK identity differs')
 
 
 def cleanup_dependencies(manifest):

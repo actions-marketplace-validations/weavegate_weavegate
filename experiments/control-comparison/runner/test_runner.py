@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Constructed boundary tests; these are not E5 performance observations."""
 import copy
+import fcntl
 import json
 import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 from support import *
 from analyze import analyze, baseline, bound, membership, product, reduce_slot, stages, stats, validate_trace
@@ -30,7 +32,7 @@ class RunnerTests(unittest.TestCase):
             for v in ('vulnerable', 'fixed'):
                 inputs[w][v] = {'candidates': candidates(w), 'counts': {'B1': 2, 'B2': 2, 'T-R': 2},
                     'config': {'Run': {'Repeat': 20, 'ArriveTimeoutMS': 1000, 'ExplorePasses': 3},
-                               'Target': {'SUT': {'External': {'Capacity': 2, 'StartupTimeoutMS': 30000,
+                               'Target': {'DB': 'mysql:8.4@sha256:'+'a'*64, 'SUT': {'External': {'Capacity': 2, 'StartupTimeoutMS': 30000,
                                                               'CancelTimeoutMS': 5000, 'StopTimeoutMS': 20000}}},
                                'Oracle': {'Assertions': [{'ID': spec[2]}]}}}
                 commands[w][v] = {a: {'argv': [executable, str(program)], 'cwd': str(self.root), 'env': {},
@@ -50,6 +52,7 @@ class RunnerTests(unittest.TestCase):
         slot = slot or dict(order()[0], workload='quota', variant='vulnerable', arm='B2')
         root = self.root / 'slot'; root.mkdir(); raw = root / 'raw'; raw.mkdir()
         run = {'arm': slot['arm'], 'variant': slot['variant'],
+               'environment': {'image': 'mysql:8.4@sha256:'+'a'*64},
                'cleanup_proven': True, 'executions': 2, 'seed': {'synthetic': []}, 'process_elapsed_ns': 900000000,
                'timings': {'spans': [{'id': 1, 'parent_id': 0, 'name': 'command', 'start_ns': 0, 'duration_ns': 900000000}]}}
         write_json(raw / 'run.json', run)
@@ -424,7 +427,7 @@ class RunnerTests(unittest.TestCase):
         seal(wrong)
         with self.assertRaisesRegex(ValueError,'ordered prefix'):collect(bundle,max_slots=1)
 
-    def product_raw(self, arm):
+    def product_raw(self, arm, explored_count=None, exhausted=False, saved_index=None):
         """Construct a valid vulnerable replay/discovery, including stage/trace evidence."""
         root = self.root / arm; root.mkdir()
         directory = root/'raw/runs/constructed'; directory.mkdir(parents=True)
@@ -433,6 +436,7 @@ class RunnerTests(unittest.TestCase):
         expected['jar_sha256'] = 'b'*64
         expected['config']['Oracle']['Assertions'][0].update(SQL='constructed', ExpectRows=0)
         saved = next(c for c in expected['candidates'] if c['id'] == WORKLOADS['matching'][6])
+        if saved_index is not None: saved = expected['candidates'][saved_index]
         spans = [{'id': 1, 'parent_id': 0, 'name': 'command', 'start_ns': 0, 'duration_ns': 900000000}]
         def span(name, parent, **extra):
             spans.append(dict(id=len(spans)+1, parent_id=parent, name=name, start_ns=0, duration_ns=0, **extra))
@@ -443,13 +447,18 @@ class RunnerTests(unittest.TestCase):
                 span(name, child)
         explored = 0
         if arm == 'T-E':
-            parent = span('explore_pass', 1)
-            for candidate in expected['candidates']:
-                execution(parent, candidate); explored += 1
-                if candidate == saved: break
-        parent = span('replay', 1)
-        for _ in range(2): execution(parent, saved)
+            for _ in range(3 if exhausted else 1):
+                parent = span('explore_pass', 1)
+                prefix = (expected['candidates'][:explored_count] if explored_count is not None
+                          else expected['candidates'] if exhausted
+                          else expected['candidates'][:expected['candidates'].index(saved)+1])
+                for candidate in prefix:
+                    execution(parent, candidate); explored += 1
+        if not exhausted:
+            parent = span('replay', 1)
+            for _ in range(2): execution(parent, saved)
         manifest = {'variant': 'vulnerable', 'adapter': 'external', 'sut_sha256': 'sha256:'+'b'*64,
+                    'image': expected['config']['Target']['DB'],
                     'isolation_level': 'REPEATABLE-READ', 'cleanup_failed': False, 'timings': {'spans': spans}}
         observation = {'mode': 'explore' if arm == 'T-E' else 'replay',
             'oracles': [{'id': WORKLOADS['matching'][2], 'sql': 'constructed', 'expect_rows': 0}],
@@ -457,14 +466,17 @@ class RunnerTests(unittest.TestCase):
             'discovery_fingerprint': 'a'*64 if explored else None, 'flaky': False, 'repeat': 2,
             'explore_passes': int(bool(explored)),
             'assertion_violations': [{'oracle_id': WORKLOADS['matching'][2], 'rows': [{'synthetic': 1}]}]}
-        scenario = {'schedule': saved}
+        if exhausted:
+            observation.update(violation_runs=0, fingerprints={}, discovery_fingerprint=None,
+                               explore_passes=3, assertion_violations=[])
+        scenario = {} if exhausted else {'schedule': saved}
         trace = {'schedule_ref': saved['id'], 'terminals': [{'state': 'done', 'failure_class': 'none'}]*2,
                  'events': [dict(s, seq=i+1, kind='point_released', step=i) for i,s in enumerate(saved['steps'])]}
         for name, value in (('manifest',manifest),('observation',observation),('scenario',scenario),('trace',trace),
                             ('report',{'manifest':manifest,'observation':observation,'scenario':scenario})):
             write_json(directory/(name+'.json'), value)
         (directory/'report.md').write_text('Constructed product evidence\n')
-        command = {'seconds': 1, 'started': True, 'timeout': False, 'exit': 2, 'error': None,
+        command = {'seconds': 1, 'started': True, 'timeout': False, 'exit': 0 if exhausted else 2, 'error': None,
                    'containment_proven': True, 'finished': True, 'interrupted': False}
         write_json(root/'run.command.json', command)
         write_json(root/'slot.json', {'slot':slot, 'cleanup_proven':True})
@@ -553,25 +565,26 @@ class RunnerTests(unittest.TestCase):
         m = self.measurement_manifest()
         inputs = self.root/'command-inputs'; inputs.mkdir()
         classes = inputs/'classes'; classes.mkdir()
-        (classes/'Business.class').write_bytes(b'constructed business class')
         (classes/'BaselineMain.class').write_bytes(b'constructed launcher')
         libraries = inputs/'lib'; libraries.mkdir()
-        for name in ('sdk.jar','spring.jar'): (libraries/name).write_bytes(b'constructed '+name.encode())
+        with zipfile.ZipFile(libraries/'spring.jar', 'w') as archive:
+            archive.writestr('constructed.txt', 'constructed library')
         migrations = inputs/'migrations'; migrations.mkdir()
         (migrations/'001.sql').write_text('constructed migration')
-        for name in ('config.yaml','seed.sql','app.jar','schedule.json'):
+        for name in ('config.yaml','seed.sql','schedule.json'):
             (inputs/name).write_text('constructed '+name)
         for p in files(inputs): m['pins'][str(p)] = digest(p)
         inp = m['inputs']['matching']['vulnerable']
         inp['config']['Target']['Schema'] = {'Migrations':str(migrations), 'Seed':str(inputs/'seed.sql')}
-        inp['config']['Target']['SUT']['External'].update(Java=str(Path(sys.executable).resolve()), JAR=str(inputs/'app.jar'))
         for arm in ARMS:
             spec = m['commands']['matching']['vulnerable'][arm]
             spec['argv'] += ['--config='+str(inputs/'config.yaml'), '--replay', str(inputs/'schedule.json')]
             if arm.startswith('B'):
-                spec['argv'] += ['--classpath', os.pathsep.join(map(str,[classes,libraries/'*']))]
+                spec['argv'][spec['argv'].index('--classpath')+1] += os.pathsep + os.pathsep.join(map(str,[classes,libraries/'*']))
         validate(m)
-        for p in files(inputs):
+        dependencies = files(inputs) + [Path(inp['config']['Target']['SUT']['External']['JAR']),
+                                        self.root/'weavegate-spring-constructed.jar'] + files(self.root/'fixture-classes')
+        for p in dependencies:
             with self.subTest(missing=p.name):
                 changed = copy.deepcopy(m); del changed['pins'][str(p)]
                 with self.assertRaisesRegex(ValueError, 'dependenc'):
@@ -582,7 +595,7 @@ class RunnerTests(unittest.TestCase):
         classes = self.root/'classes'; classes.mkdir()
         original = classes/'Business.class'; original.write_bytes(b'original')
         m['pins'][str(original)] = digest(original)
-        m['commands']['matching']['fixed']['B2']['argv'] += ['--classpath',str(classes)]
+        m['commands']['matching']['fixed']['B2']['argv'][-1] += os.pathsep + str(classes)
         bundle, registration = self.measurement_bundle(m)
         (classes/'Added.class').write_bytes(b'unpinned addition')
         with patch('tool.execute') as execute:
@@ -672,12 +685,176 @@ class RunnerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('shared module location differs', result.stderr)
 
+    def test_fully_pinned_classpath_substitutions_are_rejected(self):
+        for kind in ('business', 'declared_business', 'sdk', 'shadow', 'missing', 'extra'):
+            with self.subTest(kind=kind):
+                m = self.measurement_manifest()
+                validate(m)
+                business = next((self.root/'fixture-classes').rglob('*.class'))
+                sdk = self.root/'weavegate-spring-constructed.jar'
+                if kind in ('business', 'declared_business'):
+                    business.write_bytes(b'changed business class'); m['pins'][str(business)] = digest(business)
+                    if kind == 'declared_business':
+                        for variants in m['inputs'].values():
+                            for inp in variants.values():
+                                inp['business_classes'] = {n:digest(business) for n in inp['business_classes']}
+                elif kind == 'sdk':
+                    with zipfile.ZipFile(sdk, 'w') as archive:
+                        archive.writestr('io/github/weavegate/sdk/Weavegate.class', b'changed SDK')
+                    m['pins'][str(sdk)] = digest(sdk)
+                elif kind == 'shadow':
+                    shadow = self.root/'shadow.jar'
+                    with zipfile.ZipFile(shadow, 'w') as archive:
+                        archive.writestr('io/github/weavegate/fixture/constructed/Business.class', b'shadow')
+                    m['pins'][str(shadow)] = digest(shadow)
+                    m['commands']['matching']['fixed']['B1']['argv'][-1] = str(shadow)+os.pathsep+m['commands']['matching']['fixed']['B1']['argv'][-1]
+                elif kind == 'missing':
+                    m['commands']['quota']['fixed']['B0']['argv'][-1] = str(sdk)
+                else:
+                    extra = business.with_name('Added.class'); extra.write_bytes(b'fully pinned extra class')
+                    m['pins'][str(extra)] = digest(extra)
+                with self.assertRaisesRegex(ValueError, 'business|SDK|classpath'):
+                    validate(m)
+                shutil.rmtree(self.root/'fixture-classes')
+
+    def test_measurement_configs_must_use_registered_image(self):
+        m = self.measurement_manifest()
+        validate(m)
+        for workload in WORKLOADS:
+            for variant in ('vulnerable','fixed'):
+                for image in ('mysql:8.4', 'mysql:8.4@sha256:'+'b'*64, None):
+                    with self.subTest(workload=workload, variant=variant, image=image):
+                        changed = copy.deepcopy(m)
+                        changed['inputs'][workload][variant]['config']['Target']['DB'] = image
+                        with self.assertRaisesRegex(ValueError, 'image'):
+                            validate(changed)
+
+    def test_retained_receipts_must_use_expected_image(self):
+        root, slot, command = self.raw()
+        expected = self.manifest()['inputs']['quota']['vulnerable']
+        for arm in ('B0','B1','B2'):
+            for image in (None, 'mysql:8.4', 'mysql:8.4@sha256:'+'b'*64):
+                with self.subTest(arm=arm, image=image):
+                    run = read_json(root/'raw/run.json'); run['arm'] = arm
+                    run['environment']['image'] = image
+                    if arm == 'B0': run['executions'] = 0
+                    write_json(root/'raw/run.json', run)
+                    with self.assertRaisesRegex(ValueError, 'image'):
+                        baseline(root, dict(slot, arm=arm), command, expected)
+        for arm in ('T-R','T-E'):
+            root, slot, command, expected = self.product_raw(arm)
+            directory = root/'raw/runs/constructed'
+            for image in (None, 'mysql:8.4', 'mysql:8.4@sha256:'+'b'*64):
+                with self.subTest(arm=arm, image=image):
+                    merged = read_json(directory/'report.json'); merged['manifest']['image'] = image
+                    write_json(directory/'manifest.json', merged['manifest']); write_json(directory/'report.json', merged)
+                    with self.assertRaisesRegex(ValueError, 'image'):
+                        product(root, slot, command, expected)
+
+    def test_final_integrity_failure_fails_active_slot_and_stops(self):
+        for boundary in ('observe','cleanup','protect'):
+            with self.subTest(boundary=boundary):
+                for path in (self.root/'measurement', self.root/'slot'):
+                    if path.exists(): shutil.rmtree(path)
+                m = self.measurement_manifest()
+                bundle, registration = self.measurement_bundle(m)
+                raw, slot, command = self.raw(order()[0])
+                receipt = read_json(raw/'raw/run.json'); receipt['executions'] = 100
+                write_json(raw/'raw/run.json', receipt)
+                execution = read_json(raw/'raw/execution-001.json')
+                execution['evaluation']['results'][0]['violations'] = []
+                for i in range(1,101): write_json(raw/'raw'/('execution-%03d.json'%i), dict(execution,index=i))
+                from tool import execute as real_execute, protect as real_protect
+                cleaned = False
+                def execute(spec, context, directory, label, secrets):
+                    nonlocal cleaned
+                    if label == 'run':
+                        shutil.copytree(raw/'raw', directory/'raw')
+                        write_json(directory/'run.command.json', command)
+                        return command
+                    value = real_execute(spec, context, directory, label, secrets)
+                    if label == boundary:
+                        (self.root/'arm.py').write_text('changed after execution\n')
+                    if label == 'cleanup': cleaned = True
+                    return value
+                def protect(bundle, directory):
+                    real_protect(bundle, directory)
+                    if boundary == 'protect' and cleaned: raise ValueError('constructed final protection failure')
+                with patch('tool.execute',side_effect=execute), patch('tool.protect',side_effect=protect):
+                    collect(bundle, registration)
+                result = analyze(bundle, self.root/('analysis-'+boundary))
+                self.assertEqual(result['slots'][0]['status'], 'operational_failed')
+                self.assertTrue(any('pin changed' in r or 'protection failure' in r for r in result['slots'][0]['reasons']))
+                self.assertTrue(read_json(bundle/'slots'/slot['id']/'slot.json')['cleanup_proven'])
+                self.assertEqual(sum(s['status']=='not_started' for s in result['slots']),599)
+                with self.assertRaisesRegex(ValueError,'stopped'): collect(bundle, registration)
+                shutil.rmtree(bundle); shutil.rmtree(raw)
+
+    def test_discovery_must_be_final_explored_execution(self):
+        root, slot, command, expected = self.product_raw('T-E', saved_index=2)
+        self.assertTrue(product(root,slot,command,expected)['stable_confirmation'])
+        for count in (0, 1, 2, 4):
+            with self.subTest(explored_count=count):
+                shutil.rmtree(root)
+                root, slot, command, expected = self.product_raw('T-E', explored_count=count, saved_index=2)
+                evidence = product(root, slot, command, expected)
+                self.assertIn('discovery schedule differs from final explored execution', evidence['quality_reasons'])
+                self.assertFalse(evidence['stable_confirmation'])
+                self.assertIsNone(evidence['first_event_seconds'])
+
+    def test_exhausted_search_requires_clean_outcome(self):
+        root, slot, command, expected = self.product_raw('T-E', exhausted=True)
+        directory = root/'raw/runs/constructed'
+        original = read_json(directory/'observation.json')
+        self.assertFalse(product(root,slot,command,expected)['quality_reasons'])
+        for changes, code in (({'violation_runs':2,'assertion_violations':[{'oracle_id':WORKLOADS['matching'][2], 'rows':[{'synthetic':1}]}]},2),
+                              ({'violation_runs':1},0), ({'assertion_violations':[{'oracle_id':WORKLOADS['matching'][2],'rows':[{'synthetic':1}]}]},2),
+                              ({},2), ({'flaky':True},3)):
+            with self.subTest(changes=changes, exit=code):
+                observation = dict(original, **changes)
+                merged = read_json(directory/'report.json'); merged['observation'] = observation
+                write_json(directory/'report.json',merged); write_json(directory/'observation.json',observation)
+                evidence = product(root,slot,dict(command,exit=code),expected)
+                self.assertIn('exhausted search has non-clean outcome', evidence['quality_reasons'])
+                self.assertFalse(evidence['unexpected_miss'])
+
+    def test_analysis_excludes_collector_for_entire_reduction(self):
+        bundle, _ = self.bundle()
+        with (bundle/'.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError): analyze(bundle, self.root/'blocked')
+        from analyze import reduce_slot as real_reduce
+        checked = []
+        def reduce(root, slot, manifest):
+            if slot['ordinal'] in (1,600):
+                with self.assertRaises(BlockingIOError): collect(bundle,max_slots=1)
+                with (bundle/'.lock').open('r') as reader:
+                    fcntl.flock(reader, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                checked.append(slot['ordinal'])
+            return real_reduce(root,slot,manifest)
+        with patch('analyze.reduce_slot', side_effect=reduce): analyze(bundle,self.root/'analysis')
+        self.assertEqual(checked,[1,600])
+        with (bundle/'.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertFalse((self.root/'blocked').exists())
+
     def measurement_manifest(self):
         m=self.manifest()
         m['phase']='measurement'
         m['fixture_revision']='e1bd8ba3fc07d024b8cb4037aa2263d24044dbb0'
         identity=digest(sys.executable)
-        m['candidate']={'cli_sha256':identity,'sdk_sha256':identity}
+        classes = self.root/'fixture-classes'; classes.mkdir(exist_ok=True)
+        business = classes/'io/github/weavegate/fixture/constructed/Business.class'
+        business.parent.mkdir(parents=True, exist_ok=True); business.write_bytes(b'constructed business class')
+        sdk = self.root/'weavegate-spring-constructed.jar'
+        with zipfile.ZipFile(sdk, 'w') as archive:
+            archive.writestr('io/github/weavegate/sdk/Weavegate.class', b'constructed SDK class')
+        jar = self.root/'fixture.jar'
+        with zipfile.ZipFile(jar, 'w') as archive:
+            archive.write(business, 'BOOT-INF/classes/'+str(business.relative_to(classes)))
+            archive.write(sdk, 'BOOT-INF/lib/'+sdk.name)
+        for p in (business,sdk,jar): m['pins'][str(p)] = digest(p)
+        m['candidate']={'cli_sha256':identity,'sdk_sha256':digest(sdk)}
         m['e1_registration']=dict(m['candidate'],url='https://example.com/constructed',revision='constructed')
         m['environment']={'host_id':'constructed','vm_image':'constructed','cpu_model':'constructed',
             'kernel':'constructed','docker':'constructed','background_policy':'constructed',
@@ -685,9 +862,15 @@ class RunnerTests(unittest.TestCase):
         m['prerequisites']={k:str(self.root/'arm.py') for k in ('go_acceptance','java_acceptance','paired_acceptance','corpus_acceptance','baseline_feasibility')}
         for values in m['inputs'].values():
             for inp in values.values():
-                inp['counts']={'B1':20,'B2':100,'T-R':20};inp['sdk_sha256']=identity
+                inp['counts']={'B1':20,'B2':100,'T-R':20};inp['sdk_sha256']=digest(sdk)
+                inp['business_classes']={str(business.relative_to(classes)):digest(business)}
+                inp['jar_sha256']=digest(jar)
                 inp['config']['Target']['Schema'] = {'Migrations':str(self.root/'arm.py'), 'Seed':str(self.root/'arm.py')}
-                inp['config']['Target']['SUT']['External'].update(Java=str(Path(sys.executable).resolve()), JAR=str(self.root/'arm.py'))
+                inp['config']['Target']['SUT']['External'].update(Java=str(Path(sys.executable).resolve()), JAR=str(jar))
+        for variants in m['commands'].values():
+            for commands in variants.values():
+                for arm in ('B0','B1','B2'):
+                    commands[arm]['argv'] += ['--classpath', os.pathsep.join(map(str,[classes,sdk]))]
         hook=self.root/'hook.py'
         hook.write_text("""import sys,json,hashlib
 from pathlib import Path

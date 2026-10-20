@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import os
+import re
 import shutil
 import time
 from support import *
@@ -47,7 +48,7 @@ def validate(m):
                 'protocol resource caps required')
         for key in ('host_id', 'vm_image', 'cpu_model', 'kernel', 'docker', 'background_policy'):
             require(m['environment'].get(key), 'missing environment identity: ' + key)
-        require('@sha256:' in m['environment']['mysql_image'], 'MySQL digest required')
+        require(re.fullmatch(r'.+@sha256:[0-9a-f]{64}', m['environment']['mysql_image']), 'MySQL digest required')
         require(m['candidate']['cli_sha256'] == m['e1_registration']['cli_sha256']
                 and m['candidate']['sdk_sha256'] == m['e1_registration']['sdk_sha256'], 'E1 candidate identity differs')
         require(m['candidate']['cli_sha256'] in m['pins'].values(), 'candidate binary absent from pins')
@@ -251,10 +252,11 @@ def collect(bundle, registration=None, max_slots=None):
                                 state['cleanup_proven'] = False
                                 state['cleanup_error'] = str(error)
                     if state['cleanup_proven'] is not True: stop_reason = 'allocation cleanup unproven'
-                try: live_pins(m)
-                except ValueError as error: stop_reason = str(error)
-                try: protect(bundle, directory)
-                except (ValueError, OSError) as error: stop_reason = str(error)
+                for check in (lambda: live_pins(m), lambda: protect(bundle, directory)):
+                    try: check()
+                    except (ValueError, OSError) as error:
+                        stop_reason = str(error)
+                        state.setdefault('integrity_errors', []).append(stop_reason)
                 state['ended_at'] = utc()
                 stopped = {'reason': stop_reason, 'slot': slot['id'], 'at': utc()} if stop_reason else None
                 state['stop'] = stopped

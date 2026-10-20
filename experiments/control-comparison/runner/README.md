@@ -127,7 +127,14 @@ automatic confirmation. Freeze commands and all their transitive inputs.
 Measurement validation checks literal argv/environment files, classpath
 directories and Java `lib/*` entries, plus the effective config's Java executable,
 JAR, migrations and seed. These checks repeat at live-input boundaries so adding
-an unpinned class or library after freeze also stops collection. Effective config
+an unpinned class or library after freeze also stops collection. Baseline commands
+declare exactly one explicit `--classpath` (directory/JAR entries or Java `lib/*`).
+The complete fixture class inventory and the SDK JAR on that classpath must match
+`business_classes` and `sdk_sha256`; duplicate or shadow fixture/SDK classes fail
+validation even when pinned. The application JAR must match `jar_sha256`, and its
+embedded fixture classes and SDK must match those same identities. Measurement
+configs must all use `environment.mysql_image`, including its SHA-256 digest.
+Baseline and product receipts must retain that same image identity. Effective config
 snapshots must describe the command's actual config; dynamic imports, subprocess
 lookup and other runtime dependencies still require explicit pins and audit. A
 measurement T command invokes the registered CLI directly; transport wrappers
@@ -204,6 +211,8 @@ pins, changed registration and stopped campaigns are rejected. Unproven cleanup
 quarantines the allocation and preserves remaining slots as not started. A new
 feasibility ID is required for diagnostic reruns. `--max-slots` exists only for
 feasibility, including the automated five-arm check above.
+Final input or evidence integrity failures are sealed on the active slot as
+operational errors and also stop the campaign, even when cleanup succeeds.
 
 The sealed `progress/checkpoint.json` records the consumed slot seals, any active
 attempt, registration identity, completion and stop state. A slot also seals its
@@ -221,6 +230,9 @@ it does not run Java, Go, Docker or registered hooks. `results.json` contains al
 disclosures, stage durations and within-block pairs. `report.md` renders the
 stratified accounting and timing table. Regenerating into another new directory
 produces byte-identical files. Corrupt or missing sealed originals fail analysis.
+Analysis holds a shared campaign lock through validation, reduction and output
+writing. It fails immediately while collection holds the exclusive lock;
+concurrent analyses may use separate output directories.
 Baseline receipts must match the requested arm and variant. Product observations
 must declare `replay` for T-R and `explore` for T-E, including warm-up. Evidence
 from another slot or mode cannot count as a completed observation.
@@ -232,6 +244,11 @@ The collector observes baseline execution JSON every 100 ms and retains its
 receipt times/hashes. Publication and polling delay remain visible. Product
 discovery is retrospective: its original `oracle_evaluate` span is mapped to
 the discovered schedule and checked against the retained discovery fingerprint.
+The saved discovery must be the final explored execution. A missing or different
+candidate is a quality failure and cannot receive stable confirmation. An
+exhausted search requires zero violation runs, no assertion violations, a
+non-flaky outcome and exit zero; contradictory evidence cannot count as an
+unexpected miss.
 Unknown alignment uses the protocol's interval bounds; absent or ambiguous
 timing stays unknown. Domain discovery, receipt of usable evidence, stable
 confirmation and clean final completion are separate fields.
