@@ -131,6 +131,81 @@ def domain_expectations(manifest):
                     'domain row expectation differs from protocol')
 
 
+PREREQUISITES = ('go_acceptance', 'java_acceptance', 'paired_acceptance',
+                 'corpus_acceptance', 'baseline_feasibility')
+
+
+def prerequisite_markers(kind):
+    if kind == 'baseline_feasibility':
+        return ['E5_BASELINE_RESULT workload=%s variant=%s executions=20 proxy=original hooks=inactive oracle=existing resets=checked cleanup=proved'
+                % (workload, variant) for workload in WORKLOADS for variant in ('vulnerable', 'fixed')]
+    if kind == 'corpus_acceptance':
+        markers = []
+        for fixture in ('spring-quota', 'spring-job-claim'):
+            for order in ('serial', 'overlap'):
+                for variant in ('vulnerable', 'fixed'):
+                    violation = order == 'overlap' and variant == 'vulnerable'
+                    markers.append('SPRING_CORPUS_RESULT fixture=%s order=%s variant=%s repeat=20 exit=%d violation_runs=%d fingerprints=1 requested=realized timeouts=0 resets=checked jvm=reaped connections=closed'
+                                   % (fixture, order, variant, 2 if violation else 0, 20 if violation else 0))
+        return markers
+    return []
+
+
+def prerequisite_completion(manifest, retained=None):
+    """Check retained completion records; execution provenance still needs audit."""
+    if manifest['phase'] != 'measurement': return
+    candidate = manifest['candidate']
+    require(re.fullmatch(r'[0-9a-f]{40}', candidate.get('source_revision', '')) is not None
+            and candidate['source_revision'] == manifest['e1_registration'].get('source_revision'),
+            'candidate source revision differs from E1 registration')
+    require(set(manifest['prerequisites']) == set(PREREQUISITES), 'prerequisite inventory differs')
+    def pinned(path):
+        require(path in manifest['pins'], 'prerequisite file is unpinned: ' + str(path))
+        actual = Path(path) if retained is None else retained / manifest['pins'][path]
+        require(digest(actual) == manifest['pins'][path], 'prerequisite bytes differ')
+        return actual
+    for kind in PREREQUISITES:
+        record = read_json(pinned(manifest['prerequisites'][kind]))
+        require(type(record.get('schema')) is int and record['schema'] == 1
+                and record.get('kind') == kind, 'prerequisite completion record required: ' + kind)
+        require(json_equal(record.get('candidate'), candidate)
+                and record.get('fixture_revision') == manifest['fixture_revision'],
+                'prerequisite candidate/fixture identity differs: ' + kind)
+        command = read_json(pinned(record['command']))
+        require(succeeded(command) and command.get('containment_proven') is True,
+                'prerequisite command did not complete successfully: ' + kind)
+        output = pinned(record['stdout']).read_text()
+        for marker in prerequisite_markers(kind):
+            require(marker in output, 'prerequisite result marker missing: ' + marker)
+        if kind in ('go_acceptance', 'java_acceptance', 'paired_acceptance'):
+            target = kind.split('_')[0]
+            argv = command['argv']
+            require('--require-complete' in argv
+                    and any(Path(a).name == 'check-external-sut-acceptance.py' for a in argv)
+                    and argv.count('--results') == 1
+                    and argv.index('--results') + 1 < len(argv)
+                    and argv[argv.index('--results') + 1] == record['results'],
+                    'prerequisite require-complete command missing: ' + kind)
+            require(re.search(r'EXTERNAL_SUT_ACCEPTANCE_RESULT target=' + target
+                              + r' manifest=valid acceptance=complete pass=[1-9][0-9]* fail=0 incomplete=0(?:\s|$)',
+                              output), 'prerequisite acceptance is incomplete: ' + kind)
+            result = read_json(pinned(record['results']))
+            require(result.get('target') == target and result['run']['revision'] == candidate['source_revision']
+                    and type(result['run']['repetitions']) is int and result['run']['repetitions'] >= 20,
+                    'prerequisite acceptance identity/repetitions differ: ' + kind)
+            rows = result['results']
+            require(rows and all(r['status'] == 'pass' and r['checks']
+                                and all(c['status'] == 'pass' for c in r['checks'].values())
+                                for r in rows.values()), 'prerequisite acceptance checks incomplete: ' + kind)
+            artifacts = result['run']['artifacts']
+            require(isinstance(artifacts, dict) and artifacts, 'prerequisite original artifacts missing')
+            for artifact in artifacts.values():
+                path = Path(record['results']).parent / artifact['path']
+                require(not Path(artifact['path']).is_absolute() and '..' not in Path(artifact['path']).parts,
+                        'prerequisite artifact escapes evidence directory')
+                require(digest(pinned(str(path))) == artifact['sha256'], 'prerequisite artifact digest differs')
+
+
 def command_valid(spec):
     require(isinstance(spec, dict) and isinstance(spec.get('argv'), list) and spec['argv'], 'command argv required')
     require(all(isinstance(a, str) and '\0' not in a for a in spec['argv']), 'invalid argv')
@@ -243,6 +318,7 @@ def file_dependencies(spec, pins, label, inputs=()):
 
 
 def measurement_dependencies(manifest):
+    prerequisite_completion(manifest)
     for workload, variants in manifest['commands'].items():
         for variant, commands in variants.items():
             expected = manifest['inputs'][workload][variant]

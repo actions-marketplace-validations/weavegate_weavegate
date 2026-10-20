@@ -152,9 +152,38 @@ This reference build is not E1 registration or acceptance evidence.
 | `commands` | Every workload/variant and B0/B1/B2/T-R/T-E command, including exact `argv`, absolute `cwd`, explicit `env`, timeout and cleanup grace |
 | `candidate`, `e1_registration` | Matching CLI/SDK digests, source revision and E1 public registration URL/revision |
 | `environment` | `host_id`, `vm_image`, `cpu_model`, `kernel`, `docker`, `background_policy`, `mysql_image`, `vcpus: 4`, `memory_bytes: 17179869184` |
-| `prerequisites` | Pinned paths for `go_acceptance`, `java_acceptance`, `paired_acceptance`, `corpus_acceptance`, `baseline_feasibility` |
+| `prerequisites` | Pinned completion-record paths for `go_acceptance`, `java_acceptance`, `paired_acceptance`, `corpus_acceptance`, `baseline_feasibility` |
 | `hooks` | `prepare`, `warm_cleanup`, `observe`, `cleanup` command specifications; cleanup declares its trusted `execution_pins` subset |
 | `unsupported` | Optional workload/arm to issue URL and reason; planned denominators are retained |
+
+Each prerequisite completion record contains `schema: 1`, its `kind`, the exact
+`candidate` object (CLI/SDK digests and `source_revision`), `fixture_revision`,
+and absolute `command` and `stdout` paths. The command path identifies an original
+collector-style JSON receipt with `argv`, `started`, `finished`, `interrupted`,
+`exit`, `timeout`, `error` and `containment_proven`. Only successful, finished,
+contained commands qualify. The record, receipt, output and referenced originals
+must all be pinned and retained before freeze. Candidate `source_revision` must
+match E1 registration's `source_revision`.
+
+Go, Java and paired records also name `results`, the original acceptance manifest.
+Their command must invoke `check-external-sut-acceptance.py` with
+`--results <that-path> --require-complete`; its output must report complete
+acceptance for the correct target. The acceptance manifest must report that
+candidate source revision, at least 20 repetitions, passing checks and
+hash-matching original artifacts. Corpus output must contain all eight existing
+schedule/variant result markers with repeat 20. Baseline feasibility output must
+contain all six workload/variant result markers with 20 executions and the proxy,
+inactive-hook, reset and cleanup checks. Freeze and live validation check these
+records; offline analysis checks their retained bytes without accessing the
+original machine.
+
+These checks authenticate the recorded completion and identities, not the truth
+of an externally supplied execution history. The existing acceptance checker
+owns its complete check inventory, and independent audit still establishes
+that the recorded commands actually ran against the registered candidate.
+Baseline source and compiled artifacts are likewise reviewed and registered per
+campaign before collection, as required by the protocol; no universal baseline
+binary digest is established by revision 1.
 
 Baseline counts are 20/100; T replay is 20 and exploration is three passes with
 automatic confirmation. Freeze commands and all their transitive inputs.
@@ -200,7 +229,7 @@ Exit zero or an unsubstantiated boolean is insufficient.
 | Hook | Required retained receipt |
 | --- | --- |
 | `prepare` | `preparation.json`: registered `host_id`, `disk_image`, `fresh_memory: true`, `clean_data: true`, observed caps |
-| `warm_cleanup` | After the one warm-up, `warm-cleanup.json`: `outputs_removed: true`, `data_removed: true`, `cache_preserved: true` |
+| `warm_cleanup` | After the one warm-up, `warm-cleanup.json`: `outputs_removed: true`, `data_removed: true`, `cache_preserved: true`, `warmup_command_sha256`, `startup_caches` |
 | `observe` | `observation.json`: registered `host_id`, `resources`, original runtime/version/cache/counter evidence |
 | `cleanup` | `cleanup.json`: `proven: true` plus newly retained proof of child exit, retired connections and fixture removal |
 
@@ -225,6 +254,17 @@ domain-violation exit 2 remain valid. A failed warm-up consumes the slot as
 preparation-failed before the measured command can run. Hooks must preserve
 evidence outside the restored image and verify no live database/data volume
 remains.
+
+The warm cleanup receipt binds to the SHA-256 of that slot's original
+`warmup/run.command.json`. Its `startup_caches` list explicitly records any
+generated startup caches. Each entry names `path`, `key`, `size_bytes`, `sha256`,
+`construction_seconds`, `invalidation`, and a `proof` path in the receipt's fresh
+evidence inventory. Missing metadata, duplicate paths and references to another
+warm-up are rejected before measurement. The inventory may be empty: revision 1
+defines warm by the common priming invocation and preserved guest filesystem
+cache, and does not require a generated startup-cache artifact. The trusted hook
+and independent audit establish actual guest cache preservation.
+
 Resource values unavailable at the aggregate scope are null with reasons. Report
 sampled memory at 100 ms with its missed-peak limitation. The schema checks and
 hashes cannot independently establish that a VM was restored, that a prerequisite
@@ -343,6 +383,10 @@ and the started-duration statistics. Complete-pair cost summaries use paired dif
 difference of medians. B2 retains attempted/valid/violating counts, `x/m`,
 `x/planned`, and missing exposure. Repeated executions are not independent host
 samples. Results carry no confidence intervals or significance claims.
+The report's `Baseline exposure / 10` column shows B1/B2 blocks with at least one
+valid evaluation beside the planned detection denominator. Zero usable exposure
+is therefore visible even when the detection count is also zero; other arms show
+`N/A` in this baseline-only column.
 
 This infrastructure does not publish E5 measurements, update E1 figures or add
 a README comparison table. Those follow the registered campaign and its audit.

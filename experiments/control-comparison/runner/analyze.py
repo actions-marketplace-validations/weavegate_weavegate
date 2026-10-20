@@ -370,6 +370,7 @@ def analyze_locked(bundle, output, check_lock):
     frozen_sources(bundle)
     manifest = read_json(bundle / 'frozen' / 'manifest.json')
     domain_expectations(manifest)
+    prerequisite_completion(manifest, bundle / 'frozen' / 'inputs')
     if manifest['phase'] == 'measurement':
         require(all(inp['config']['Target'].get('DB') == manifest['environment']['mysql_image']
                     for variants in manifest['inputs'].values() for inp in variants.values()),
@@ -437,15 +438,16 @@ def analyze_locked(bundle, output, check_lock):
     write_json(output / 'results.json', payload)
     lines = ['# E5 retained evidence', '', 'Phase: ' + manifest['phase'] + '. Same-host descriptive data only.',
              'p90 uses interpolation; at n=10 it is not a population tail estimate.', '',
-             '| Workload | Variant | Cache | Arm | Complete / planned | Failures / missing | Median seconds (n) | p90 | Detection / 10 |',
-             '| --- | --- | --- | --- | --- | --- | --- | --- | --- |']
+             '| Workload | Variant | Cache | Arm | Complete / planned | Failures / missing | Median seconds (n) | p90 | Detection / 10 | Baseline exposure / 10 |',
+             '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |']
     def fmt(v): return 'N/A' if v is None else '%.6f' % v
     for c in cells:
         s = c['invocation_seconds']
-        lines.append('| %s | %s | %s | %s | %d / 10 | %s | %s (%d) | %s | %d / 10 |' % (
+        lines.append('| %s | %s | %s | %s | %d / 10 | %s | %s (%d) | %s | %d / 10 | %s |' % (
             c['workload'], c['variant'], c['cache'], c['arm'], c['statuses']['complete'],
             ', '.join(k + '=' + str(v) for k,v in c['statuses'].items() if k != 'complete' and v),
-            fmt(s['median']), s['n'], fmt(s['p90']), c['observed_detections']))
+            fmt(s['median']), s['n'], fmt(s['p90']), c['observed_detections'],
+            '%d / 10' % c['valid_exposure_blocks'] if c['arm'] in ('B1','B2') else 'N/A'))
     lines += ['', '## Paired cost', '',
               '| Workload | Variant | Cache | T-R minus B1 median seconds (n) | Ratio median (n) | T complete / 10 |',
               '| --- | --- | --- | --- | --- | --- |']

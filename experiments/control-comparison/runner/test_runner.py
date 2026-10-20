@@ -673,6 +673,7 @@ class RunnerTests(unittest.TestCase):
             for inp in variants.values():
                 inp.update(sdk_sha256=digest(sdk), jar_sha256=digest(jar))
         m['candidate']['sdk_sha256'] = m['e1_registration']['sdk_sha256'] = digest(sdk)
+        self.write_prerequisites(m)
         self.assertNotEqual(self.library_reference['libraries']['matching'][sdk.name], digest(sdk))
         validate(m)
 
@@ -796,7 +797,7 @@ class RunnerTests(unittest.TestCase):
                 collect(bundle, registration)
             execute.assert_not_called()
 
-    def warm_collection(self, receipt_change):
+    def warm_collection(self, receipt_change, cache_change=None):
         m = self.measurement_manifest()
         warm = next(s for s in order() if s['cache'] == 'warm')
         # Retain the preceding consumed prefix without spending runtime on it.
@@ -815,10 +816,17 @@ class RunnerTests(unittest.TestCase):
         def execute(spec, context, directory, label, secrets):
             calls.append((label,directory.name))
             if directory.name == 'warmup':
-                return dict({'seconds':1, 'exit':2, 'timeout':False, 'error':None, 'started':True, 'finished':True,
-                             'interrupted':False, 'containment_proven':True}, **receipt_change)
+                value = dict({'seconds':1, 'exit':2, 'timeout':False, 'error':None, 'started':True, 'finished':True,
+                              'interrupted':False, 'containment_proven':True}, **receipt_change)
+                write_json(directory/'run.command.json',value)
+                return value
             if label == 'cleanup': raise KeyboardInterrupt('end constructed test')
-            return real_execute(spec, context, directory, label, secrets)
+            value = real_execute(spec, context, directory, label, secrets)
+            if label == 'warm-cleanup' and cache_change:
+                receipt = read_json(directory/'warm-cleanup.json')
+                cache_change(receipt)
+                write_json(directory/'warm-cleanup.json',receipt)
+            return value
         with patch('tool.execute', side_effect=execute), patch('analyze.product', return_value={
                 'cleanup_proven':True, 'quality_reasons':[], 'operational_reasons':[]}):
             collect(bundle, registration)
@@ -841,8 +849,102 @@ class RunnerTests(unittest.TestCase):
             with self.subTest(exit=code):
                 state, calls = self.warm_collection({'exit':code})
                 self.assertEqual(state['warmup']['exit'], code)
+                self.assertEqual(state['warmup']['startup_caches'], [])
                 self.assertIn(('warm-cleanup',state['slot']['id']), calls)
             shutil.rmtree(self.root/'measurement')
+
+    def test_warm_cache_inventory_is_bound_to_this_warmup(self):
+        for change in ('missing', 'wrong-warmup', 'metadata', 'proof'):
+            with self.subTest(change=change):
+                def alter(receipt):
+                    if change == 'missing': receipt.pop('startup_caches')
+                    elif change == 'wrong-warmup': receipt['warmup_command_sha256'] = 'a'*64
+                    else:
+                        cache = {'path':'/guest/generated.cache', 'key':'candidate-key', 'sha256':'b'*64,
+                                 'size_bytes':12, 'construction_seconds':.5, 'invalidation':'candidate digest changes',
+                                 'proof':'proof/warm_cleanup.json'}
+                        if change == 'metadata': cache.pop('key')
+                        if change == 'proof': cache['proof'] = 'proof/absent.json'
+                        receipt['startup_caches'] = [cache]
+                state, calls = self.warm_collection({}, alter)
+                self.assertIn('error',state)
+                self.assertIn('warm',state['error'])
+                self.assertNotIn(('run',state['slot']['id']), calls)
+                self.assertNotIn('startup_caches',state['warmup'])
+            shutil.rmtree(self.root/'measurement')
+
+    def test_generated_warm_cache_metadata_is_retained(self):
+        cache = {'path':'/guest/generated.cache', 'key':'candidate-key', 'sha256':'b'*64,
+                 'size_bytes':12, 'construction_seconds':.5, 'invalidation':'candidate digest changes',
+                 'proof':'proof/warm_cleanup.json'}
+        state, calls = self.warm_collection({}, lambda r:r.update(startup_caches=[cache]))
+        self.assertEqual(state['warmup']['startup_caches'],[cache])
+        self.assertIn(('run',state['slot']['id']),calls)
+
+    def test_prerequisites_require_candidate_bound_successful_completion(self):
+        m = self.measurement_manifest()
+        for kind in PREREQUISITES:
+            for change in ('arbitrary', 'candidate', 'failed', 'marker'):
+                with self.subTest(kind=kind, change=change):
+                    changed = copy.deepcopy(m)
+                    path = Path(m['prerequisites'][kind])
+                    record = read_json(path)
+                    if change == 'arbitrary':
+                        changed['prerequisites'][kind] = str(self.root/'arm.py')
+                    elif change == 'candidate':
+                        record['candidate']['cli_sha256'] = 'f'*64
+                        write_json(path,record); changed['pins'][str(path)] = digest(path)
+                    elif change == 'failed':
+                        command = read_json(record['command']); command['exit'] = 1
+                        write_json(record['command'],command)
+                        changed['pins'][record['command']] = digest(record['command'])
+                    else:
+                        Path(record['stdout']).write_text('incomplete\n')
+                        changed['pins'][record['stdout']] = digest(record['stdout'])
+                    with self.assertRaises((ValueError, KeyError)):
+                        validate(changed)
+                self.write_prerequisites(m)
+
+    def test_acceptance_prerequisites_require_complete_checker_and_repetitions(self):
+        m = self.measurement_manifest()
+        for change in ('checker', 'result', 'repetitions', 'revision', 'artifact'):
+            with self.subTest(change=change):
+                record = read_json(m['prerequisites']['go_acceptance'])
+                path = record['command'] if change == 'checker' else record['results']
+                value = read_json(path)
+                if change == 'checker': value['argv'].remove('--require-complete')
+                elif change == 'result': value['results']['constructed']['status'] = 'incomplete'
+                elif change == 'repetitions': value['run']['repetitions'] = 1
+                elif change == 'revision': value['run']['revision'] = 'b'*40
+                else: value['run']['artifacts']['stdout']['sha256'] = 'b'*64
+                write_json(path,value); m['pins'][path] = digest(path)
+                with self.assertRaisesRegex(ValueError,'prerequisite'): validate(m)
+            self.write_prerequisites(m)
+
+    def test_prerequisite_completion_is_checked_from_retained_bytes_offline(self):
+        m = self.measurement_manifest()
+        bundle, _ = self.measurement_bundle(m)
+        shutil.rmtree(self.root/'prerequisites')
+        analyze(bundle,self.root/'analysis')
+        record = read_json(bundle/'frozen/inputs'/m['pins'][m['prerequisites']['go_acceptance']])
+        path = bundle/'frozen/inputs'/m['pins'][record['stdout']]
+        path.write_text('replaced completion')
+        with self.assertRaises(ValueError): analyze(bundle,self.root/'bad-analysis')
+
+    def test_report_shows_baseline_exposure_beside_planned_detections(self):
+        bundle, _ = self.bundle()
+        for valid in (0,2):
+            def reduce(root,slot,manifest):
+                selected = (slot['workload'],slot['variant'],slot['cache'],slot['arm']) == ('matching','fixed','cold','B2')
+                return dict(slot, started=selected, reasons=[], invocation_seconds=1 if selected else None,
+                            status=('complete' if valid else 'operational_failed') if selected else 'not_started',
+                            valid_evaluations=valid if selected else 0)
+            output = self.root/('exposure-'+str(valid))
+            with patch('analyze.reduce_slot',side_effect=reduce): analyze(bundle,output)
+            text = (output/'report.md').read_text()
+            self.assertIn('Baseline exposure / 10',text)
+            row = next(line for line in text.splitlines() if line.startswith('| matching | fixed | cold | B2 |'))
+            self.assertTrue(row.endswith('| 0 / 10 | %d / 10 |' % (10 if valid else 0)))
 
     def test_observation_hook_cannot_reuse_preparation_proof(self):
         bundle, registration = self.measurement_bundle()
@@ -1415,12 +1517,12 @@ class RunnerTests(unittest.TestCase):
             archive.write(sdk, 'BOOT-INF/lib/'+sdk.name)
             archive.write(library, 'BOOT-INF/lib/'+library.name)
         for p in (business,sdk,library,jar): m['pins'][str(p)] = digest(p)
-        m['candidate']={'cli_sha256':identity,'sdk_sha256':digest(sdk)}
+        m['candidate']={'cli_sha256':identity,'sdk_sha256':digest(sdk),'source_revision':'a'*40}
         m['e1_registration']=dict(m['candidate'],url='https://example.com/constructed',revision='constructed')
         m['environment']={'host_id':'constructed','vm_image':'constructed','cpu_model':'constructed',
             'kernel':'constructed','docker':'constructed','background_policy':'constructed',
             'mysql_image':'mysql:8.4@sha256:'+'a'*64,'vcpus':4,'memory_bytes':16*1024**3}
-        m['prerequisites']={k:str(self.root/'arm.py') for k in ('go_acceptance','java_acceptance','paired_acceptance','corpus_acceptance','baseline_feasibility')}
+        self.write_prerequisites(m)
         migrations = self.root/'migrations'; migrations.mkdir(exist_ok=True)
         (migrations/'001.sql').write_text('constructed migration')
         seed = self.root/'seed.sql'; seed.write_text('constructed seed')
@@ -1465,6 +1567,9 @@ if stage=='prepare':
  v.update(host_id='constructed',disk_image='constructed',fresh_memory=True,clean_data=True,vcpus=4,memory_bytes=16*1024**3)
 if stage=='observe':v.update(host_id='constructed',resources={'cpu_seconds':None,'reason':'constructed'})
 if stage=='cleanup':v.update(proven=True)
+if stage=='warm_cleanup':
+ v.update(outputs_removed=True,data_removed=True,cache_preserved=True,startup_caches=[],
+          warmup_command_sha256=hashlib.sha256((p/'warmup/run.command.json').read_bytes()).hexdigest())
 name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_cleanup':'warm-cleanup'}[stage]
 (p/(name+'.json')).write_text(json.dumps(v))
 """)
@@ -1474,6 +1579,33 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
             'cwd':str(self.root),'env':{},'timeout_seconds':10} for k in ('prepare','observe','cleanup','warm_cleanup')}
         m['hooks']['cleanup']['execution_pins']=[executable,str(hook)]
         return m
+
+    def write_prerequisites(self,m):
+        directory = self.root/'prerequisites'; directory.mkdir(exist_ok=True)
+        m['prerequisites'] = {}
+        for kind in PREREQUISITES:
+            base = directory/kind
+            command, stdout, results, record = [str(base)+suffix for suffix in ('.command.json','.stdout','.results.json','.json')]
+            value = {'schema':1, 'kind':kind, 'candidate':m['candidate'],
+                     'fixture_revision':m['fixture_revision'], 'command':command, 'stdout':stdout}
+            argv = ['constructed-command']
+            markers = prerequisite_markers(kind)
+            if kind in ('go_acceptance','java_acceptance','paired_acceptance'):
+                target = kind.split('_')[0]
+                argv = ['python3','check-external-sut-acceptance.py','--results',results,'--require-complete']
+                markers = ['EXTERNAL_SUT_ACCEPTANCE_RESULT target='+target+' manifest=valid acceptance=complete pass=1 fail=0 incomplete=0']
+                value['results'] = results
+            Path(stdout).write_text('\n'.join(markers)+'\n')
+            write_json(command,{'argv':argv,'started':True,'finished':True,'interrupted':False,
+                                'exit':0,'error':None,'timeout':False,'containment_proven':True})
+            if 'results' in value:
+                write_json(results,{'target':target,
+                    'run':{'revision':m['candidate']['source_revision'],'repetitions':20,
+                           'artifacts':{'stdout':{'path':Path(stdout).name,'sha256':digest(stdout)}}},
+                    'results':{'constructed':{'status':'pass','checks':{'check':{'status':'pass'}}}}})
+            write_json(record,value)
+            m['prerequisites'][kind] = record
+        for path in files(directory): m['pins'][str(path)] = digest(path)
 
     def measurement_bundle(self, m=None):
         m = m or self.measurement_manifest()

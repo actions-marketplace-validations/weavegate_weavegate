@@ -6,6 +6,7 @@ import re
 import shutil
 import time
 import signal
+import math
 from contextlib import ExitStack
 from support import *
 from analyze import analyze, reduce_slot
@@ -102,6 +103,27 @@ def proof(directory, filename, expected, previous=None):
         require(previous is None or name not in previous, filename + ' proof must be newly retained')
         require(digest(child(directory, name)) == checksum, filename + ' original differs')
     return receipt
+
+
+def warm_cache(receipt, directory):
+    require(receipt.get('warmup_command_sha256') == digest(directory / 'warmup' / 'run.command.json'),
+            'warm cache receipt differs from this warm-up')
+    caches = receipt.get('startup_caches')
+    require(isinstance(caches, list), 'warm startup cache inventory required (empty when none generated)')
+    paths = set()
+    for cache in caches:
+        require(isinstance(cache, dict) and all(isinstance(cache.get(k), str) and cache[k].strip()
+                                               for k in ('path', 'key', 'invalidation', 'proof')),
+                'warm startup cache identity required')
+        require(cache['path'] not in paths, 'duplicate warm startup cache')
+        paths.add(cache['path'])
+        require(type(cache.get('size_bytes')) is int and cache['size_bytes'] >= 0
+                and re.fullmatch(r'[0-9a-f]{64}', cache.get('sha256', '')) is not None,
+                'warm startup cache size/digest required')
+        duration = cache.get('construction_seconds')
+        require(type(duration) in (int, float) and math.isfinite(duration) and duration >= 0,
+                'warm startup cache construction time required')
+        require(cache['proof'] in receipt['evidence'], 'warm startup cache proof missing')
 
 
 def protect(bundle, active):
@@ -214,8 +236,10 @@ def collect_locked(bundle, registration, max_slots):
                                 before = inventory(directory)
                                 cleanup = execute(m['hooks']['warm_cleanup'], context, directory, 'warm-cleanup', [])
                                 require(succeeded(cleanup), 'warm-up output/data cleanup failed')
-                                proof(directory, 'warm-cleanup.json', {'outputs_removed': True, 'data_removed': True,
-                                      'cache_preserved': True}, previous=before)
+                                receipt = proof(directory, 'warm-cleanup.json', {'outputs_removed': True, 'data_removed': True,
+                                                'cache_preserved': True}, previous=before)
+                                warm_cache(receipt, directory)
+                                state['warmup']['startup_caches'] = receipt['startup_caches']
                                 unchanged(directory, before)
                             check_boundary()
                         live_pins(m)
