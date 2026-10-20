@@ -14,3 +14,5 @@ baseline*.log
 
 # Spring fixture build output
 /fixtures/spring-matching/app/target/
+/fixtures/spring-quota/app/target/
+/fixtures/spring-job-claim/app/target/

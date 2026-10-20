@@ -1,0 +1,631 @@
+{
+  "baseline_commit": "ee10c7de2114086f14258037703dbd4b104e5908",
+  "binaries": {
+    "B": "/tmp/weavegate-a1/baseline/weavegate_0.2.0_linux_amd64/weavegate",
+    "Bplus": "/tmp/weavegate-a1/weavegate-bplus"
+  },
+  "campaign_id": "local-tuning-20261018-r2",
+  "created_at": "2026-10-18T12:47:47.392693+00:00",
+  "deviations": [
+    "one UTC date instead of two",
+    "shared WSL host instead of dedicated Linux allocations",
+    "host resource limits instead of aggregate 4 vCPU/16 GiB cap",
+    "no identical cache snapshot restoration",
+    "resource telemetry unavailable"
+  ],
+  "environment": {
+    "background_load": "shared WSL host; pre-existing containers retained",
+    "cache": "prepared dependencies; no OS/page-cache restore; pins hashed before every arm",
+    "cpu_count": 18,
+    "cpu_memory_cap": "host defaults; no aggregate cgroup cap",
+    "docker": "{\"Client\":{\"Version\":\"29.1.3\",\"ApiVersion\":\"1.52\",\"DefaultAPIVersion\":\"1.52\",\"GitCommit\":\"29.1.3-0ubuntu3~24.04.2\",\"GoVersion\":\"go1.24.4\",\"Os\":\"linux\",\"Arch\":\"amd64\",\"BuildTime\":\"Wed Apr 29 16:41:06 2026\",\"Context\":\"default\"},\"Server\":{\"Platform\":{\"Name\":\"\"},\"Version\":\"29.8.0\",\"ApiVersion\":\"1.56\",\"MinAPIVersion\":\"1.40\",\"Os\":\"linux\",\"Arch\":\"amd64\",\"Components\":[{\"Name\":\"Engine\",\"Version\":\"29.8.0\",\"Details\":{\"ApiVersion\":\"1.56\",\"Arch\":\"amd64\",\"BuildTime\":\"Wed Sep 23 15:26:53 2026\",\"Experimental\":\"false\",\"GitCommit\":\"3ce5872\",\"GoVersion\":\"go1.26.8\",\"KernelVersion\":\"6.18.33.2-microsoft-standard-WSL2\",\"MinAPIVersion\":\"1.40\",\"Module\":\"github.com/moby/moby/v2\",\"ModuleVersion\":\"v2.0.0-beta.23+dirty\",\"Os\":\"linux\"}},{\"Name\":\"containerd\",\"Version\":\"v2.3.4\",\"Details\":{\"GitCommit\":\"db8809540e1a7a9da5d518876894933ff55692ab\"}},{\"Name\":\"runc\",\"Version\":\"1.5.1\",\"Details\":{\"GitCommit\":\"\"}},{\"Name\":\"docker-init\",\"Version\":\"0.19.0\",\"Details\":{\"GitCommit\":\"de40ad0\"}}],\"GitCommit\":\"3ce5872\",\"GoVersion\":\"go1.26.8\",\"KernelVersion\":\"6.18.33.2-microsoft-standard-WSL2\",\"BuildTime\":\"2026-09-23T15:26:53.000000000+00:00\"}}",
+    "lscpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           46 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  18\nOn-line CPU(s) list:                     0-17\nVendor ID:                               GenuineIntel\nModel name:                              Intel(R) Core(TM) Ultra 5 125H\nCPU family:                              6\nModel:                                   170\nThread(s) per core:                      2\nCore(s) per socket:                      9\nSocket(s):                               1\nStepping:                                4\nBogoMIPS:                                5990.40\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology tsc_reliable nonstop_tsc cpuid tsc_known_freq pni pclmulqdq vmx ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves avx_vnni vnmi umip waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize ibt flush_l1d arch_capabilities\nVirtualization:                          VT-x\nHypervisor vendor:                       Microsoft\nVirtualization type:                     full\nL1d cache:                               432 KiB (9 instances)\nL1i cache:                               576 KiB (9 instances)\nL2 cache:                                18 MiB (9 instances)\nL3 cache:                                18 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-17\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Mitigation; Enhanced IBRS\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI BHI_DIS_S\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected",
+    "mysql_image": "mysql:8.4@sha256:8dbcf531a03aade657e181b9cf2f1d1803ce621a1d55610cb44cb531ab7d7db6",
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39"
+  },
+  "environment_allowlist": {
+    "HOME": "/tmp/weavegate-a1/home",
+    "PATH": "/tmp/weavegate-a1/runtime/bin:/usr/bin:/bin"
+  },
+  "execution_pins": [
+    {
+      "path": "/tmp/weavegate-a1/fixed/pom.xml",
+      "sha256": "69fcfbfca4d6548dd25bce85236f2d4abb3500a82b551c31e1efcd41380fbc5f"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/.mvn/wrapper/maven-wrapper.properties",
+      "sha256": "488e1b3f2e641779d4636abf9390845f901e64607261bc3c0b0bfe4fe96e6706"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/.weavegate/config.yaml",
+      "sha256": "1932af08e91badca0586e7a067b68b0b04cd58054720414954ab937dcc3f6de3"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/.weavegate/schedules/sch_6f1ffd61cc07.json",
+      "sha256": "0a77211022342341f068cc6c17e34063ce1f146b392a6db117f54a7209456820"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/db/seed.sql",
+      "sha256": "f2dbecdccd5ee87aade716d1ac0b523a99004efd104be1f3d666cf3492de118d"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/db/migration/001_schema.sql",
+      "sha256": "c3ffc33a06322d7f1134e9dd6b79e13b213a507b9d84af042c192186b52bca28"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/src/main/java/com/example/booking/BookingApplication.java",
+      "sha256": "e4f928ead1d007fb9b0a41942580c05a5823b8b0c2737f06192ba8089e50c054"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/src/main/java/com/example/booking/ReservationController.java",
+      "sha256": "89993bd0c3d9de9c1d7667423571128253bde9b7e188be059143cb80a008f204"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/src/main/java/com/example/booking/ReservationService.java",
+      "sha256": "a6db68153bbb44c58d5e0c32f93c26bfde6e15a63e145d652e62c687fe2f0fc8"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/src/main/java/com/example/booking/weavegate/ReservationCommands.java",
+      "sha256": "d830a8ccdcf0355ad007ad54cc0e062c6960af4a8cbdb66989da99a0fe814ed4"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/src/main/java/com/example/booking/weavegate/WeavegateMain.java",
+      "sha256": "a68df59209ca2bf84dbac827e33e461759e8acfb929ea07bc8969c4d81b23fc6"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/src/main/resources/application.properties",
+      "sha256": "cb0a5a21cb430cbe1c28df3df7930791e47286f2f79d586796b5e929e14af993"
+    },
+    {
+      "path": "/tmp/weavegate-a1/fixed/target/booking-0.0.1-SNAPSHOT-weavegate.jar",
+      "sha256": "32eae3d214f40f48ba9a125ff4cacd654235de56268410148c56ce42a419b484"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/pom.xml",
+      "sha256": "69fcfbfca4d6548dd25bce85236f2d4abb3500a82b551c31e1efcd41380fbc5f"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/.mvn/wrapper/maven-wrapper.properties",
+      "sha256": "488e1b3f2e641779d4636abf9390845f901e64607261bc3c0b0bfe4fe96e6706"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/.weavegate/config.yaml",
+      "sha256": "1932af08e91badca0586e7a067b68b0b04cd58054720414954ab937dcc3f6de3"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/.weavegate/schedules/sch_6f1ffd61cc07.json",
+      "sha256": "0a77211022342341f068cc6c17e34063ce1f146b392a6db117f54a7209456820"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/db/seed.sql",
+      "sha256": "f2dbecdccd5ee87aade716d1ac0b523a99004efd104be1f3d666cf3492de118d"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/db/migration/001_schema.sql",
+      "sha256": "c3ffc33a06322d7f1134e9dd6b79e13b213a507b9d84af042c192186b52bca28"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/src/main/java/com/example/booking/BookingApplication.java",
+      "sha256": "e4f928ead1d007fb9b0a41942580c05a5823b8b0c2737f06192ba8089e50c054"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/src/main/java/com/example/booking/ReservationController.java",
+      "sha256": "89993bd0c3d9de9c1d7667423571128253bde9b7e188be059143cb80a008f204"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/src/main/java/com/example/booking/ReservationService.java",
+      "sha256": "055616bac657a8931e7d1e72a9a47cb5326fcb87a18f58b97f61d8882cd666bf"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/src/main/java/com/example/booking/weavegate/ReservationCommands.java",
+      "sha256": "d830a8ccdcf0355ad007ad54cc0e062c6960af4a8cbdb66989da99a0fe814ed4"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/src/main/java/com/example/booking/weavegate/WeavegateMain.java",
+      "sha256": "a68df59209ca2bf84dbac827e33e461759e8acfb929ea07bc8969c4d81b23fc6"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/src/main/resources/application.properties",
+      "sha256": "cb0a5a21cb430cbe1c28df3df7930791e47286f2f79d586796b5e929e14af993"
+    },
+    {
+      "path": "/tmp/weavegate-a1/vulnerable/target/booking-0.0.1-SNAPSHOT-weavegate.jar",
+      "sha256": "19bc02312ab64ee64b2cb35ab35a2f64ff0a33eafad59ba6e8b5acebc2d58cc8"
+    },
+    {
+      "path": "/tmp/weavegate-a1/baseline/weavegate_0.2.0_linux_amd64/weavegate",
+      "sha256": "57f9795507a5b28033613e96ae546d4fa64f2fd5981428056a462c7d3343ebab"
+    },
+    {
+      "path": "/tmp/weavegate-a1/weavegate-bplus",
+      "sha256": "456ebcefcfc91c64e27c6d657d95481468cfeda306029c3867dc7cefa92e82fe"
+    },
+    {
+      "path": "{repository}/experiments/gate-performance/local-pilot/pilot.py",
+      "sha256": "709d387178234daff58fd369a3a45aee7e6304142ea00d1fd2c07eb728c873d8"
+    },
+    {
+      "path": "/usr/bin/python3.12",
+      "sha256": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f"
+    },
+    {
+      "path": "/tmp/weavegate-a1/runtime/bin/java",
+      "sha256": "353a6bd75d2cab531c9548131dea25c6451814cc04feaa26bcfa4f6dc8b8498e"
+    }
+  ],
+  "instrumentation_commit": "8d4bf3506d6af2ad432c5d31e4948f87709b22a0",
+  "not_registered_E1_pilot": true,
+  "order": [
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-fixed-replay-007",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-fixed-replay-008",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-fixed-replay-002",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-fixed-replay-001",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-fixed-replay-004",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-fixed-replay-005",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-fixed-replay-006",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-fixed-replay-003",
+      "workload": "example-fixed-replay"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-fixed-explore-002",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-fixed-explore-006",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-fixed-explore-003",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-fixed-explore-001",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-fixed-explore-007",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-fixed-explore-005",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-fixed-explore-004",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-fixed-explore-008",
+      "workload": "example-fixed-explore"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-vulnerable-replay-001",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-vulnerable-replay-008",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-vulnerable-replay-007",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-vulnerable-replay-005",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-vulnerable-replay-003",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-vulnerable-replay-002",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-vulnerable-replay-004",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-vulnerable-replay-006",
+      "workload": "example-vulnerable-replay"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-vulnerable-explore-003",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-vulnerable-explore-006",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-vulnerable-explore-007",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-vulnerable-explore-002",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-vulnerable-explore-004",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arms": [
+        "Bplus",
+        "B"
+      ],
+      "id": "example-vulnerable-explore-001",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-vulnerable-explore-008",
+      "workload": "example-vulnerable-explore"
+    },
+    {
+      "arms": [
+        "B",
+        "Bplus"
+      ],
+      "id": "example-vulnerable-explore-005",
+      "workload": "example-vulnerable-explore"
+    }
+  ],
+  "pairs_per_workload": 8,
+  "phase": "tuning",
+  "protocol_sha256": {
+    "README.md": "d122d107dc6469715c5367283dc4291f9adf96de77cdb74501d0fddfd7769501",
+    "e1-gate.md": "65f2df4344dd1a7ac15c80bd305335f6ecf914bf024e9bd791fd71310f103558",
+    "e2-ci.md": "70731f393436ada14ba27944b97e39b27e96b7064b97b9a2569ab5fc71deda0a"
+  },
+  "runtime": {
+    "go": "go version go1.25.0 linux/amd64",
+    "jdk": "openjdk version \"21.0.8\" 2025-07-15 LTS\nOpenJDK Runtime Environment Corretto-21.0.8.9.1 (build 21.0.8+9-LTS)\nOpenJDK 64-Bit Server VM Corretto-21.0.8.9.1 (build 21.0.8+9-LTS, mixed mode, sharing)\n",
+    "pool_maximum": 3,
+    "pool_minimum_idle": 0,
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "sdk": "Maven Central io.github.weavegate:weavegate-spring:0.2.0, identical in both arms",
+    "transaction_isolation": "database default; actual isolation and engine version in each manifest"
+  },
+  "seed": "weavegate-e1-e2-v1-20261013",
+  "unavailable": [
+    "aggregate CPU seconds",
+    "aggregate peak memory",
+    "disk bytes written",
+    "JVM-internal Spring startup",
+    "full repeated isolated/paired acceptance campaign",
+    "independent allocations",
+    "memory/page-cache restoration"
+  ],
+  "workloads": {
+    "example-fixed-explore": {
+      "argv": [
+        "run",
+        "--config",
+        ".weavegate/config.yaml",
+        "--scenario",
+        "double-booking",
+        "--repeat",
+        "20"
+      ],
+      "cwd": "/tmp/weavegate-a1/fixed",
+      "exit": 0,
+      "observation": {
+        "explore_passes": 3,
+        "flaky": false,
+        "mode": "explore",
+        "repeat": 20,
+        "schedules_explored": 18,
+        "violation_runs": 0
+      },
+      "schedule_id": null,
+      "schedule_ids": [
+        "sch_6f1ffd61cc07",
+        "sch_fbffd9bf5109",
+        "sch_2c667a1e8cef",
+        "sch_7f4724db4a47",
+        "sch_2aef223fee02",
+        "sch_f50d39cb42f1",
+        "sch_6f1ffd61cc07",
+        "sch_fbffd9bf5109",
+        "sch_2c667a1e8cef",
+        "sch_7f4724db4a47",
+        "sch_2aef223fee02",
+        "sch_f50d39cb42f1",
+        "sch_6f1ffd61cc07",
+        "sch_fbffd9bf5109",
+        "sch_2c667a1e8cef",
+        "sch_7f4724db4a47",
+        "sch_2aef223fee02",
+        "sch_f50d39cb42f1"
+      ],
+      "schedule_runs": 18,
+      "source_commit": "f38b20b1634235a0f46c96a2238ba10e2143fa75"
+    },
+    "example-fixed-replay": {
+      "argv": [
+        "run",
+        "--config",
+        ".weavegate/config.yaml",
+        "--scenario",
+        "double-booking",
+        "--repeat",
+        "20",
+        "--replay",
+        ".weavegate/schedules/sch_6f1ffd61cc07.json"
+      ],
+      "cwd": "/tmp/weavegate-a1/fixed",
+      "exit": 0,
+      "observation": {
+        "explore_passes": 0,
+        "flaky": false,
+        "mode": "replay",
+        "repeat": 20,
+        "schedules_explored": 0,
+        "violation_runs": 0
+      },
+      "schedule_id": "sch_6f1ffd61cc07",
+      "schedule_ids": [
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07"
+      ],
+      "schedule_runs": 20,
+      "source_commit": "f38b20b1634235a0f46c96a2238ba10e2143fa75"
+    },
+    "example-vulnerable-explore": {
+      "argv": [
+        "run",
+        "--config",
+        ".weavegate/config.yaml",
+        "--scenario",
+        "double-booking",
+        "--repeat",
+        "20"
+      ],
+      "cwd": "/tmp/weavegate-a1/vulnerable",
+      "exit": 2,
+      "observation": {
+        "explore_passes": 1,
+        "flaky": false,
+        "mode": "explore",
+        "repeat": 20,
+        "schedules_explored": 1,
+        "violation_runs": 20
+      },
+      "schedule_id": "sch_6f1ffd61cc07",
+      "schedule_ids": [
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07"
+      ],
+      "schedule_runs": 21,
+      "source_commit": "e4932192b160e60c967dc17c9d02ac478bd61968"
+    },
+    "example-vulnerable-replay": {
+      "argv": [
+        "run",
+        "--config",
+        ".weavegate/config.yaml",
+        "--scenario",
+        "double-booking",
+        "--repeat",
+        "20",
+        "--replay",
+        ".weavegate/schedules/sch_6f1ffd61cc07.json"
+      ],
+      "cwd": "/tmp/weavegate-a1/vulnerable",
+      "exit": 2,
+      "observation": {
+        "explore_passes": 0,
+        "flaky": false,
+        "mode": "replay",
+        "repeat": 20,
+        "schedules_explored": 0,
+        "violation_runs": 20
+      },
+      "schedule_id": "sch_6f1ffd61cc07",
+      "schedule_ids": [
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07",
+        "sch_6f1ffd61cc07"
+      ],
+      "schedule_runs": 20,
+      "source_commit": "e4932192b160e60c967dc17c9d02ac478bd61968"
+    }
+  }
+}

@@ -1,0 +1,4 @@
+fe41ff1636f30cb28d2d87e378dee1ce80661574bc6fceed6ba91241fa9f983f  weavegate_0.2.0_darwin_amd64.tar.gz
+63886c1471c605b0bdc3238709e87faebf5fee1b61d036db3ddf4a9d787f1189  weavegate_0.2.0_darwin_arm64.tar.gz
+c8cfc1aae0129e350c0abba2d560c29665b9cb6c57d77ddfec4400a4b995a11e  weavegate_0.2.0_linux_amd64.tar.gz
+b54eb9d3f5345c535da81e1f337d0c551bdb4c0d9037250d226b7067c63b6680  weavegate_0.2.0_linux_arm64.tar.gz

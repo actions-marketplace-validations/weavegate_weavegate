@@ -1,0 +1,128 @@
+[
+  {
+    "id": "sch_6f1ffd61cc07",
+    "steps": [
+      {
+        "point": "after_seat_read",
+        "worker": "alice"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "alice"
+      },
+      {
+        "point": "after_seat_read",
+        "worker": "bob"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "bob"
+      }
+    ]
+  },
+  {
+    "id": "sch_fbffd9bf5109",
+    "steps": [
+      {
+        "point": "after_seat_read",
+        "worker": "alice"
+      },
+      {
+        "point": "after_seat_read",
+        "worker": "bob"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "alice"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "bob"
+      }
+    ]
+  },
+  {
+    "id": "sch_2c667a1e8cef",
+    "steps": [
+      {
+        "point": "after_seat_read",
+        "worker": "alice"
+      },
+      {
+        "point": "after_seat_read",
+        "worker": "bob"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "bob"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "alice"
+      }
+    ]
+  },
+  {
+    "id": "sch_7f4724db4a47",
+    "steps": [
+      {
+        "point": "after_seat_read",
+        "worker": "bob"
+      },
+      {
+        "point": "after_seat_read",
+        "worker": "alice"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "alice"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "bob"
+      }
+    ]
+  },
+  {
+    "id": "sch_2aef223fee02",
+    "steps": [
+      {
+        "point": "after_seat_read",
+        "worker": "bob"
+      },
+      {
+        "point": "after_seat_read",
+        "worker": "alice"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "bob"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "alice"
+      }
+    ]
+  },
+  {
+    "id": "sch_f50d39cb42f1",
+    "steps": [
+      {
+        "point": "after_seat_read",
+        "worker": "bob"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "bob"
+      },
+      {
+        "point": "after_seat_read",
+        "worker": "alice"
+      },
+      {
+        "point": "before_reservation_insert",
+        "worker": "alice"
+      }
+    ]
+  }
+]

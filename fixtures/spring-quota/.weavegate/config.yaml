@@ -1,0 +1,51 @@
+target:
+  db: mysql:8.4
+  schema:
+    migrations: ../db/migration
+    seed: ../db/seed.sql
+  sut:
+    adapter: external
+    variant: vulnerable
+    external:
+      java: java
+      jar: ../app/target/spring-quota.jar
+      capacity: 2
+      startup_timeout_ms: 30000
+      cancel_timeout_ms: 5000
+      stop_timeout_ms: 20000
+scenarios:
+  concurrent-reserve:
+    workers:
+      - id: w1
+        command: reserve
+        args:
+          account_id: "42"
+          units: "1"
+      - id: w2
+        command: reserve
+        args:
+          account_id: "42"
+          units: "1"
+    sync_points:
+      - before_read
+      - after_read
+      - before_write
+      - after_commit
+oracle:
+  assertions:
+    - id: quota-is-conserved
+      sql: |
+        SELECT a.id AS account_id, a.capacity, a.remaining,
+               COALESCE(SUM(CASE WHEN r.accepted THEN r.units ELSE 0 END), 0) AS accepted_units
+        FROM quota_account a LEFT JOIN quota_receipt r ON r.account_id = a.id
+        GROUP BY a.id, a.capacity, a.remaining
+        HAVING a.remaining < 0 OR a.remaining > a.capacity
+            OR a.remaining + accepted_units <> a.capacity
+        ORDER BY a.id;
+      expect_rows: 0
+    - id: requests-have-receipts
+      sql: |
+        SELECT COUNT(*) AS receipts FROM quota_receipt HAVING COUNT(*) <> 2;
+      expect_rows: 0
+run:
+  arrive_timeout_ms: 1000

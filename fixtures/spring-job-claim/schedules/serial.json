@@ -1,0 +1,37 @@
+{
+  "id": "sch_3d0889b6860a",
+  "steps": [
+    {
+      "worker": "w1",
+      "point": "before_read"
+    },
+    {
+      "worker": "w1",
+      "point": "after_read"
+    },
+    {
+      "worker": "w1",
+      "point": "before_write"
+    },
+    {
+      "worker": "w1",
+      "point": "after_commit"
+    },
+    {
+      "worker": "w2",
+      "point": "before_read"
+    },
+    {
+      "worker": "w2",
+      "point": "after_read"
+    },
+    {
+      "worker": "w2",
+      "point": "before_write"
+    },
+    {
+      "worker": "w2",
+      "point": "after_commit"
+    }
+  ]
+}
