@@ -1,6 +1,5 @@
 """Reduce original Oracle/product evidence. Never infer a verdict from SQL or exits."""
 from collections import Counter, defaultdict
-import fcntl
 from support import *
 
 
@@ -326,6 +325,7 @@ def reduce_slot(root, slot, manifest):
     result.update(evidence)
     operational = evidence['operational_reasons'][:]
     operational.extend(state.get('integrity_errors', []))
+    if state.get('interrupted'): operational.append('collector interrupted')
     if command['error'] or not command['started'] or not command['containment_proven']:
         operational.append('command spawn/containment failure')
     if manifest['phase'] == 'measurement' and state.get('cleanup_proven') is not True:
@@ -345,13 +345,14 @@ def reduce_slot(root, slot, manifest):
 
 
 def analyze(bundle, output):
+    bundle, output = Path(bundle).resolve(), Path(output).resolve()
+    require(output != bundle and bundle not in output.parents, 'analysis output must be outside campaign')
     # Match collection's lock for the entire snapshot and output publication.
-    with (Path(bundle) / '.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        return analyze_locked(bundle, output)
+    with campaign_lock(bundle, shared=True) as check_lock:
+        return analyze_locked(bundle, output, check_lock)
 
 
-def analyze_locked(bundle, output):
+def analyze_locked(bundle, output, check_lock):
     bundle, output = Path(bundle), Path(output)
     verify(bundle / 'frozen')
     manifest = read_json(bundle / 'frozen' / 'manifest.json')
@@ -414,6 +415,10 @@ def analyze_locked(bundle, output):
     payload = {'schema': 1, 'phase': manifest['phase'], 'campaign_id': manifest['campaign_id'], 'stopped': stopped,
                'claim': 'same-host descriptive observations only', 'slots': rows, 'cells': cells,
                'pairs': pairs, 'cost_cells': cost_cells}
+    check_lock()
+    resolved_output = output.resolve()
+    require(resolved_output != bundle and bundle not in resolved_output.parents,
+            'analysis output must be outside campaign')
     output.mkdir(parents=True, exist_ok=False)
     write_json(output / 'results.json', payload)
     lines = ['# E5 retained evidence', '', 'Phase: ' + manifest['phase'] + '. Same-host descriptive data only.',

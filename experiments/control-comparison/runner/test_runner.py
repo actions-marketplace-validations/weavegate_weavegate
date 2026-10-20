@@ -4,6 +4,7 @@ import copy
 import fcntl
 import json
 import shutil
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -576,9 +577,15 @@ class RunnerTests(unittest.TestCase):
         for p in files(inputs): m['pins'][str(p)] = digest(p)
         inp = m['inputs']['matching']['vulnerable']
         inp['config']['Target']['Schema'] = {'Migrations':str(migrations), 'Seed':str(inputs/'seed.sql')}
+        document = read_json(self.root/'matching-vulnerable.json')
+        document['target']['schema'] = {'migrations':str(migrations), 'seed':str(inputs/'seed.sql')}
+        write_json(inputs/'config.yaml', document)
+        m['pins'][str(inputs/'config.yaml')] = digest(inputs/'config.yaml')
         for arm in ARMS:
             spec = m['commands']['matching']['vulnerable'][arm]
-            spec['argv'] += ['--config='+str(inputs/'config.yaml'), '--replay', str(inputs/'schedule.json')]
+            index = spec['argv'].index('--config')
+            spec['argv'][index:index+2] = ['--config='+str(inputs/'config.yaml')]
+            spec['argv'] += ['--replay', str(inputs/'schedule.json')]
             if arm.startswith('B'):
                 spec['argv'][spec['argv'].index('--classpath')+1] += os.pathsep + os.pathsep.join(map(str,[classes,libraries/'*']))
         validate(m)
@@ -838,6 +845,182 @@ class RunnerTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.assertFalse((self.root/'blocked').exists())
 
+    def test_command_config_must_match_effective_snapshot(self):
+        m = self.measurement_manifest()
+        for arm in ARMS:
+            for field in ('worker', 'sync_points', 'timeout'):
+                with self.subTest(arm=arm, field=field):
+                    changed = copy.deepcopy(m)
+                    config = self.root/'substituted.json'
+                    document = read_json(self.root/'matching-vulnerable.json')
+                    if field == 'worker':
+                        document['scenarios']['concurrent-assign']['workers'][0]['args']['ID'] = '99'
+                    elif field == 'sync_points':
+                        document['scenarios']['concurrent-assign']['sync_points'] = ['different']
+                    else:
+                        document['run']['arrive_timeout_ms'] = 5000
+                    write_json(config, document)
+                    changed['pins'][str(config)] = digest(config)
+                    argv = changed['commands']['matching']['vulnerable'][arm]['argv']
+                    argv[argv.index('--config')+1] = str(config)
+                    with self.assertRaisesRegex(ValueError, 'config'):
+                        validate(changed)
+
+    def test_command_config_paths_are_unambiguous_and_checked_live(self):
+        m = self.measurement_manifest()
+        command = m['commands']['matching']['fixed']['T-R']
+        index = command['argv'].index('--config')
+        for flag in ('--config', '-config', '--config=', '-config='):
+            changed = copy.deepcopy(m)
+            argv = changed['commands']['matching']['fixed']['T-R']['argv']
+            path = Path(argv[index+1]).name
+            argv[index:index+2] = [flag+path] if flag.endswith('=') else [flag,path]
+            validate(changed)
+        for options in ([], ['--config'], ['--config', ''], ['--config', '{trial_dir}/config'],
+                        ['--config', command['argv'][index+1]] * 2):
+            changed = copy.deepcopy(m)
+            changed['commands']['matching']['fixed']['T-R']['argv'][index:index+2] = options
+            with self.assertRaisesRegex(ValueError, 'config'): validate(changed)
+        # A replacement can be fully pinned and still disagree with the effective
+        # snapshot. Freeze and the pre-execution live check must both reject it.
+        changed = copy.deepcopy(m)
+        path = self.root/'replacement.json'
+        document = read_json(command['argv'][index+1])
+        document['target']['sut']['external']['startup_timeout_ms'] = 1
+        write_json(path, document)
+        changed['pins'][str(path)] = digest(path)
+        changed['commands']['matching']['fixed']['T-R']['argv'][index+1] = str(path)
+        write_json(self.root/'bad-manifest.json', changed)
+        with self.assertRaisesRegex(ValueError, 'config'):
+            freeze(self.root/'bad-manifest.json', self.root/'bad-bundle')
+        with self.assertRaisesRegex(ValueError, 'config'): live_pins(changed)
+        self.assertFalse((self.root/'bad-bundle').exists())
+
+    def test_replaced_lock_cannot_admit_collector_or_analyzer(self):
+        bundle, _ = self.bundle()
+        from analyze import reduce_slot as real_reduce
+        checked = []
+        def reduce(root, slot, manifest):
+            if slot['ordinal'] == 1:
+                (bundle/'.lock').unlink()
+                (bundle/'.lock').touch()
+                with self.assertRaises((BlockingIOError, ValueError)):
+                    collect(bundle, max_slots=1)
+                checked.append(True)
+            return real_reduce(root, slot, manifest)
+        with patch('analyze.reduce_slot', side_effect=reduce):
+            with self.assertRaisesRegex(ValueError, 'lock'):
+                analyze(bundle, self.root/'analysis')
+        self.assertEqual(checked, [True])
+        self.assertFalse((self.root/'analysis').exists())
+        self.assertEqual(list((bundle/'slots').iterdir()), [])
+
+    def test_replaced_lock_during_collection_seals_stop(self):
+        bundle, registration = self.measurement_bundle()
+        from tool import execute as real_execute
+        checked = []
+        def execute(spec, context, directory, label, secrets):
+            result = real_execute(spec, context, directory, label, secrets)
+            if label == 'prepare':
+                (bundle/'.lock').unlink()
+                (bundle/'.lock').touch()
+                for operation in (lambda: collect(bundle, registration),
+                                  lambda: analyze(bundle, self.root/'concurrent')):
+                    with self.assertRaises((BlockingIOError, ValueError)):
+                        operation()
+                checked.append(True)
+            return result
+        with patch('tool.execute', side_effect=execute):
+            with self.assertRaisesRegex(ValueError, 'lock'):
+                collect(bundle, registration)
+        self.assertEqual(checked, [True])
+        result = analyze(bundle, self.root/'analysis')
+        self.assertEqual(result['slots'][0]['status'], 'preparation_failed')
+        self.assertFalse(any(s['started'] for s in result['slots']))
+        self.assertEqual(len(list((bundle/'slots').iterdir())), 1)
+        self.assertIn('lock', result['stopped']['reason'])
+
+    def test_analysis_output_cannot_modify_campaign(self):
+        bundle, _ = self.bundle()
+        collect(bundle, max_slots=1)
+        alias = self.root/'alias'; alias.symlink_to(bundle, target_is_directory=True)
+        before = inventory(bundle)
+        for output in (bundle, bundle/'new', bundle/'frozen/new', bundle/'progress/new',
+                       bundle/'slots'/order()[0]['id']/'new', alias/'frozen/new'):
+            with self.subTest(output=str(output)):
+                with self.assertRaisesRegex(ValueError, 'output.*campaign'):
+                    analyze(bundle, output)
+                self.assertEqual(inventory(bundle), before)
+        first = analyze(bundle, self.root/'analysis')
+        self.assertEqual(first, analyze(bundle, self.root/'reanalysis'))
+
+    def test_cleanup_signals_preserve_sealed_stop_checkpoint(self):
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            for boundary in ('cleanup', 'slot-seal', 'progress'):
+                self.check_checkpoint_signal(signum, boundary)
+
+    def check_checkpoint_signal(self, signum, boundary):
+        with self.subTest(signal=signum, boundary=boundary):
+            bundle, registration = self.measurement_bundle()
+            from tool import execute as real_execute, seal as real_seal, save_progress as real_progress
+            cleanup_calls = []
+            signaled = False
+            def interrupt():
+                nonlocal signaled
+                if not signaled:
+                    os.kill(os.getpid(), signum)
+                    signaled = True
+            def execute(spec, context, directory, label, secrets):
+                if label == 'cleanup':
+                    if boundary == label: interrupt()
+                    cleanup_calls.append(label)
+                return real_execute(spec, context, directory, label, secrets)
+            def seal(path):
+                if boundary == 'slot-seal' and path.parent == bundle/'slots': interrupt()
+                return real_seal(path)
+            def progress(root, consumed, **kwargs):
+                if boundary == 'progress' and consumed: interrupt()
+                return real_progress(root, consumed, **kwargs)
+            with patch('tool.execute', side_effect=execute), patch('tool.seal', side_effect=seal), \
+                    patch('tool.save_progress', side_effect=progress):
+                try: collect(bundle, registration)
+                except KeyboardInterrupt: pass
+            self.assertEqual(cleanup_calls, ['cleanup'])
+            self.assertTrue(signaled)
+            result = analyze(bundle, self.root/('analysis-'+str(signum)+'-'+boundary))
+            self.assertIn('interrupted', result['stopped']['reason'])
+            self.assertIn('collector interrupted', result['slots'][0]['reasons'])
+            self.assertTrue(read_json(bundle/'slots'/order()[0]['id']/'slot.json')['cleanup_proven'])
+            self.assertEqual(sum(s['started'] for s in result['slots']), 1)
+            (bundle/'stopped.json').unlink()
+            with self.assertRaisesRegex(ValueError, 'stopped'):
+                collect(bundle, registration)
+            shutil.rmtree(bundle)
+
+    def write_measurement_configs(self, m):
+        # Constructed wire documents use Go's YAML field names, while preserving
+        # user-owned scenario and argument keys.
+        fields = {'Run':'run', 'Repeat':'repeat', 'ArriveTimeoutMS':'arrive_timeout_ms',
+                  'ExplorePasses':'explore_passes', 'Target':'target', 'DB':'db', 'SUT':'sut',
+                  'External':'external', 'Capacity':'capacity', 'StartupTimeoutMS':'startup_timeout_ms',
+                  'CancelTimeoutMS':'cancel_timeout_ms', 'StopTimeoutMS':'stop_timeout_ms',
+                  'Java':'java', 'JAR':'jar', 'Schema':'schema', 'Migrations':'migrations',
+                  'Seed':'seed', 'Oracle':'oracle', 'Assertions':'assertions', 'ID':'id',
+                  'Workers':'workers', 'Command':'command', 'SyncPoints':'sync_points'}
+        def wire(value):
+            if isinstance(value, list): return [wire(v) for v in value]
+            if not isinstance(value, dict): return value
+            return {('scenarios' if k == 'Scenarios' else 'args' if k == 'Args' else fields[k]):
+                    ({name:wire(v) for name,v in item.items()} if k == 'Scenarios'
+                     else item if k == 'Args' else wire(item)) for k,item in value.items()}
+        for workload, variants in m['inputs'].items():
+            for variant, inp in variants.items():
+                path = self.root/(workload+'-'+variant+'.json')
+                write_json(path, wire(inp['config']))
+                m['pins'][str(path)] = digest(path)
+                for command in m['commands'][workload][variant].values():
+                    command['argv'] += ['--config', str(path)]
+
     def measurement_manifest(self):
         m=self.manifest()
         m['phase']='measurement'
@@ -867,6 +1050,12 @@ class RunnerTests(unittest.TestCase):
                 inp['jar_sha256']=digest(jar)
                 inp['config']['Target']['Schema'] = {'Migrations':str(self.root/'arm.py'), 'Seed':str(self.root/'arm.py')}
                 inp['config']['Target']['SUT']['External'].update(Java=str(Path(sys.executable).resolve()), JAR=str(jar))
+        for workload, variants in m['inputs'].items():
+            for inp in variants.values():
+                inp['config']['Scenarios'] = {WORKLOADS[workload][1]: {
+                    'Workers':[{'ID':'a', 'Command':'constructed', 'Args':{'ID':'42'}}],
+                    'SyncPoints':['read','write']}}
+        self.write_measurement_configs(m)
         for variants in m['commands'].values():
             for commands in variants.values():
                 for arm in ('B0','B1','B2'):

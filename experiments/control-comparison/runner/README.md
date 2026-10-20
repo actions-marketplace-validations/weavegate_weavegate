@@ -134,9 +134,15 @@ The complete fixture class inventory and the SDK JAR on that classpath must matc
 validation even when pinned. The application JAR must match `jar_sha256`, and its
 embedded fixture classes and SDK must match those same identities. Measurement
 configs must all use `environment.mysql_image`, including its SHA-256 digest.
-Baseline and product receipts must retain that same image identity. Effective config
-snapshots must describe the command's actual config; dynamic imports, subprocess
-lookup and other runtime dependencies still require explicit pins and audit. A
+Baseline and product receipts must retain that same image identity. Each measurement
+command names exactly one explicit `--config` file, using JSON-subset YAML as emitted
+by the preparer. Validation compares its entire decoded content with the effective
+snapshot, including worker arguments, sync points and timeouts, at freeze and live
+input boundaries. Scenario names and argument keys retain their original spelling.
+This restricted experiment input format lets the Python standard-library checker
+use the same data accepted by the Go YAML loader without another parser dependency.
+Dynamic imports, subprocess lookup and other runtime dependencies still require
+explicit pins and audit. A
 measurement T command invokes the registered CLI directly; transport wrappers
 cannot replace that executable. Infrastructure hooks and their remote
 observations belong in the inventory. The collector and evidence storage must
@@ -213,6 +219,9 @@ feasibility ID is required for diagnostic reruns. `--max-slots` exists only for
 feasibility, including the automated five-arm check above.
 Final input or evidence integrity failures are sealed on the active slot as
 operational errors and also stop the campaign, even when cleanup succeeds.
+SIGINT/SIGTERM during cleanup or checkpoint writes are deferred until the slot and
+progress seals exist. The collector then seals the interruption stop before any
+further slot, preserving completed cleanup without running it again.
 
 The sealed `progress/checkpoint.json` records the consumed slot seals, any active
 attempt, registration identity, completion and stop state. A slot also seals its
@@ -233,6 +242,12 @@ produces byte-identical files. Corrupt or missing sealed originals fail analysis
 Analysis holds a shared campaign lock through validation, reduction and output
 writing. It fails immediately while collection holds the exclusive lock;
 concurrent analyses may use separate output directories.
+Both operations also lock the campaign directory inode, so replacing `.lock` cannot
+admit a competing collector or analyzer. Path identity checks detect replacement
+at collection boundaries and before analysis output is written.
+Analysis output must resolve outside the campaign, including through symlinks;
+an output path within frozen inputs, progress or sealed slots is rejected before
+creating files.
 Baseline receipts must match the requested arm and variant. Product observations
 must declare `replay` for T-R and `explore` for T-E, including warm-up. Evidence
 from another slot or mode cannot count as a completed observation.

@@ -54,6 +54,9 @@ def prepare(root, destination, count=20):
                             '--scenario', scenario, '--variant', variant, '--image', image, '--java', java,
                             '--jar', str(jar), '--out', str(inputs)], check=True)
             value = read_json(inputs / 'inputs.json')
+            # JSON is valid YAML and lets the standard-library runner compare
+            # every effective field without introducing another YAML decoder.
+            write_json(inputs / 'config.yaml', config_document(value['config']))
             value['counts'] = {'B1': count, 'B2': count if count != 20 else 100, 'T-R': count}
             value['jar_sha256'] = digest(jar)
             value['expected_domain_rows'] = {

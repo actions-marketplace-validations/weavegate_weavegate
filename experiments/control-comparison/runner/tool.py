@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Freeze, collect once in protocol order, and analyze an E5 bundle."""
 import argparse
-import fcntl
 import os
 import re
 import shutil
@@ -140,8 +139,7 @@ def registered(bundle, m, registration):
 
 def collect(bundle, registration=None, max_slots=None):
     bundle = Path(bundle).resolve()
-    with (bundle / '.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with campaign_lock(bundle) as check_lock:
         verify(bundle / 'frozen')
         m = read_json(bundle / 'frozen' / 'manifest.json')
         slots = read_json(bundle / 'frozen' / 'order.json')
@@ -158,6 +156,7 @@ def collect(bundle, registration=None, max_slots=None):
         consumed = progress['slots']
         done = 0
         for slot in slots:
+            check_lock()
             directory = bundle / 'slots' / slot['id']
             if directory.exists(): continue
             if max_slots is not None and done >= max_slots: break
@@ -178,7 +177,10 @@ def collect(bundle, registration=None, max_slots=None):
                 done += 1
                 continue
             try:
-                protect(bundle, directory)
+                def check_boundary():
+                    check_lock()
+                    protect(bundle, directory)
+                check_boundary()
                 if m['phase'] == 'measurement':
                     prep = execute(m['hooks']['prepare'], context, directory, 'prepare', [])
                     require(succeeded(prep), 'restore failed')
@@ -186,6 +188,7 @@ def collect(bundle, registration=None, max_slots=None):
                                     'disk_image': m['environment']['vm_image'], 'fresh_memory': True,
                                     'clean_data': True, 'vcpus': 4, 'memory_bytes': 16 * 1024**3})
                     state['preparation'] = receipt
+                    check_boundary()
                     if slot['cache'] == 'warm':
                         warm = directory / 'warmup'; warm.mkdir()
                         warm_context = dict(context, trial_dir=str(warm), arm='T-R')
@@ -202,7 +205,7 @@ def collect(bundle, registration=None, max_slots=None):
                         proof(directory, 'warm-cleanup.json', {'outputs_removed': True, 'data_removed': True,
                               'cache_preserved': True}, previous=before)
                         unchanged(directory, before)
-                    protect(bundle, directory)
+                    check_boundary()
                 live_pins(m)
                 original = inventory(directory)
                 spec = m['commands'][slot['workload']][slot['variant']][slot['arm']]
@@ -220,7 +223,7 @@ def collect(bundle, registration=None, max_slots=None):
                 except (OSError, ValueError, KeyError, TypeError) as error:
                     state['error'] = 'evidence: ' + str(error)
                 unchanged(directory, original)
-                protect(bundle, directory)
+                check_boundary()
                 if m['phase'] == 'measurement':
                     live_pins(m)
                     observed_files = inventory(directory)
@@ -229,16 +232,34 @@ def collect(bundle, registration=None, max_slots=None):
                     receipt = proof(directory, 'observation.json', {'host_id': m['environment']['host_id']}, previous=observed_files)
                     state['resources'] = receipt['resources']
                     unchanged(directory, observed_files)
-                    protect(bundle, directory)
+                    check_boundary()
             except (Exception, KeyboardInterrupt) as error:
                 state['error'] = str(error)
                 if isinstance(error, KeyboardInterrupt): stop_reason = 'collector interrupted'
             finally:
-                if not state.get('unsupported'):
-                    if m['phase'] == 'measurement':
-                        # Cleanup is unconditional, but changed cleanup dependencies
-                        # are not trusted. No reuse follows a failed proof.
-                        with defer_interrupts():
+                def checkpoint():
+                    nonlocal stop_reason
+                    if state['cleanup_proven'] is not True: stop_reason = 'allocation cleanup unproven'
+                    for check in (lambda: live_pins(m), check_boundary):
+                        try: check()
+                        except (ValueError, OSError) as error:
+                            stop_reason = str(error)
+                            errors = state.setdefault('integrity_errors', [])
+                            if stop_reason not in errors: errors.append(stop_reason)
+                    state['ended_at'] = utc()
+                    stopped = {'reason': stop_reason, 'slot': slot['id'], 'at': utc()} if stop_reason else None
+                    state['stop'] = stopped
+                    write_json(directory / 'slot.json', state)
+                    seal(directory)
+                    consumed[slot['id']] = digest(directory / 'SHA256SUMS')
+                    save_progress(bundle, consumed, stopped=stopped)
+                    if stopped: write_json(bundle / 'stopped.json', stopped)
+                try:
+                    # Deliver cleanup/checkpoint signals only after both seals
+                    # exist. A delivered interrupt then seals the stop without
+                    # running cleanup again or admitting another slot.
+                    with defer_interrupts():
+                        if m['phase'] == 'measurement':
                             try:
                                 trusted = cleanup_dependencies(m)
                                 live_pins({'pins': {p: m['pins'][p] for p in trusted}})
@@ -251,20 +272,12 @@ def collect(bundle, registration=None, max_slots=None):
                             except (Exception, KeyboardInterrupt) as error:
                                 state['cleanup_proven'] = False
                                 state['cleanup_error'] = str(error)
-                    if state['cleanup_proven'] is not True: stop_reason = 'allocation cleanup unproven'
-                for check in (lambda: live_pins(m), lambda: protect(bundle, directory)):
-                    try: check()
-                    except (ValueError, OSError) as error:
-                        stop_reason = str(error)
-                        state.setdefault('integrity_errors', []).append(stop_reason)
-                state['ended_at'] = utc()
-                stopped = {'reason': stop_reason, 'slot': slot['id'], 'at': utc()} if stop_reason else None
-                state['stop'] = stopped
-                write_json(directory / 'slot.json', state)
-                seal(directory)
-                consumed[slot['id']] = digest(directory / 'SHA256SUMS')
-                save_progress(bundle, consumed, stopped=stopped)
-                if stopped: write_json(bundle / 'stopped.json', stopped)
+                        checkpoint()
+                except KeyboardInterrupt:
+                    stop_reason = 'collector interrupted'
+                    state['interrupted'] = True
+                    with defer_interrupts():
+                        checkpoint()
             done += 1
             if stop_reason: break
         print('E5_COLLECT_RESULT consumed=%d stopped=%s phase=%s' % (done, (bundle / 'stopped.json').exists(), m['phase']))

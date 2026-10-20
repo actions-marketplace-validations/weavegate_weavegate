@@ -2,7 +2,10 @@
 import os
 import sys
 import importlib
+import fcntl
+import re
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -92,6 +95,75 @@ def command_valid(spec):
     require(type(spec.get('timeout_seconds')) in (int, float) and spec['timeout_seconds'] > 0, 'positive timeout required')
 
 
+@contextmanager
+def campaign_lock(bundle, shared=False):
+    """Keep exclusion even when a hook replaces the compatibility lock file."""
+    bundle = Path(bundle)
+    descriptor = os.open(bundle, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        mode = (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB
+        fcntl.flock(descriptor, mode)
+        marker = os.open(bundle / '.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(marker, mode)
+            def check():
+                try:
+                    if (os.path.samestat(os.fstat(descriptor), os.stat(bundle, follow_symlinks=False))
+                            and os.path.samestat(os.fstat(marker), os.stat(bundle / '.lock', follow_symlinks=False))):
+                        return
+                except OSError:
+                    pass
+                raise ValueError('campaign lock pathname replaced')
+            check()
+            try:
+                yield check
+            finally:
+                check()
+        finally:
+            os.close(marker)
+    finally:
+        os.close(descriptor)
+
+
+def config_document(config):
+    """Encode the Go effective snapshot as a JSON-subset YAML config.
+
+    Only struct fields change spelling. Scenario names and worker argument keys
+    belong to the fixture and must retain their original case and punctuation.
+    """
+    def convert(value):
+        if isinstance(value, list): return [convert(v) for v in value]
+        if not isinstance(value, dict): return value
+        result = {}
+        for name, item in value.items():
+            field = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', name)
+            field = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', field).lower()
+            result[field] = ({k: convert(v) for k, v in item.items()} if name == 'Scenarios'
+                             else item if name == 'Args' else convert(item))
+        return result
+    return convert(config)
+
+
+def command_config(command, expected):
+    """Bind the actual --config bytes to every field of the frozen snapshot."""
+    argv, paths = command['argv'], []
+    require('--' not in argv, 'config command option terminator is unsupported')
+    for index, arg in enumerate(argv):
+        if arg in ('--config', '-config'):
+            require(index + 1 < len(argv), 'config path required')
+            paths.append(argv[index + 1])
+        elif arg.startswith(('--config=', '-config=')):
+            paths.append(arg.split('=', 1)[1])
+    require(len(paths) == 1 and paths[0] and '{' not in paths[0], 'one explicit frozen config required')
+    path = Path(command['cwd']) / paths[0]
+    try:
+        document = read_json(path)
+    except (ValueError, OSError) as error:
+        raise ValueError('command config must be JSON-subset YAML: ' + str(path)) from error
+    require(json_equal(document, config_document(expected['config'])),
+            'command config differs from frozen effective config')
+
+
 def live_pins(manifest):
     for name, expected in manifest['pins'].items():
         require(Path(name).is_absolute() and Path(name).is_file(), 'missing live pin: ' + name)
@@ -135,6 +207,7 @@ def measurement_dependencies(manifest):
             inputs = [external['Java'], external['JAR'], schema['Migrations'], schema['Seed']]
             for arm, command in commands.items():
                 file_dependencies(command, manifest['pins'], workload + '/' + variant + '/' + arm, inputs)
+                command_config(command, expected)
                 if arm.startswith('B'):
                     classpath_identity(command, expected)
             fixture_identity(expected)
