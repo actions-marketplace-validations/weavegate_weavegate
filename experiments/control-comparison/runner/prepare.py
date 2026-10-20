@@ -23,7 +23,7 @@ def prepare(root, destination, count=20):
     m = {'schema': 1, 'protocol_revision': 1, 'campaign_id': destination.name,
          'phase': 'feasibility', 'seed': SEED, 'pins': {}, 'commands': {}, 'inputs': {}, 'hooks': {},
          'protocol': {'path': str(protocol), 'sha256': digest(protocol)},
-         'fixture_revision': 'e1bd8ba3fc07d024b8cb4037aa2263d24044dbb0',
+         'fixture_revision': FIXTURE_REVISION,
          'source_revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
          'environment': {'mysql_image': image}, 'deviations': [
              'Local feasibility only: no disk-only VM restore or 4-vCPU/16-GiB allocation proof.',
@@ -59,11 +59,7 @@ def prepare(root, destination, count=20):
             write_json(inputs / 'config.yaml', config_document(value['config']))
             value['counts'] = {'B1': count, 'B2': count if count != 20 else 100, 'T-R': count}
             value['jar_sha256'] = digest(jar)
-            value['expected_domain_rows'] = {
-                'matching': [{'project_request_id': '42', 'active_assignment_count': '2'}],
-                'quota': [{'account_id': '42', 'capacity': '1', 'remaining': '0', 'accepted_units': '2'}],
-                'job': [{'job_id': '42', 'epoch': '2', 'status': 'DONE', 'completed_epoch': '1'}],
-            }[workload]
+            value['expected_domain_rows'] = EXPECTED_DOMAIN_ROWS[workload]
             sdk = [p for p in libraries if p.name.startswith('weavegate-spring-')]
             require(len(sdk) == 1, 'SDK identity ambiguous')
             value['sdk_sha256'] = digest(sdk[0])

@@ -5,6 +5,8 @@ import os
 import re
 import shutil
 import time
+import signal
+from contextlib import ExitStack
 from support import *
 from analyze import analyze, reduce_slot
 from stream import Monitor
@@ -58,7 +60,8 @@ def validate(m):
         for key in ('go_acceptance', 'java_acceptance', 'paired_acceptance', 'corpus_acceptance', 'baseline_feasibility'):
             p = m['prerequisites'][key]
             require(p in m['pins'], 'missing prerequisite evidence: ' + key)
-        require(m.get('fixture_revision') == 'e1bd8ba3fc07d024b8cb4037aa2263d24044dbb0', 'fixture revision differs')
+        require(m.get('fixture_revision') == FIXTURE_REVISION, 'fixture revision differs')
+        domain_expectations(m)
         measurement_dependencies(m)
 
 
@@ -138,6 +141,16 @@ def registered(bundle, m, registration):
 
 
 def collect(bundle, registration=None, max_slots=None):
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt('collection interrupted by signal %d' % signum)
+    previous = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        return collect_locked(bundle, registration, max_slots)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def collect_locked(bundle, registration, max_slots):
     bundle = Path(bundle).resolve()
     with campaign_lock(bundle) as check_lock:
         verify(bundle / 'frozen')
@@ -146,10 +159,7 @@ def collect(bundle, registration=None, max_slots=None):
         require(slots == order(), 'order differs')
         progress = retained_progress(bundle, m, slots)
         require(progress['stopped'] is None, 'campaign stopped; no replacement attempts')
-        for path in (bundle / 'frozen/source').glob('*.py'):
-            require(digest(HERE / path.name) == digest(path), 'collector/analyzer source changed after freeze')
-        for path in (bundle / 'frozen/source/shared').glob('*.py'):
-            require(digest(SHARED / path.name) == digest(path), 'shared collector source changed after freeze')
+        frozen_sources(bundle)
         require(max_slots is None or (m['phase'] == 'feasibility' and max_slots > 0), 'positive slot limit is feasibility-only')
         registered(bundle, m, registration)
         live_pins(m)
@@ -161,125 +171,130 @@ def collect(bundle, registration=None, max_slots=None):
             if directory.exists(): continue
             if max_slots is not None and done >= max_slots: break
             live_pins(m)
-            save_progress(bundle, consumed, active=slot['id'])
-            directory.mkdir()
-            context = dict(slot, trial_dir=str(directory), campaign_dir=str(bundle), redact_env=[])
-            state = {'slot': slot, 'started_at': utc(), 'cleanup_proven': False}
-            write_json(directory / 'slot.json', state)
-            stop_reason = None
-            unsupported = m.get('unsupported', {}).get(slot['workload'] + '/' + slot['arm'])
-            if unsupported:
-                state['unsupported'] = unsupported
+            with ExitStack() as activation:
+                activation.enter_context(defer_interrupts())
+                save_progress(bundle, consumed, active=slot['id'])
+                directory.mkdir()
+                context = dict(slot, trial_dir=str(directory), campaign_dir=str(bundle), redact_env=[])
+                state = {'slot': slot, 'started_at': utc(), 'cleanup_proven': True}
                 write_json(directory / 'slot.json', state)
-                seal(directory)
-                consumed[slot['id']] = digest(directory / 'SHA256SUMS')
-                save_progress(bundle, consumed)
-                done += 1
-                continue
-            try:
+                stop_reason = None
+                allocation_started = False
+                unsupported = m.get('unsupported', {}).get(slot['workload'] + '/' + slot['arm'])
+                if unsupported: state['unsupported'] = unsupported
                 def check_boundary():
                     check_lock()
                     protect(bundle, directory)
-                check_boundary()
-                if m['phase'] == 'measurement':
-                    prep = execute(m['hooks']['prepare'], context, directory, 'prepare', [])
-                    require(succeeded(prep), 'restore failed')
-                    receipt = proof(directory, 'preparation.json', {'host_id': m['environment']['host_id'],
-                                    'disk_image': m['environment']['vm_image'], 'fresh_memory': True,
-                                    'clean_data': True, 'vcpus': 4, 'memory_bytes': 16 * 1024**3})
-                    state['preparation'] = receipt
-                    check_boundary()
-                    if slot['cache'] == 'warm':
-                        warm = directory / 'warmup'; warm.mkdir()
-                        warm_context = dict(context, trial_dir=str(warm), arm='T-R')
-                        cmd = execute(m['commands'][slot['workload']][slot['variant']]['T-R'], warm_context, warm, 'run', [])
-                        from analyze import product
-                        observed = product(warm, dict(slot, arm='T-R'), cmd, m['inputs'][slot['workload']][slot['variant']])
-                        require(cmd['exit'] in (0, 2) and succeeded(dict(cmd, exit=0))
-                                and cmd.get('containment_proven') is True and observed['cleanup_proven']
-                                and not observed['quality_reasons'] and not observed['operational_reasons'], 'warm-up failed')
-                        state['warmup'] = {'seconds': cmd['seconds'], 'exit': cmd['exit']}
-                        before = inventory(directory)
-                        cleanup = execute(m['hooks']['warm_cleanup'], context, directory, 'warm-cleanup', [])
-                        require(succeeded(cleanup), 'warm-up output/data cleanup failed')
-                        proof(directory, 'warm-cleanup.json', {'outputs_removed': True, 'data_removed': True,
-                              'cache_preserved': True}, previous=before)
-                        unchanged(directory, before)
-                    check_boundary()
-                live_pins(m)
-                original = inventory(directory)
-                spec = m['commands'][slot['workload']][slot['variant']][slot['arm']]
-                start = time.monotonic()
-                with Monitor(directory):
-                    cmd = execute(spec, context, directory, 'run', [])
-                # Baseline evaluations are persisted per execution. Product artifacts
-                # arrive at CLI completion; endpoint validation is separately timed.
-                from analyze import baseline, product
-                expected = m['inputs'][slot['workload']][slot['variant']]
                 try:
-                    observed = (baseline if slot['arm'].startswith('B') else product)(directory, slot, cmd, expected)
-                    state['evidence_received_seconds'] = [cmd['seconds'], time.monotonic() - start]
-                    state['cleanup_proven'] = observed['cleanup_proven']
-                except (OSError, ValueError, KeyError, TypeError) as error:
-                    state['error'] = 'evidence: ' + str(error)
-                unchanged(directory, original)
-                check_boundary()
-                if m['phase'] == 'measurement':
-                    live_pins(m)
-                    observed_files = inventory(directory)
-                    observer = execute(m['hooks']['observe'], context, directory, 'observe', [])
-                    require(succeeded(observer), 'observation failed')
-                    receipt = proof(directory, 'observation.json', {'host_id': m['environment']['host_id']}, previous=observed_files)
-                    state['resources'] = receipt['resources']
-                    unchanged(directory, observed_files)
-                    check_boundary()
-            except (Exception, KeyboardInterrupt) as error:
-                state['error'] = str(error)
-                if isinstance(error, KeyboardInterrupt): stop_reason = 'collector interrupted'
-            finally:
-                def checkpoint():
-                    nonlocal stop_reason
-                    if state['cleanup_proven'] is not True: stop_reason = 'allocation cleanup unproven'
-                    for check in (lambda: live_pins(m), check_boundary):
-                        try: check()
-                        except (ValueError, OSError) as error:
-                            stop_reason = str(error)
-                            errors = state.setdefault('integrity_errors', [])
-                            if stop_reason not in errors: errors.append(stop_reason)
-                    state['ended_at'] = utc()
-                    stopped = {'reason': stop_reason, 'slot': slot['id'], 'at': utc()} if stop_reason else None
-                    state['stop'] = stopped
-                    write_json(directory / 'slot.json', state)
-                    seal(directory)
-                    consumed[slot['id']] = digest(directory / 'SHA256SUMS')
-                    save_progress(bundle, consumed, stopped=stopped)
-                    if stopped: write_json(bundle / 'stopped.json', stopped)
-                try:
-                    # Deliver cleanup/checkpoint signals only after both seals
-                    # exist. A delivered interrupt then seals the stop without
-                    # running cleanup again or admitting another slot.
-                    with defer_interrupts():
+                    # Pending activation signals are delivered only after recovery
+                    # owns the slot. No allocation has been touched at this point.
+                    activation.close()
+                    if not unsupported:
+                        allocation_started = True
+                        state['cleanup_proven'] = False
+                        check_boundary()
                         if m['phase'] == 'measurement':
-                            try:
-                                trusted = cleanup_dependencies(m)
-                                live_pins({'pins': {p: m['pins'][p] for p in trusted}})
-                                before_cleanup = inventory(directory)
-                                cleanup = execute(m['hooks']['cleanup'], context, directory, 'cleanup', [])
-                                require(succeeded(cleanup), 'cleanup command failed')
-                                proof(directory, 'cleanup.json', {'proven': True}, previous=before_cleanup)
-                                unchanged(directory, before_cleanup)
-                                state['cleanup_proven'] = True
-                            except (Exception, KeyboardInterrupt) as error:
-                                state['cleanup_proven'] = False
-                                state['cleanup_error'] = str(error)
-                        checkpoint()
-                except KeyboardInterrupt:
-                    stop_reason = 'collector interrupted'
-                    state['interrupted'] = True
-                    with defer_interrupts():
-                        checkpoint()
-            done += 1
-            if stop_reason: break
+                            prep = execute(m['hooks']['prepare'], context, directory, 'prepare', [])
+                            require(succeeded(prep), 'restore failed')
+                            receipt = proof(directory, 'preparation.json', {'host_id': m['environment']['host_id'],
+                                            'disk_image': m['environment']['vm_image'], 'fresh_memory': True,
+                                            'clean_data': True, 'vcpus': 4, 'memory_bytes': 16 * 1024**3})
+                            state['preparation'] = receipt
+                            check_boundary()
+                            if slot['cache'] == 'warm':
+                                warm = directory / 'warmup'; warm.mkdir()
+                                warm_context = dict(context, trial_dir=str(warm), arm='T-R')
+                                cmd = execute(m['commands'][slot['workload']][slot['variant']]['T-R'], warm_context, warm, 'run', [])
+                                from analyze import product
+                                observed = product(warm, dict(slot, arm='T-R'), cmd, m['inputs'][slot['workload']][slot['variant']])
+                                require(cmd['exit'] in (0, 2) and succeeded(dict(cmd, exit=0))
+                                        and cmd.get('containment_proven') is True and observed['cleanup_proven']
+                                        and not observed['quality_reasons'] and not observed['operational_reasons'], 'warm-up failed')
+                                state['warmup'] = {'seconds': cmd['seconds'], 'exit': cmd['exit']}
+                                before = inventory(directory)
+                                cleanup = execute(m['hooks']['warm_cleanup'], context, directory, 'warm-cleanup', [])
+                                require(succeeded(cleanup), 'warm-up output/data cleanup failed')
+                                proof(directory, 'warm-cleanup.json', {'outputs_removed': True, 'data_removed': True,
+                                      'cache_preserved': True}, previous=before)
+                                unchanged(directory, before)
+                            check_boundary()
+                        live_pins(m)
+                        original = inventory(directory)
+                        spec = m['commands'][slot['workload']][slot['variant']][slot['arm']]
+                        start = time.monotonic()
+                        with Monitor(directory):
+                            cmd = execute(spec, context, directory, 'run', [])
+                        # Baseline evaluations are persisted per execution. Product artifacts
+                        # arrive at CLI completion; endpoint validation is separately timed.
+                        from analyze import baseline, product
+                        expected = m['inputs'][slot['workload']][slot['variant']]
+                        try:
+                            observed = (baseline if slot['arm'].startswith('B') else product)(directory, slot, cmd, expected)
+                            state['evidence_received_seconds'] = [cmd['seconds'], time.monotonic() - start]
+                            state['cleanup_proven'] = observed['cleanup_proven']
+                        except (OSError, ValueError, KeyError, TypeError) as error:
+                            state['error'] = 'evidence: ' + str(error)
+                        unchanged(directory, original)
+                        check_boundary()
+                        if m['phase'] == 'measurement':
+                            live_pins(m)
+                            observed_files = inventory(directory)
+                            observer = execute(m['hooks']['observe'], context, directory, 'observe', [])
+                            require(succeeded(observer), 'observation failed')
+                            receipt = proof(directory, 'observation.json', {'host_id': m['environment']['host_id']}, previous=observed_files)
+                            state['resources'] = receipt['resources']
+                            unchanged(directory, observed_files)
+                            check_boundary()
+                except (Exception, KeyboardInterrupt) as error:
+                    state['error'] = str(error)
+                    if isinstance(error, KeyboardInterrupt):
+                        stop_reason = 'collector interrupted'
+                        state['interrupted'] = True
+                finally:
+                    def checkpoint():
+                        nonlocal stop_reason
+                        if state['cleanup_proven'] is not True and stop_reason is None:
+                            stop_reason = 'allocation cleanup unproven'
+                        for check in (lambda: live_pins(m), check_boundary):
+                            try: check()
+                            except (ValueError, OSError) as error:
+                                stop_reason = str(error)
+                                errors = state.setdefault('integrity_errors', [])
+                                if stop_reason not in errors: errors.append(stop_reason)
+                        state['ended_at'] = utc()
+                        stopped = {'reason': stop_reason, 'slot': slot['id'], 'at': utc()} if stop_reason else None
+                        state['stop'] = stopped
+                        write_json(directory / 'slot.json', state)
+                        seal(directory)
+                        consumed[slot['id']] = digest(directory / 'SHA256SUMS')
+                        save_progress(bundle, consumed, stopped=stopped)
+                        if stopped: write_json(bundle / 'stopped.json', stopped)
+                    try:
+                        # Deliver cleanup/checkpoint signals only after both seals
+                        # exist. A delivered interrupt then seals the stop without
+                        # running cleanup again or admitting another slot.
+                        with defer_interrupts():
+                            if m['phase'] == 'measurement' and allocation_started:
+                                try:
+                                    trusted = cleanup_dependencies(m)
+                                    live_pins({'pins': {p: m['pins'][p] for p in trusted}})
+                                    before_cleanup = inventory(directory)
+                                    cleanup = execute(m['hooks']['cleanup'], context, directory, 'cleanup', [])
+                                    require(succeeded(cleanup), 'cleanup command failed')
+                                    proof(directory, 'cleanup.json', {'proven': True}, previous=before_cleanup)
+                                    unchanged(directory, before_cleanup)
+                                    state['cleanup_proven'] = True
+                                except (Exception, KeyboardInterrupt) as error:
+                                    state['cleanup_proven'] = False
+                                    state['cleanup_error'] = str(error)
+                            checkpoint()
+                    except KeyboardInterrupt:
+                        stop_reason = 'collector interrupted'
+                        state['interrupted'] = True
+                        with defer_interrupts():
+                            checkpoint()
+                done += 1
+                if stop_reason: break
         print('E5_COLLECT_RESULT consumed=%d stopped=%s phase=%s' % (done, (bundle / 'stopped.json').exists(), m['phase']))
 
 

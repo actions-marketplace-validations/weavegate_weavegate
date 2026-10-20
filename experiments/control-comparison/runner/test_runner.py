@@ -20,6 +20,10 @@ class RunnerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.protocol = HERE.parent / 'README.md'
+        self.fixture_reference = {}
+        self.reference_patch = patch('support.FIXTURE_INPUTS', self.fixture_reference)
+        self.reference_patch.start()
+        self.addCleanup(self.reference_patch.stop)
 
     def tearDown(self): self.temp.cleanup()
 
@@ -31,7 +35,7 @@ class RunnerTests(unittest.TestCase):
         for w, spec in WORKLOADS.items():
             inputs[w], commands[w] = {}, {}
             for v in ('vulnerable', 'fixed'):
-                inputs[w][v] = {'candidates': candidates(w), 'counts': {'B1': 2, 'B2': 2, 'T-R': 2},
+                inputs[w][v] = {'expected_domain_rows': [{'synthetic': '1'}], 'candidates': candidates(w), 'counts': {'B1': 2, 'B2': 2, 'T-R': 2},
                     'config': {'Run': {'Repeat': 20, 'ArriveTimeoutMS': 1000, 'ExplorePasses': 3},
                                'Target': {'DB': 'mysql:8.4@sha256:'+'a'*64, 'SUT': {'External': {'Capacity': 2, 'StartupTimeoutMS': 30000,
                                                               'CancelTimeoutMS': 5000, 'StopTimeoutMS': 20000}}},
@@ -573,7 +577,7 @@ class RunnerTests(unittest.TestCase):
         migrations = inputs/'migrations'; migrations.mkdir()
         (migrations/'001.sql').write_text('constructed migration')
         for name in ('config.yaml','seed.sql','schedule.json'):
-            (inputs/name).write_text('constructed '+name)
+            (inputs/name).write_text('constructed seed' if name == 'seed.sql' else 'constructed '+name)
         for p in files(inputs): m['pins'][str(p)] = digest(p)
         inp = m['inputs']['matching']['vulnerable']
         inp['config']['Target']['Schema'] = {'Migrations':str(migrations), 'Seed':str(inputs/'seed.sql')}
@@ -997,6 +1001,192 @@ class RunnerTests(unittest.TestCase):
                 collect(bundle, registration)
             shutil.rmtree(bundle)
 
+    def test_rehashed_fixture_substitutions_are_rejected(self):
+        for change in ('worker', 'oracle', 'migration', 'seed', 'business'):
+            with self.subTest(change=change):
+                m = self.measurement_manifest()
+                inp = m['inputs']['matching']['fixed']
+                if change == 'worker':
+                    inp['config']['Scenarios'][WORKLOADS['matching'][1]]['Workers'][0]['Args']['ID'] = '99'
+                elif change == 'oracle':
+                    inp['config']['Oracle']['Assertions'][0]['SQL'] = 'SELECT 1'
+                elif change in ('migration', 'seed'):
+                    path = self.root/('migrations/001.sql' if change == 'migration' else 'seed.sql')
+                    path.write_text('changed '+change); m['pins'][str(path)] = digest(path)
+                else:
+                    classes = self.root/'fixture-classes'
+                    business = next(classes.rglob('*.class'))
+                    business.write_bytes(b'changed, consistently declared business class')
+                    jar = self.root/'fixture.jar'; sdk = self.root/'weavegate-spring-constructed.jar'
+                    with zipfile.ZipFile(jar, 'w') as archive:
+                        archive.write(business, 'BOOT-INF/classes/'+str(business.relative_to(classes)))
+                        archive.write(sdk, 'BOOT-INF/lib/'+sdk.name)
+                    for path in (business, jar): m['pins'][str(path)] = digest(path)
+                    for variants in m['inputs'].values():
+                        for value in variants.values():
+                            value['business_classes'] = {str(business.relative_to(classes)):digest(business)}
+                            value['jar_sha256'] = digest(jar)
+                for workload, variants in m['inputs'].items():
+                    for variant, value in variants.items():
+                        path = self.root/(workload+'-'+variant+'.json')
+                        write_json(path, config_document(value['config'])); m['pins'][str(path)] = digest(path)
+                with self.assertRaisesRegex(ValueError, 'reviewed revision'):
+                    validate(m)
+
+    def test_measurement_requires_protocol_domain_rows(self):
+        m = self.measurement_manifest()
+        for workload in WORKLOADS:
+            for variant in ('vulnerable', 'fixed'):
+                for rows in (None, [], [{'unexpected': '1'}]):
+                    with self.subTest(workload=workload, variant=variant, rows=rows):
+                        changed = copy.deepcopy(m)
+                        inp = changed['inputs'][workload][variant]
+                        if rows is None: inp.pop('expected_domain_rows', None)
+                        else: inp['expected_domain_rows'] = rows
+                        with self.assertRaisesRegex(ValueError, 'domain.*expectation'):
+                            validate(changed)
+
+    def test_saved_clean_exploration_is_not_complete(self):
+        root, slot, command, expected = self.product_raw('T-E')
+        directory = root/'raw/runs/constructed'
+        slot['variant'] = 'fixed'
+        manifest = read_json(directory/'manifest.json'); manifest['variant'] = 'fixed'
+        observation = read_json(directory/'observation.json')
+        observation.update(violation_runs=0, assertion_violations=[])
+        merged = read_json(directory/'report.json')
+        merged.update(manifest=manifest, observation=observation)
+        write_json(directory/'manifest.json', manifest)
+        write_json(directory/'observation.json', observation)
+        write_json(directory/'report.json', merged)
+        result = product(root, slot, dict(command, exit=0), expected)
+        self.assertIn('saved exploration schedule lacks discovery evidence', result['quality_reasons'])
+        self.assertFalse(result['stable_confirmation'])
+        self.assertIsNone(result['first_event_seconds'])
+
+    def test_unconfirmed_discovery_preserves_first_event(self):
+        root, slot, command, expected = self.product_raw('T-E')
+        directory = root/'raw/runs/constructed'
+        confirmed = product(root, slot, command, expected)
+        observation = read_json(directory/'observation.json')
+        observation.update(violation_runs=0, fingerprints={'b'*64: 2}, flaky=True)
+        merged = read_json(directory/'report.json'); merged['observation'] = observation
+        write_json(directory/'observation.json', observation)
+        write_json(directory/'report.json', merged)
+        result = product(root, slot, dict(command, exit=3), expected)
+        self.assertIsNotNone(result['first_event_seconds'])
+        self.assertEqual(result['first_event_seconds'], confirmed['first_event_seconds'])
+        self.assertFalse(result['stable_confirmation'])
+        self.assertIn('flaky', result['quality_reasons'])
+        observation['violation_runs'] = 1
+        write_json(directory/'observation.json', observation)
+        write_json(directory/'report.json', dict(merged, observation=observation))
+        self.assertIsNone(product(root, slot, dict(command, exit=3), expected)['first_event_seconds'])
+        observation['violation_runs'] = 0
+        observation['assertion_violations'] = []
+        write_json(directory/'observation.json', observation)
+        write_json(directory/'report.json', dict(merged, observation=observation))
+        self.assertIsNone(product(root, slot, dict(command, exit=3), expected)['first_event_seconds'])
+
+    def test_analysis_requires_executing_frozen_source(self):
+        bundle, _ = self.bundle()
+        for folder, name, target in (('source', 'analyze.py', 'support.HERE'),
+                                     ('source/shared', 'execution.py', 'support.SHARED')):
+            with self.subTest(module=name):
+                changed = self.root/name
+                shutil.copytree(bundle/'frozen'/folder, changed)
+                (changed/name).write_text((changed/name).read_text()+'\n# changed analyzer\n')
+                # Also patch the old call-site globals to exercise reviewed code.
+                with patch(target, changed), patch('analyze.'+target.split('.')[-1], changed):
+                    with self.assertRaisesRegex(ValueError, 'source changed'):
+                        analyze(bundle, self.root/('output-'+name))
+                self.assertFalse((self.root/('output-'+name)).exists())
+        command = [sys.executable, '-B', str(bundle/'frozen/source/tool.py'), 'analyze', str(bundle)]
+        subprocess.run(command+[str(self.root/'frozen-output')], check=True, capture_output=True)
+        analyze(bundle, self.root/'checkout-output')
+        self.assertEqual(inventory(self.root/'frozen-output'), inventory(self.root/'checkout-output'))
+
+    def test_activation_signals_leave_analyzable_stop(self):
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            for unsupported in (False, True):
+                for boundary in ('active-progress', 'initial-state', 'unsupported-seal'):
+                    if boundary == 'unsupported-seal' and not unsupported: continue
+                    with self.subTest(signal=signum, unsupported=unsupported, boundary=boundary):
+                        m = self.manifest()
+                        if unsupported: m['unsupported'] = {'matching/B2': 'constructed unsupported'}
+                        write_json(self.root/'input.json', m)
+                        bundle = self.root/'activation'
+                        freeze(self.root/'input.json', bundle)
+                        from tool import save_progress as real_progress, write_json as real_write, seal as real_seal
+                        signaled, calls = False, []
+                        def interrupt():
+                            nonlocal signaled
+                            if not signaled:
+                                signaled = True
+                                os.kill(os.getpid(), signum)
+                        def progress(root, consumed, **kwargs):
+                            real_progress(root, consumed, **kwargs)
+                            if boundary == 'active-progress' and kwargs.get('active'): interrupt()
+                        def write(path, value):
+                            real_write(path, value)
+                            if boundary == 'initial-state' and path.name == 'slot.json': interrupt()
+                        def sealing(path):
+                            if boundary == 'unsupported-seal' and path.parent == bundle/'slots': interrupt()
+                            real_seal(path)
+                        previous = signal.getsignal(signal.SIGTERM)
+                        with patch('tool.save_progress', side_effect=progress), patch('tool.write_json', side_effect=write), \
+                                patch('tool.seal', side_effect=sealing), patch('tool.execute', side_effect=lambda *a: calls.append(a)):
+                            try: collect(bundle, max_slots=1)
+                            except KeyboardInterrupt: pass
+                        self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
+                        self.assertTrue(signaled)
+                        self.assertFalse(calls)
+                        result = analyze(bundle, self.root/('activation-output-'+str(signum)+'-'+str(unsupported)+'-'+boundary))
+                        self.assertIn('interrupted', result['stopped']['reason'])
+                        self.assertIsNone(read_json(bundle/'progress/checkpoint.json')['active'])
+                        self.assertEqual(len(list((bundle/'slots').iterdir())), 1)
+                        (bundle/'stopped.json').unlink()
+                        with self.assertRaisesRegex(ValueError, 'stopped'): collect(bundle, max_slots=1)
+                        shutil.rmtree(bundle)
+
+    def test_sigterm_stops_running_process_and_seals_cleanup(self):
+        from execution import group_running
+        for label in ('run', 'prepare'):
+            with self.subTest(label=label):
+                m = self.measurement_manifest()
+                program = self.root/'interrupt-child.py'
+                pidfile = self.root/'child.pid'
+                program.write_text("import os,signal\nfrom pathlib import Path\n"
+                                   + "Path("+repr(str(pidfile))+").write_text(str(os.getpid()))\n"
+                                   + "os.kill(os.getppid(), signal.SIGTERM)\nsignal.pause()\n")
+                m['pins'][str(program)] = digest(program)
+                if label == 'run':
+                    m['commands']['matching']['fixed']['B2']['argv'][1] = str(program)
+                else:
+                    m['hooks']['prepare']['argv'][1] = str(program)
+                bundle, registration = self.measurement_bundle(m)
+                write_json(self.root/'reference.json', self.fixture_reference)
+                probe = ('import support,sys; from tool import collect; '
+                         'support.FIXTURE_INPUTS=support.read_json(sys.argv[1]); collect(sys.argv[2],sys.argv[3])')
+                child = subprocess.run([sys.executable, '-B', '-c', probe, str(self.root/'reference.json'),
+                                        str(bundle), str(registration)], cwd=HERE, capture_output=True, timeout=30)
+                try:
+                    self.assertEqual(child.returncode, 0, child.stderr.decode())
+                    pid = int(pidfile.read_text())
+                    self.assertFalse(group_running(pid))
+                    directory = bundle/'slots'/order()[0]['id']
+                    self.assertTrue(read_json(directory/(label+'.command.json'))['interrupted'])
+                    self.assertTrue(read_json(directory/'slot.json')['cleanup_proven'])
+                    result = analyze(bundle, self.root/('sigterm-output-'+label))
+                    self.assertIn('interrupted', result['stopped']['reason'])
+                    self.assertEqual(len(list((bundle/'slots').iterdir())), 1)
+                    with self.assertRaisesRegex(ValueError, 'stopped'): collect(bundle, registration)
+                finally:
+                    if pidfile.exists():
+                        try: os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+                        except ProcessLookupError: pass
+                        pidfile.unlink()
+                    shutil.rmtree(bundle)
+
     def write_measurement_configs(self, m):
         # Constructed wire documents use Go's YAML field names, while preserving
         # user-owned scenario and argument keys.
@@ -1006,7 +1196,7 @@ class RunnerTests(unittest.TestCase):
                   'CancelTimeoutMS':'cancel_timeout_ms', 'StopTimeoutMS':'stop_timeout_ms',
                   'Java':'java', 'JAR':'jar', 'Schema':'schema', 'Migrations':'migrations',
                   'Seed':'seed', 'Oracle':'oracle', 'Assertions':'assertions', 'ID':'id',
-                  'Workers':'workers', 'Command':'command', 'SyncPoints':'sync_points'}
+                  'Workers':'workers', 'Command':'command', 'SyncPoints':'sync_points', 'Variant':'variant'}
         def wire(value):
             if isinstance(value, list): return [wire(v) for v in value]
             if not isinstance(value, dict): return value
@@ -1043,19 +1233,33 @@ class RunnerTests(unittest.TestCase):
             'kernel':'constructed','docker':'constructed','background_policy':'constructed',
             'mysql_image':'mysql:8.4@sha256:'+'a'*64,'vcpus':4,'memory_bytes':16*1024**3}
         m['prerequisites']={k:str(self.root/'arm.py') for k in ('go_acceptance','java_acceptance','paired_acceptance','corpus_acceptance','baseline_feasibility')}
+        migrations = self.root/'migrations'; migrations.mkdir(exist_ok=True)
+        (migrations/'001.sql').write_text('constructed migration')
+        seed = self.root/'seed.sql'; seed.write_text('constructed seed')
+        for p in [*files(migrations), seed]: m['pins'][str(p)] = digest(p)
         for values in m['inputs'].values():
             for inp in values.values():
                 inp['counts']={'B1':20,'B2':100,'T-R':20};inp['sdk_sha256']=digest(sdk)
                 inp['business_classes']={str(business.relative_to(classes)):digest(business)}
                 inp['jar_sha256']=digest(jar)
-                inp['config']['Target']['Schema'] = {'Migrations':str(self.root/'arm.py'), 'Seed':str(self.root/'arm.py')}
+                inp['config']['Target']['Schema'] = {'Migrations':str(migrations), 'Seed':str(seed)}
                 inp['config']['Target']['SUT']['External'].update(Java=str(Path(sys.executable).resolve()), JAR=str(jar))
         for workload, variants in m['inputs'].items():
-            for inp in variants.values():
+            for variant, inp in variants.items():
+                inp['expected_domain_rows'] = EXPECTED_DOMAIN_ROWS[workload]
+                inp['config']['Target']['SUT']['Variant'] = variant
                 inp['config']['Scenarios'] = {WORKLOADS[workload][1]: {
                     'Workers':[{'ID':'a', 'Command':'constructed', 'Args':{'ID':'42'}}],
                     'SyncPoints':['read','write']}}
         self.write_measurement_configs(m)
+        # An independent constructed authority keeps lifecycle tests small;
+        # mutation tests below must not update this reference with the manifest.
+        for workload, variants in m['inputs'].items():
+            inp = variants['vulnerable']
+            self.fixture_reference[workload] = {
+                'config': normalized_fixture_config(inp['config']),
+                'migrations': inventory(migrations), 'seed_sha256': digest(seed),
+                'business_classes': copy.deepcopy(inp['business_classes'])}
         for variants in m['commands'].values():
             for commands in variants.values():
                 for arm in ('B0','B1','B2'):

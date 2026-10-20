@@ -60,7 +60,7 @@ def stages(spans, seconds):
 def domain_rows_match(violations, assertion, expected):
     actual = [{k: str(v) for k, v in row.items()} for violation in violations
               if violation['oracle_id'] == assertion for row in violation['rows']]
-    return not expected.get('expected_domain_rows') or actual == expected['expected_domain_rows']
+    return bool(expected.get('expected_domain_rows')) and actual == expected['expected_domain_rows']
 
 
 def baseline(root, slot, command, expected):
@@ -235,6 +235,8 @@ def product(root, slot, command, expected):
         if not stable: result['quality_reasons'].append('repeat/fingerprint mismatch')
         want = repeat if slot['variant'] == 'vulnerable' else 0
         if o['violation_runs'] != want or (want > 0) != domain: result['quality_reasons'].append('unexpected domain outcome')
+        if slot['arm'] == 'T-E' and (not domain or not o.get('discovery_fingerprint')):
+            result['quality_reasons'].append('saved exploration schedule lacks discovery evidence')
         if domain and not domain_rows_match(violations, assertion, expected):
             result['quality_reasons'].append('domain assertion rows differ')
         result['stable_confirmation'] = stable and domain and slot['arm'] == 'T-E'
@@ -287,7 +289,10 @@ def product(root, slot, command, expected):
         if not fingerprint_matches:
             result['quality_reasons'].append('discovery fingerprint differs from confirmation')
         result['stable_confirmation'] = bool(result['stable_confirmation'] and mapped and fingerprint_matches)
-        if mapped and domain and fingerprint_matches:
+        # With zero violating replays the CLI retains the discovery's violations.
+        # Otherwise a different replay fingerprint can leave attribution ambiguous.
+        discovery_evidence = fingerprint_matches or o['violation_runs'] == 0
+        if mapped and domain and o.get('discovery_fingerprint') and discovery_evidence:
             evaluations = [s for s in spans if s['name'] == 'oracle_evaluate' and s['parent_id'] == discovery[-1]['id']]
             commands = [s for s in spans if s['name'] == 'command']
             if len(evaluations) == len(commands) == 1:
@@ -355,7 +360,9 @@ def analyze(bundle, output):
 def analyze_locked(bundle, output, check_lock):
     bundle, output = Path(bundle), Path(output)
     verify(bundle / 'frozen')
+    frozen_sources(bundle)
     manifest = read_json(bundle / 'frozen' / 'manifest.json')
+    domain_expectations(manifest)
     if manifest['phase'] == 'measurement':
         require(all(inp['config']['Target'].get('DB') == manifest['environment']['mysql_image']
                     for variants in manifest['inputs'].values() for inp in variants.values()),

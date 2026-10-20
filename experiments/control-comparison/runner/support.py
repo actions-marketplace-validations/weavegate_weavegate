@@ -5,8 +5,10 @@ import importlib
 import fcntl
 import re
 import zipfile
+import copy
 from contextlib import contextmanager
 from pathlib import Path
+from fixture_contract import FIXTURE_INPUTS, FIXTURE_REVISION
 
 HERE = Path(__file__).resolve().parent
 SHARED = HERE / 'shared'
@@ -42,6 +44,11 @@ WORKLOADS = {
               'overlap', 'QuotaApplication', 70, 'sch_71c5162c990b'),
     'job': ('spring-job-claim', 'complete-and-reassign', 'completion-requires-current-lease',
             'overlap', 'JobClaimApplication', 70, 'sch_739dbe2cd669'),
+}
+EXPECTED_DOMAIN_ROWS = {
+    'matching': [{'project_request_id': '42', 'active_assignment_count': '2'}],
+    'quota': [{'account_id': '42', 'capacity': '1', 'remaining': '0', 'accepted_units': '2'}],
+    'job': [{'job_id': '42', 'epoch': '2', 'status': 'DONE', 'completed_epoch': '1'}],
 }
 STATUSES = ('complete', 'quality_failed', 'operational_failed', 'budget_exhausted',
             'preparation_failed', 'unsupported', 'not_started')
@@ -82,6 +89,46 @@ def inventory(root):
 
 def check_inventory(root, expected):
     require(inventory(root) == expected, 'retained evidence changed: ' + str(root))
+
+
+def frozen_sources(bundle):
+    for directory, actual in (('source', HERE), ('source/shared', SHARED)):
+        for path in (bundle / 'frozen' / directory).glob('*.py'):
+            require(digest(actual / path.name) == digest(path), 'collector/analyzer source changed after freeze')
+
+
+def normalized_fixture_config(config):
+    """Only deployment paths, the registered image, and selected variant vary."""
+    config = copy.deepcopy(config)
+    target = config['Target']
+    target['DB'] = '<mysql-image>'
+    target['Schema'] = {k: '<'+k.lower()+'>' for k in target['Schema']}
+    target['SUT']['Variant'] = '<variant>'
+    target['SUT']['External'].update(Java='<java>', JAR='<jar>')
+    return config
+
+
+def fixture_revision_inputs(workload, variant, expected):
+    reference = FIXTURE_INPUTS[workload]
+    require(json_equal(normalized_fixture_config(expected['config']), reference['config'])
+            and expected['config']['Target']['SUT']['Variant'] == variant,
+            'fixture config differs from reviewed revision')
+    schema = expected['config']['Target']['Schema']
+    require(Path(schema['Migrations']).is_dir()
+            and inventory(Path(schema['Migrations'])) == reference['migrations'],
+            'fixture migrations differ from reviewed revision')
+    require(digest(schema['Seed']) == reference['seed_sha256'], 'fixture seed differs from reviewed revision')
+    require(expected['business_classes'] == reference['business_classes'],
+            'fixture business classes differ from reviewed revision')
+
+
+def domain_expectations(manifest):
+    if manifest['phase'] != 'measurement': return
+    for workload in WORKLOADS:
+        for variant in ('vulnerable', 'fixed'):
+            require(json_equal(manifest['inputs'][workload][variant].get('expected_domain_rows'),
+                               EXPECTED_DOMAIN_ROWS[workload]),
+                    'domain row expectation differs from protocol')
 
 
 def command_valid(spec):
@@ -211,6 +258,7 @@ def measurement_dependencies(manifest):
                 if arm.startswith('B'):
                     classpath_identity(command, expected)
             fixture_identity(expected)
+            fixture_revision_inputs(workload, variant, expected)
     for name, hook in manifest['hooks'].items():
         file_dependencies(hook, manifest['pins'], name)
 

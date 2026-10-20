@@ -108,6 +108,33 @@ infrastructure. Do this **before** freezing or running any warm-up. The local
 preparer does not provision a VM, confer candidate status on a development build,
 or manufacture successful prerequisite evidence.
 
+Measurement inputs also have to match `fixture_contract.py`, an independent
+reference generated from the protocol's immutable Git tree. It fixes the complete
+effective config except deployment paths, image digest and variant, and fixes
+migration/seed bytes and the compiled fixture class inventory. Changing inputs
+and their manifest hashes together cannot replace this reference. These checks
+run at freeze and live-input boundaries. Both launch paths must match the same
+reviewed class inventory.
+
+The reference retains original source hashes, compiler identity/flags and build
+library hashes. The following maintainer command reproduces it using the
+preparer's extracted libraries and existing Go input exporter; it reads fixture
+sources directly from the protocol commit, not the working tree:
+
+```bash
+python3 -B experiments/control-comparison/runner/record_fixture_contract.py \
+  --baseline /tmp/e5-input/baseline --classpaths /tmp/e5-input \
+  --javac "$(command -v javac)" --output /tmp/fixture_contract.py
+diff -u experiments/control-comparison/runner/fixture_contract.py \
+  /tmp/fixture_contract.py
+```
+
+Use the retained compiler/dependency identities for byte-identical regeneration.
+If the eventual E1 SDK or a packaging change changes the compiled classes, rebuild
+from the same immutable source and review the reference diff before freezing a
+measurement campaign. A campaign manifest cannot nominate its own reference.
+This reference build is not E1 registration or acceptance evidence.
+
 | Manifest field | Required content |
 | --- | --- |
 | `schema`, `protocol_revision`, `phase`, `campaign_id`, `seed` | `1`, `1`, `measurement`, unique ID, fixed protocol seed |
@@ -219,9 +246,13 @@ feasibility ID is required for diagnostic reruns. `--max-slots` exists only for
 feasibility, including the automated five-arm check above.
 Final input or evidence integrity failures are sealed on the active slot as
 operational errors and also stop the campaign, even when cleanup succeeds.
-SIGINT/SIGTERM during cleanup or checkpoint writes are deferred until the slot and
-progress seals exist. The collector then seals the interruption stop before any
-further slot, preserving completed cleanup without running it again.
+SIGTERM during collection uses the same catchable interruption as SIGINT, so
+command execution terminates its process group before cleanup. Signals are
+deferred before recording an active slot until its recovery handler owns it,
+including unsupported slots. Cleanup and checkpoint writes defer signals until
+the slot and progress seals exist. The collector then seals the interruption stop
+before any further slot, preserving completed cleanup without running it again.
+An interruption before allocation does not launch a command or cleanup hook.
 
 The sealed `progress/checkpoint.json` records the consumed slot seals, any active
 attempt, registration identity, completion and stop state. A slot also seals its
@@ -239,6 +270,9 @@ it does not run Java, Go, Docker or registered hooks. `results.json` contains al
 disclosures, stage durations and within-block pairs. `report.md` renders the
 stratified accounting and timing table. Regenerating into another new directory
 produces byte-identical files. Corrupt or missing sealed originals fail analysis.
+Both collection and analysis compare the executing runner and shared module bytes
+with `frozen/source` before processing slots. Use the retained tools for an older
+bundle; a changed checkout cannot analyze it under the same campaign identity.
 Analysis holds a shared campaign lock through validation, reduction and output
 writing. It fails immediately while collection holds the exclusive lock;
 concurrent analyses may use separate output directories.
@@ -252,18 +286,27 @@ Baseline receipts must match the requested arm and variant. Product observations
 must declare `replay` for T-R and `explore` for T-E, including warm-up. Evidence
 from another slot or mode cannot count as a completed observation.
 Baseline and product domain rows use the same string-normalized comparison
-against the frozen expectation. Unexpected rows remain recorded observations
-and make the invocation quality-failed.
+against the frozen expectation. Every measurement workload/variant requires the
+nonempty, protocol-specific `expected_domain_rows`, including fixed controls.
+Omission or an empty list is never a wildcard. Unexpected rows remain recorded
+observations and make the invocation quality-failed.
 
 The collector observes baseline execution JSON every 100 ms and retains its
 receipt times/hashes. Publication and polling delay remain visible. Product
 discovery is retrospective: its original `oracle_evaluate` span is mapped to
 the discovered schedule and checked against the retained discovery fingerprint.
-The saved discovery must be the final explored execution. A missing or different
+The saved discovery must be the final explored execution and retain a discovery
+fingerprint and domain evidence, including for fixed slots. A clean saved schedule
+cannot replace the fixed arm's three exhaustive passes. A missing or different
 candidate is a quality failure and cannot receive stable confirmation. An
 exhausted search requires zero violation runs, no assertion violations, a
 non-flaky outcome and exit zero; contradictory evidence cannot count as an
 unexpected miss.
+When confirmation reproduces zero violations, the CLI retains the original
+discovery's assertion rows. That mapped discovery keeps its first-event bound
+even though its fingerprint is absent from confirmation and the outcome is flaky.
+When violating replays have different fingerprints, attribution remains ambiguous
+and timing stays unknown, as the protocol requires.
 Unknown alignment uses the protocol's interval bounds; absent or ambiguous
 timing stays unknown. Domain discovery, receipt of usable evidence, stable
 confirmation and clean final completion are separate fields.
