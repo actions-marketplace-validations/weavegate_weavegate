@@ -83,6 +83,8 @@ def baseline(root, slot, command, expected):
     if not result['cleanup_proven']: result['operational_reasons'].append('fixture cleanup unproven')
     if run.get('error') and not (command['timeout'] and run.get('cancellation_only') is True):
         result['operational_reasons'].append(run['error'])
+    if command['exit'] != 0 and not command['timeout']:
+        result['operational_reasons'].append('baseline operational exit')
     whole = command['seconds']
     result['stages'] = stages(run['timings']['spans'], whole)
     if slot['arm'] == 'B0':
@@ -162,6 +164,9 @@ def validate_trace(trace, saved, slot):
     require(trace['schedule_ref'] == saved['id'], 'trace schedule differs')
     require(len(trace['terminals']) == 2 and all(t['state'] == 'done' and t['failure_class'] == 'none'
                                                for t in trace['terminals']), 'terminal failure')
+    workers = [t.get('worker') for t in trace['terminals']]
+    require(all(isinstance(w, str) and w for w in workers) and len(set(workers)) == len(workers)
+            and set(workers) == {s['worker'] for s in saved['steps']}, 'terminal workers differ from schedule')
     events = trace['events']
     require([e['seq'] for e in events] == list(range(1, len(events) + 1)), 'trace sequence differs')
     require(not any(e['kind'] == 'worker_failed' for e in events), 'worker failure')
@@ -333,6 +338,8 @@ def reduce_slot(root, slot, manifest):
     if state.get('interrupted'): operational.append('collector interrupted')
     if command['error'] or not command['started'] or not command['containment_proven']:
         operational.append('command spawn/containment failure')
+    if command.get('finished') is not True or command.get('interrupted') is not False:
+        operational.append('command unfinished/interrupted')
     if manifest['phase'] == 'measurement' and state.get('cleanup_proven') is not True:
         operational.append('allocation cleanup unproven')
     result['status'] = ('operational_failed' if operational else 'quality_failed' if evidence['quality_reasons']

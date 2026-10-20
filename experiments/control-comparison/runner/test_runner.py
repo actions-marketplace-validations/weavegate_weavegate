@@ -24,6 +24,10 @@ class RunnerTests(unittest.TestCase):
         self.reference_patch = patch('support.FIXTURE_INPUTS', self.fixture_reference)
         self.reference_patch.start()
         self.addCleanup(self.reference_patch.stop)
+        self.library_reference = {'libraries': {}}
+        self.library_patch = patch('support.REFERENCE_BUILD', self.library_reference, create=True)
+        self.library_patch.start()
+        self.addCleanup(self.library_patch.stop)
 
     def tearDown(self): self.temp.cleanup()
 
@@ -311,9 +315,15 @@ class RunnerTests(unittest.TestCase):
         run = read_json(root/'raw/run.json'); run['executions'] = 1
         write_json(root/'raw/run.json',run)
         cmd['timeout'] = True
-        r = baseline(root, slot, cmd, self.manifest()['inputs']['quota']['vulnerable'])
+        cmd['exit'] = 1
+        run.update(error='context canceled', cancellation_only=True)
+        write_json(root/'raw/run.json',run)
+        manifest = self.manifest()
+        r = baseline(root, slot, cmd, manifest['inputs']['quota']['vulnerable'])
         self.assertEqual((r['valid_evaluations'],r['unobserved'],r['x_over_planned']), (1,1,.5))
         self.assertFalse(r['operational_reasons'])
+        write_json(root/'run.command.json',cmd); seal(root)
+        self.assertEqual(reduce_slot(root,slot,manifest)['status'], 'budget_exhausted')
 
     def test_cleanup_failure_does_not_hide_first_detection(self):
         root, slot, _ = self.raw()
@@ -401,14 +411,16 @@ class RunnerTests(unittest.TestCase):
         self.assertIsNone(r['first_event_seconds'])
 
     def test_matching_fixed_skip_requires_prior_terminal(self):
-        saved={'id':'saved','steps':[{'worker':'w2','point':'before_insert_assignment'}]}
+        saved={'id':'saved','steps':[{'worker':'w1','point':'before_insert_assignment'},
+                                   {'worker':'w2','point':'before_insert_assignment'}]}
         slot={'workload':'matching','variant':'fixed'}
-        trace={'schedule_ref':'saved','terminals':[{'state':'done','failure_class':'none'}]*2,
-               'events':[{'seq':1,'kind':'worker_done','worker':'w2'},
-                         {'seq':2,'kind':'step_terminal_skipped','worker':'w2','point':'before_insert_assignment','step':0}]}
+        trace={'schedule_ref':'saved','terminals':[{'worker':w,'state':'done','failure_class':'none'} for w in ('w1','w2')],
+               'events':[{'seq':1,'kind':'point_released','worker':'w1','point':'before_insert_assignment','step':0},
+                         {'seq':2,'kind':'worker_done','worker':'w2'},
+                         {'seq':3,'kind':'step_terminal_skipped','worker':'w2','point':'before_insert_assignment','step':1}]}
         self.assertEqual(validate_trace(trace,saved,slot)['terminal_skips'],1)
         with self.assertRaises(ValueError):validate_trace(trace,saved,dict(slot,variant='vulnerable'))
-        trace['events'][0]['worker']='w1'
+        trace['events'][1]['worker']='w1'
         with self.assertRaises(ValueError):validate_trace(trace,saved,slot)
 
 
@@ -475,7 +487,8 @@ class RunnerTests(unittest.TestCase):
             observation.update(violation_runs=0, fingerprints={}, discovery_fingerprint=None,
                                explore_passes=3, assertion_violations=[])
         scenario = {} if exhausted else {'schedule': saved}
-        trace = {'schedule_ref': saved['id'], 'terminals': [{'state': 'done', 'failure_class': 'none'}]*2,
+        trace = {'schedule_ref': saved['id'],
+                 'terminals': [{'worker':w, 'state':'done', 'failure_class':'none'} for w in ('w1','w2')],
                  'events': [dict(s, seq=i+1, kind='point_released', step=i) for i,s in enumerate(saved['steps'])]}
         for name, value in (('manifest',manifest),('observation',observation),('scenario',scenario),('trace',trace),
                             ('report',{'manifest':manifest,'observation':observation,'scenario':scenario})):
@@ -496,6 +509,172 @@ class RunnerTests(unittest.TestCase):
                 self.assertFalse(valid['quality_reasons'] + valid['operational_reasons'])
                 with self.assertRaisesRegex(ValueError, 'mode'):
                     product(root, dict(slot, arm=other), command, expected)
+
+    def test_product_terminal_workers_must_match_schedule(self):
+        for arm in ('T-R', 'T-E'):
+            root, slot, command, expected = self.product_raw(arm)
+            path = root/'raw/runs/constructed/trace.json'
+            original = read_json(path)
+            for workers in (['w1','w1'], ['w2','w2'], [None,None], ['w1',None], ['w1','other']):
+                with self.subTest(arm=arm, workers=workers):
+                    trace = copy.deepcopy(original)
+                    for terminal, worker in zip(trace['terminals'], workers):
+                        if worker is None: terminal.pop('worker')
+                        else: terminal['worker'] = worker
+                    write_json(path, trace)
+                    evidence = product(root, slot, command, expected)
+                    self.assertIn('terminal workers differ from schedule', evidence['quality_reasons'])
+            original['terminals'].reverse()
+            write_json(path, original)
+            self.assertFalse(product(root, slot, command, expected)['quality_reasons'])
+
+    def test_nonzero_baseline_exits_cannot_complete(self):
+        root, slot, command = self.raw()
+        manifest = self.manifest()
+        original = read_json(root/'raw/run.json')
+        for arm in ('B0','B1','B2'):
+            current = dict(slot, arm=arm)
+            run = dict(original, arm=arm, executions=0 if arm == 'B0' else 2)
+            write_json(root/'raw/run.json', run)
+            write_json(root/'slot.json', {'slot':current, 'cleanup_proven':True})
+            for code in (1, 2, 137, -9, None):
+                with self.subTest(arm=arm, exit=code):
+                    write_json(root/'run.command.json', dict(command, exit=code))
+                    seal(root)
+                    result = reduce_slot(root, current, manifest)
+                    self.assertEqual(result['status'], 'operational_failed')
+                    self.assertIn('baseline operational exit', result['reasons'])
+                    if arm != 'B0':
+                        self.assertEqual(result['valid_evaluations'], 2)
+                        self.assertEqual(result['domain_violations'], 2)
+                        self.assertIsNotNone(result['first_event_seconds'])
+            write_json(root/'run.command.json', command); seal(root)
+            self.assertEqual(reduce_slot(root, current, manifest)['status'], 'complete')
+
+    def test_measured_command_must_finish_without_interruption(self):
+        baseline_root, baseline_slot, baseline_command = self.raw()
+        manifest = self.manifest()
+        trials = [(baseline_root, baseline_slot, baseline_command)]
+        for arm in ('T-R','T-E'):
+            root, slot, command, expected = self.product_raw(arm)
+            manifest['inputs'][slot['workload']][slot['variant']] = expected
+            trials.append((root,slot,command))
+        for root, slot, command in trials:
+            for change in ({'finished':False}, {'interrupted':True}):
+                with self.subTest(arm=slot['arm'], change=change):
+                    write_json(root/'run.command.json', dict(command, **change)); seal(root)
+                    result = reduce_slot(root, slot, manifest)
+                    self.assertEqual(result['status'], 'operational_failed')
+                    self.assertIsNotNone(result['first_event_seconds'])
+
+    def test_baseline_runtime_overrides_are_rejected(self):
+        m = self.measurement_manifest()
+        other = self.root/'another-java'; other.write_bytes(b'another runtime')
+        m['pins'][str(other)] = digest(other)
+        for arm in ('B0','B1','B2'):
+            for option in ('java','jar','image'):
+                for prefix, equals in (('--',False), ('-',False), ('--',True), ('-',True)):
+                    with self.subTest(arm=arm, option=option, prefix=prefix, equals=equals):
+                        changed = copy.deepcopy(m)
+                        flag = prefix+option
+                        changed['commands']['matching']['fixed'][arm]['argv'] += (
+                            [flag+'='+str(other)] if equals else [flag,str(other)])
+                        with self.assertRaisesRegex(ValueError, 'baseline.*override'):
+                            validate(changed)
+                        with self.assertRaisesRegex(ValueError, 'baseline.*override'):
+                            live_pins(changed)
+
+    def test_baseline_libraries_must_match_reference_build(self):
+        m = self.measurement_manifest()
+        spec = m['commands']['matching']['fixed']['B1']
+        original = spec['argv'][-1]
+        library = self.root/'spring.jar'
+        library_bytes = library.read_bytes()
+        for kind in ('substitute','extra','missing','duplicate','loose-class','resource'):
+            with self.subTest(kind=kind):
+                changed = copy.deepcopy(m)
+                argv = changed['commands']['matching']['fixed']['B1']['argv']
+                if kind == 'substitute':
+                    with zipfile.ZipFile(library,'w') as archive:
+                        archive.writestr('org/springframework/Constructed.class', b'substituted')
+                    changed['pins'][str(library)] = digest(library)
+                elif kind == 'missing':
+                    argv[-1] = os.pathsep.join(p for p in original.split(os.pathsep) if p != str(library))
+                elif kind == 'duplicate':
+                    argv[-1] += os.pathsep+str(library)
+                else:
+                    extra = self.root/('extra-'+kind)
+                    if kind == 'extra':
+                        with zipfile.ZipFile(extra,'w') as archive:
+                            archive.writestr('org/springframework/Constructed.class', b'shadow')
+                        changed['pins'][str(extra)] = digest(extra)
+                    else:
+                        extra.mkdir()
+                        name = ('org/springframework/Constructed.class' if kind == 'loose-class'
+                                else 'META-INF/services/constructed')
+                        path = extra/name; path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b'shadow'); changed['pins'][str(path)] = digest(path)
+                    argv[-1] = str(extra)+os.pathsep+original
+                with self.assertRaisesRegex(ValueError, 'classpath.*(librar|reference|entry)'):
+                    validate(changed)
+            library.write_bytes(library_bytes)
+
+    def test_product_libraries_must_match_reference_build(self):
+        m = self.measurement_manifest()
+        jar = self.root/'fixture.jar'
+        original = jar.read_bytes()
+        for kind in ('substitute','extra','missing'):
+            with self.subTest(kind=kind):
+                changed = copy.deepcopy(m)
+                with zipfile.ZipFile(jar) as archive:
+                    contents = {name:archive.read(name) for name in archive.namelist()}
+                key = 'BOOT-INF/lib/spring.jar'
+                if kind == 'substitute': contents[key] = b'changed library'
+                elif kind == 'extra': contents['BOOT-INF/lib/extra.jar'] = b'extra library'
+                else: del contents[key]
+                with zipfile.ZipFile(jar, 'w') as archive:
+                    for name, data in contents.items(): archive.writestr(name,data)
+                changed['pins'][str(jar)] = digest(jar)
+                for variants in changed['inputs'].values():
+                    for inp in variants.values(): inp['jar_sha256'] = digest(jar)
+                with self.assertRaisesRegex(ValueError, 'fixture.*librar'):
+                    validate(changed)
+            jar.write_bytes(original)
+
+    def test_product_classpath_shadows_are_rejected(self):
+        m = self.measurement_manifest()
+        jar = self.root/'fixture.jar'
+        original = jar.read_bytes()
+        for name in ('org/springframework/Constructed.class', 'META-INF/services/constructed'):
+            with self.subTest(entry=name):
+                changed = copy.deepcopy(m)
+                with zipfile.ZipFile(jar,'a') as archive:
+                    archive.writestr('BOOT-INF/classes/'+name, b'shadow')
+                changed['pins'][str(jar)] = digest(jar)
+                for variants in changed['inputs'].values():
+                    for inp in variants.values(): inp['jar_sha256'] = digest(jar)
+                with self.assertRaisesRegex(ValueError, 'fixture classpath'):
+                    validate(changed)
+            jar.write_bytes(original)
+
+    def test_sdk_identity_comes_from_registration_not_reference_compiler(self):
+        m = self.measurement_manifest()
+        sdk = self.root/'weavegate-spring-constructed.jar'
+        with zipfile.ZipFile(sdk,'w') as archive:
+            archive.writestr('io/github/weavegate/sdk/Weavegate.class', b'registered candidate SDK')
+        jar = self.root/'fixture.jar'
+        with zipfile.ZipFile(jar) as archive:
+            contents = {name:archive.read(name) for name in archive.namelist()}
+        contents['BOOT-INF/lib/'+sdk.name] = sdk.read_bytes()
+        with zipfile.ZipFile(jar,'w') as archive:
+            for name,data in contents.items(): archive.writestr(name,data)
+        for path in (jar,sdk): m['pins'][str(path)] = digest(path)
+        for variants in m['inputs'].values():
+            for inp in variants.values():
+                inp.update(sdk_sha256=digest(sdk), jar_sha256=digest(jar))
+        m['candidate']['sdk_sha256'] = m['e1_registration']['sdk_sha256'] = digest(sdk)
+        self.assertNotEqual(self.library_reference['libraries']['matching'][sdk.name], digest(sdk))
+        validate(m)
 
     def test_baseline_receipt_identity_must_match_requested_slot(self):
         root, slot, command = self.raw()
@@ -570,10 +749,10 @@ class RunnerTests(unittest.TestCase):
         m = self.measurement_manifest()
         inputs = self.root/'command-inputs'; inputs.mkdir()
         classes = inputs/'classes'; classes.mkdir()
-        (classes/'BaselineMain.class').write_bytes(b'constructed launcher')
+        launcher = classes/'io/github/weavegate/experiment/BaselineMain.class'
+        launcher.parent.mkdir(parents=True); launcher.write_bytes(b'constructed launcher')
         libraries = inputs/'lib'; libraries.mkdir()
-        with zipfile.ZipFile(libraries/'spring.jar', 'w') as archive:
-            archive.writestr('constructed.txt', 'constructed library')
+        shutil.copyfile(self.root/'spring.jar', libraries/'spring.jar')
         migrations = inputs/'migrations'; migrations.mkdir()
         (migrations/'001.sql').write_text('constructed migration')
         for name in ('config.yaml','seed.sql','schedule.json'):
@@ -591,7 +770,9 @@ class RunnerTests(unittest.TestCase):
             spec['argv'][index:index+2] = ['--config='+str(inputs/'config.yaml')]
             spec['argv'] += ['--replay', str(inputs/'schedule.json')]
             if arm.startswith('B'):
-                spec['argv'][spec['argv'].index('--classpath')+1] += os.pathsep + os.pathsep.join(map(str,[classes,libraries/'*']))
+                index = spec['argv'].index('--classpath')+1
+                paths = [p for p in spec['argv'][index].split(os.pathsep) if p != str(self.root/'spring.jar')]
+                spec['argv'][index] = os.pathsep.join([*paths, str(classes), str(libraries/'*')])
         validate(m)
         dependencies = files(inputs) + [Path(inp['config']['Target']['SUT']['External']['JAR']),
                                         self.root/'weavegate-spring-constructed.jar'] + files(self.root/'fixture-classes')
@@ -604,7 +785,8 @@ class RunnerTests(unittest.TestCase):
     def test_new_classpath_file_after_freeze_prevents_execution(self):
         m = self.measurement_manifest()
         classes = self.root/'classes'; classes.mkdir()
-        original = classes/'Business.class'; original.write_bytes(b'original')
+        original = classes/'io/github/weavegate/experiment/BaselineMain.class'
+        original.parent.mkdir(parents=True); original.write_bytes(b'original')
         m['pins'][str(original)] = digest(original)
         m['commands']['matching']['fixed']['B2']['argv'][-1] += os.pathsep + str(classes)
         bundle, registration = self.measurement_bundle(m)
@@ -1021,6 +1203,7 @@ class RunnerTests(unittest.TestCase):
                     with zipfile.ZipFile(jar, 'w') as archive:
                         archive.write(business, 'BOOT-INF/classes/'+str(business.relative_to(classes)))
                         archive.write(sdk, 'BOOT-INF/lib/'+sdk.name)
+                        archive.write(self.root/'spring.jar', 'BOOT-INF/lib/spring.jar')
                     for path in (business, jar): m['pins'][str(path)] = digest(path)
                     for variants in m['inputs'].values():
                         for value in variants.values():
@@ -1164,9 +1347,10 @@ class RunnerTests(unittest.TestCase):
                 else:
                     m['hooks']['prepare']['argv'][1] = str(program)
                 bundle, registration = self.measurement_bundle(m)
-                write_json(self.root/'reference.json', self.fixture_reference)
+                write_json(self.root/'reference.json', {'fixtures':self.fixture_reference, 'build':self.library_reference})
                 probe = ('import support,sys; from tool import collect; '
-                         'support.FIXTURE_INPUTS=support.read_json(sys.argv[1]); collect(sys.argv[2],sys.argv[3])')
+                         'reference=support.read_json(sys.argv[1]); support.FIXTURE_INPUTS=reference["fixtures"]; '
+                         'support.REFERENCE_BUILD=reference["build"]; collect(sys.argv[2],sys.argv[3])')
                 child = subprocess.run([sys.executable, '-B', '-c', probe, str(self.root/'reference.json'),
                                         str(bundle), str(registration)], cwd=HERE, capture_output=True, timeout=30)
                 try:
@@ -1222,11 +1406,15 @@ class RunnerTests(unittest.TestCase):
         sdk = self.root/'weavegate-spring-constructed.jar'
         with zipfile.ZipFile(sdk, 'w') as archive:
             archive.writestr('io/github/weavegate/sdk/Weavegate.class', b'constructed SDK class')
+        library = self.root/'spring.jar'
+        with zipfile.ZipFile(library, 'w') as archive:
+            archive.writestr('org/springframework/Constructed.class', b'constructed library class')
         jar = self.root/'fixture.jar'
         with zipfile.ZipFile(jar, 'w') as archive:
             archive.write(business, 'BOOT-INF/classes/'+str(business.relative_to(classes)))
             archive.write(sdk, 'BOOT-INF/lib/'+sdk.name)
-        for p in (business,sdk,jar): m['pins'][str(p)] = digest(p)
+            archive.write(library, 'BOOT-INF/lib/'+library.name)
+        for p in (business,sdk,library,jar): m['pins'][str(p)] = digest(p)
         m['candidate']={'cli_sha256':identity,'sdk_sha256':digest(sdk)}
         m['e1_registration']=dict(m['candidate'],url='https://example.com/constructed',revision='constructed')
         m['environment']={'host_id':'constructed','vm_image':'constructed','cpu_model':'constructed',
@@ -1260,10 +1448,11 @@ class RunnerTests(unittest.TestCase):
                 'config': normalized_fixture_config(inp['config']),
                 'migrations': inventory(migrations), 'seed_sha256': digest(seed),
                 'business_classes': copy.deepcopy(inp['business_classes'])}
+            self.library_reference['libraries'][workload] = {p.name:digest(p) for p in (library,sdk)}
         for variants in m['commands'].values():
             for commands in variants.values():
                 for arm in ('B0','B1','B2'):
-                    commands[arm]['argv'] += ['--classpath', os.pathsep.join(map(str,[classes,sdk]))]
+                    commands[arm]['argv'] += ['--classpath', os.pathsep.join(map(str,[classes,sdk,library]))]
         hook=self.root/'hook.py'
         hook.write_text("""import sys,json,hashlib
 from pathlib import Path

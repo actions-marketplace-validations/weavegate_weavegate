@@ -8,7 +8,7 @@ import zipfile
 import copy
 from contextlib import contextmanager
 from pathlib import Path
-from fixture_contract import FIXTURE_INPUTS, FIXTURE_REVISION
+from fixture_contract import FIXTURE_INPUTS, FIXTURE_REVISION, REFERENCE_BUILD
 
 HERE = Path(__file__).resolve().parent
 SHARED = HERE / 'shared'
@@ -256,8 +256,10 @@ def measurement_dependencies(manifest):
                 file_dependencies(command, manifest['pins'], workload + '/' + variant + '/' + arm, inputs)
                 command_config(command, expected)
                 if arm.startswith('B'):
-                    classpath_identity(command, expected)
-            fixture_identity(expected)
+                    require(not any(a.split('=', 1)[0] in ('--java', '-java', '--jar', '-jar', '--image', '-image')
+                                    for a in command['argv']), 'baseline runtime override is unsupported')
+                    classpath_identity(command, expected, workload)
+            fixture_identity(expected, workload)
             fixture_revision_inputs(workload, variant, expected)
     for name, hook in manifest['hooks'].items():
         file_dependencies(hook, manifest['pins'], name)
@@ -265,9 +267,22 @@ def measurement_dependencies(manifest):
 
 BUSINESS_PREFIX = 'io/github/weavegate/fixture/'
 SDK_PREFIX = 'io/github/weavegate/sdk/'
+LAUNCHER_CLASSES = {'io/github/weavegate/experiment/BaselineMain.class',
+                    'io/github/weavegate/experiment/BaselineMain$Command.class'}
 
 
-def fixture_identity(expected):
+def library_identity(libraries, expected, workload, label):
+    # The SDK is registered by E1, independently of the reference compiler's
+    # SDK build. Every other dependency must retain the reviewed library bytes.
+    def sdk(name): return name.startswith('weavegate-spring-') and name.endswith('.jar')
+    require([checksum for name, checksum in libraries.items() if sdk(name)] == [expected['sdk_sha256']],
+            label + ' SDK library identity differs')
+    reference = {n:h for n,h in REFERENCE_BUILD['libraries'][workload].items() if not sdk(n)}
+    require({n:h for n,h in libraries.items() if not sdk(n)} == reference,
+            label + ' libraries differ from reference build')
+
+
+def fixture_identity(expected, workload):
     """Bind declared business/SDK identities to the pinned product application."""
     jar = expected['config']['Target']['SUT']['External']['JAR']
     require(digest(jar) == expected['jar_sha256'], 'fixture JAR identity differs')
@@ -278,12 +293,17 @@ def fixture_identity(expected):
         business = {n[len(prefix):]: sha(archive.read(n)) for n in names
                     if n.startswith(prefix + BUSINESS_PREFIX) and n.endswith('.class')}
         require(business and business == expected['business_classes'], 'fixture business-class identity differs')
+        require({n[len(prefix):] for n in names if n.startswith(prefix) and not n.endswith('/')}
+                == set(expected['business_classes']), 'fixture classpath contains unreviewed entries')
         sdk = [n for n in names if n.startswith('BOOT-INF/lib/weavegate-spring-') and n.endswith('.jar')]
         require(len(sdk) == 1 and sha(archive.read(sdk[0])) == expected['sdk_sha256'],
                 'fixture SDK identity differs')
+        libraries = {n[len('BOOT-INF/lib/'):]: sha(archive.read(n)) for n in names
+                     if n.startswith('BOOT-INF/lib/') and not n.endswith('/')}
+        library_identity(libraries, expected, workload, 'fixture')
 
 
-def classpath_identity(command, expected):
+def classpath_identity(command, expected, workload):
     """Check every protected class source, rejecting shadow copies as well as drift."""
     argv = command['argv']
     values = []
@@ -302,15 +322,22 @@ def classpath_identity(command, expected):
             require(path.parent.is_dir(), 'classpath wildcard directory missing')
             paths.extend(sorted(p for p in path.parent.iterdir() if p.suffix.lower() == '.jar'))
         else: paths.append(path)
-    classes, sdk_sources = {}, []
+    classes, sdk_sources, libraries = {}, [], {}
+    directory_entries = set()
     for path in paths:
         selected = {}
         if path.is_dir():
-            for prefix in (BUSINESS_PREFIX, SDK_PREFIX):
-                for file in (path / prefix).rglob('*.class'):
-                    selected[str(file.relative_to(path))] = digest(file)
+            for file in files(path):
+                name = str(file.relative_to(path))
+                require(name in expected['business_classes'] or name in LAUNCHER_CLASSES,
+                        'classpath entry outside reviewed fixture/launcher: ' + name)
+                require(name not in directory_entries, 'duplicate classpath entry: ' + name)
+                directory_entries.add(name)
+                if name in expected['business_classes']: selected[name] = digest(file)
         else:
             require(path.is_file() and zipfile.is_zipfile(path), 'classpath JAR missing/invalid: ' + str(path))
+            require(path.name not in libraries, 'duplicate classpath library: ' + path.name)
+            libraries[path.name] = digest(path)
             with zipfile.ZipFile(path) as archive:
                 for name in archive.namelist():
                     if not name.endswith('.class') or not any(p in name for p in (BUSINESS_PREFIX, SDK_PREFIX)): continue
@@ -325,6 +352,7 @@ def classpath_identity(command, expected):
     require({n:h for n,h in classes.items() if n.startswith(BUSINESS_PREFIX)} == expected['business_classes']
             and expected['business_classes'], 'classpath business-class identity differs')
     require(sdk_sources == [expected['sdk_sha256']], 'classpath SDK identity differs')
+    library_identity(libraries, expected, workload, 'classpath')
 
 
 def cleanup_dependencies(manifest):

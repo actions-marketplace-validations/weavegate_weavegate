@@ -114,7 +114,14 @@ effective config except deployment paths, image digest and variant, and fixes
 migration/seed bytes and the compiled fixture class inventory. Changing inputs
 and their manifest hashes together cannot replace this reference. These checks
 run at freeze and live-input boundaries. Both launch paths must match the same
-reviewed class inventory.
+reviewed class inventory. Their complete non-SDK library names and digests must
+match `REFERENCE_BUILD['libraries']` for the workload, including Spring, HikariCP
+and Connector/J. The SDK has its own E1-registered digest; the reference compiler
+SDK is not a substitute for that identity. Added, removed, duplicated or changed
+classpath JARs and changed product `BOOT-INF/lib` inventories are rejected even
+when every replacement has a new manifest pin. Product `BOOT-INF/classes` entries
+must match the reviewed fixture inventory, so loose classes or resources cannot
+override those libraries either.
 
 The reference retains original source hashes, compiler identity/flags and build
 library hashes. The following maintainer command reproduces it using the
@@ -155,7 +162,10 @@ Measurement validation checks literal argv/environment files, classpath
 directories and Java `lib/*` entries, plus the effective config's Java executable,
 JAR, migrations and seed. These checks repeat at live-input boundaries so adding
 an unpinned class or library after freeze also stops collection. Baseline commands
-declare exactly one explicit `--classpath` (directory/JAR entries or Java `lib/*`).
+declare exactly one explicit `--classpath` (fixture/launcher class directories,
+reference dependency JARs or Java `lib/*`). Directory entries may contain only
+the reviewed fixture classes and the two `BaselineMain` launcher classes. Extra
+classes and resources cannot shadow the registered libraries.
 The complete fixture class inventory and the SDK JAR on that classpath must match
 `business_classes` and `sdk_sha256`; duplicate or shadow fixture/SDK classes fail
 validation even when pinned. The application JAR must match `jar_sha256`, and its
@@ -165,7 +175,11 @@ Baseline and product receipts must retain that same image identity. Each measure
 command names exactly one explicit `--config` file, using JSON-subset YAML as emitted
 by the preparer. Validation compares its entire decoded content with the effective
 snapshot, including worker arguments, sync points and timeouts, at freeze and live
-input boundaries. Scenario names and argument keys retain their original spelling.
+input boundaries. Measurement baseline commands cannot use `--java`, `--jar` or
+`--image` overrides (including single-dash and equals forms); those values must
+come from the checked config. The preparer may still use overrides while exporting
+that config before freeze. Scenario names and argument keys retain their original
+spelling.
 This restricted experiment input format lets the Python standard-library checker
 use the same data accepted by the Go YAML loader without another parser dependency.
 Dynamic imports, subprocess lookup and other runtime dependencies still require
@@ -315,11 +329,17 @@ Requested steps are checked against their resolved trace events. Matching's
 fixed path legitimately reports inferred database blocking and skips its final
 insert point after a successful worker terminal, as established by the existing
 paired acceptance test. Those events remain explicit counts; an unresolved
-block, missing release or unexplained skip fails quality.
+block, missing release or unexplained skip fails quality. Successful terminal
+records must identify each scheduled worker exactly once. Missing, duplicated
+or foreign worker IDs fail quality even when the schedule steps resolve.
 
 Statuses use operational failure, quality failure, budget exhausted, complete
-precedence. Failed/slow values remain in per-slot JSON and the started-duration
-statistics. Complete-pair cost summaries use paired differences/ratios, never a
+precedence. Every nonzero baseline exit outside a collection timeout is an
+operational failure, including B0, even when its inner receipt has no error. All
+measured commands must have finished without interruption. These failures retain
+earlier domain observations and first-event bounds; clean cap cancellation keeps
+its budget-exhausted classification. Failed/slow values remain in per-slot JSON
+and the started-duration statistics. Complete-pair cost summaries use paired differences/ratios, never a
 difference of medians. B2 retains attempted/valid/violating counts, `x/m`,
 `x/planned`, and missing exposure. Repeated executions are not independent host
 samples. Results carry no confidence intervals or significance claims.
