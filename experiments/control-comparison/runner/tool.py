@@ -153,13 +153,16 @@ def registered(bundle, m, registration):
         require(value[key] == digest(bundle / 'frozen' / name), 'registration hash differs')
     require(value.get('public_url', '').startswith('https://') and value.get('revision'), 'public registration identity required')
     require(timestamp(value['registered_at']) < timestamp(utc()), 'registration must precede collection')
-    retained = bundle / 'registration.json'
-    if retained.exists(): require(canonical(read_json(retained)) == canonical(value), 'registration changed')
-    else: write_json(retained, value)
-    if retained_value is None:
-        progress['registration'] = value
-        write_json(bundle / 'progress' / 'checkpoint.json', progress)
-        seal(bundle / 'progress')
+    # Registration owns a checkpoint before slot activation owns recovery.
+    # Deliver signals only after its retained copy and checksum agree.
+    with defer_interrupts():
+        retained = bundle / 'registration.json'
+        if retained.exists(): require(canonical(read_json(retained)) == canonical(value), 'registration changed')
+        else: write_json(retained, value)
+        if retained_value is None:
+            progress['registration'] = value
+            write_json(bundle / 'progress' / 'checkpoint.json', progress)
+            seal(bundle / 'progress')
 
 
 def collect(bundle, registration=None, max_slots=None):
@@ -266,7 +269,7 @@ def collect_locked(bundle, registration, max_slots):
                             observer = execute(m['hooks']['observe'], context, directory, 'observe', [])
                             require(succeeded(observer), 'observation failed')
                             receipt = proof(directory, 'observation.json', {'host_id': m['environment']['host_id']}, previous=observed_files)
-                            state['resources'] = receipt['resources']
+                            state['resources'] = resource_observations(receipt.get('resources'))
                             unchanged(directory, observed_files)
                             check_boundary()
                 except (Exception, KeyboardInterrupt) as error:

@@ -265,10 +265,27 @@ defines warm by the common priming invocation and preserved guest filesystem
 cache, and does not require a generated startup-cache artifact. The trusted hook
 and independent audit establish actual guest cache preservation.
 
-Resource values unavailable at the aggregate scope are null with reasons. Report
-sampled memory at 100 ms with its missed-peak limitation. The schema checks and
-hashes cannot independently establish that a VM was restored, that a prerequisite
-command passed or that public registration was published at the claimed time;
+`resources` contains exactly five counters: `cpu_seconds`, `memory_bytes`,
+`container_creations`, `evidence_bytes` and `cache_bytes`. Each counter is an
+object with either `value: null` and a nonempty `reason`, or a nonnegative finite
+`value` and a nonempty `scope` identifying what was counted. Counts and byte
+sizes are integers; CPU seconds may be fractional. Zero is an observed value,
+never a replacement for an unavailable counter. CPU and memory scopes describe
+the whole invocation, including Go, Java, MySQL and observers; if that aggregate
+cannot be measured, disclose null and the reason.
+
+Observed memory also declares `method: sampled` or `method: high_water_mark`.
+Sampled memory requires `cadence_ms: 100` and a nonempty `limitation` describing
+missed peaks between samples. A high-water counter has no sampling metadata.
+The collector validates this schema before accepting the receipt, and offline
+analysis repeats validation. Missing or malformed measurement resources make
+the slot operationally failed; derived counters become null with a reason, and
+the rejected receipt remains in the sealed originals. Feasibility collection
+discloses unavailable counters explicitly.
+
+The schema checks and hashes cannot independently establish that a VM was
+restored, that a prerequisite command passed or that public registration was
+published at the claimed time;
 the frozen commands and original evidence need the protocol's independent audit.
 
 ## Collect and regenerate
@@ -372,6 +389,17 @@ paired acceptance test. Those events remain explicit counts; an unresolved
 block, missing release or unexplained skip fails quality. Successful terminal
 records must identify each scheduled worker exactly once. Missing, duplicated
 or foreign worker IDs fail quality even when the schedule steps resolve.
+
+Preparation-failed slots retain the preparation error, cleanup error, integrity
+errors and interruption/unproven-cleanup reasons even if no measured command
+started. Unsupported slots also retain lifecycle failures alongside their
+declared unsupported reason. Cleanup errors after a measured command remain
+operational failures with their original detail.
+
+Registration defers SIGINT/SIGTERM until its retained registration and progress
+checksum agree. An interruption at that boundary leaves all slots unstarted,
+and the same registration can resume collection. Slot activation and final
+cleanup likewise defer signals until their recovery checkpoints are sealed.
 
 Statuses use operational failure, quality failure, budget exhausted, complete
 precedence. Every nonzero baseline exit outside a collection timeout is an

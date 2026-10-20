@@ -3,6 +3,7 @@ import os
 import sys
 import importlib
 import fcntl
+import math
 import re
 import zipfile
 import copy
@@ -57,6 +58,42 @@ STATUSES = ('complete', 'quality_failed', 'operational_failed', 'budget_exhauste
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+RESOURCE_COUNTERS = ('cpu_seconds', 'memory_bytes', 'container_creations', 'evidence_bytes', 'cache_bytes')
+
+
+def unavailable_resources(reason):
+    return {name: {'value': None, 'reason': reason} for name in RESOURCE_COUNTERS}
+
+
+def resource_observations(value):
+    """Validate disclosures identically during collection and offline reduction."""
+    require(isinstance(value, dict) and set(value) == set(RESOURCE_COUNTERS),
+            'resource counter inventory differs')
+    def text(record, name):
+        return isinstance(record.get(name), str) and bool(record[name].strip())
+    for name, record in value.items():
+        require(isinstance(record, dict) and 'value' in record, 'resource value required: ' + name)
+        observed = record['value']
+        if observed is None:
+            require(text(record, 'reason'), 'resource null reason required: ' + name)
+            require(set(record) == {'value', 'reason'}, 'resource null metadata differs: ' + name)
+            continue
+        numeric = type(observed) in ((int, float) if name == 'cpu_seconds' else (int,))
+        require(numeric and observed >= 0 and (type(observed) is int or math.isfinite(observed)),
+                'resource value invalid: ' + name)
+        require(text(record, 'scope'), 'resource counter scope required: ' + name)
+        fields = {'value', 'scope'}
+        if name == 'memory_bytes':
+            require(record.get('method') in ('sampled', 'high_water_mark'), 'resource memory method required')
+            fields.add('method')
+            if record['method'] == 'sampled':
+                require(type(record.get('cadence_ms')) is int and record['cadence_ms'] == 100
+                        and text(record, 'limitation'), 'resource memory cadence/limitation required')
+                fields.update(('cadence_ms', 'limitation'))
+        require(set(record) == fields, 'resource counter metadata differs: ' + name)
+    return value
 
 
 def order():

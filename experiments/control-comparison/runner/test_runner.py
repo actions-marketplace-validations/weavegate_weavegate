@@ -1247,6 +1247,158 @@ class RunnerTests(unittest.TestCase):
             for boundary in ('cleanup', 'slot-seal', 'progress'):
                 self.check_checkpoint_signal(signum, boundary)
 
+    def test_registration_signals_leave_resumable_checkpoint(self):
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            for boundary in ('registration.json', 'checkpoint.json', 'seal'):
+                with self.subTest(signal=signum, boundary=boundary):
+                    bundle, registration = self.measurement_bundle()
+                    from tool import write_json as real_write, seal as real_seal
+                    signaled = False
+                    def interrupt():
+                        nonlocal signaled
+                        if not signaled:
+                            signaled = True
+                            os.kill(os.getpid(), signum)
+                    def write(path, value):
+                        real_write(path, value)
+                        if path.name == boundary: interrupt()
+                    def sealing(path):
+                        if boundary == 'seal' and path == bundle/'progress': interrupt()
+                        real_seal(path)
+                    previous = {s:signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+                    with patch('tool.write_json', side_effect=write), patch('tool.seal', side_effect=sealing), \
+                            patch('tool.execute') as execute:
+                        with self.assertRaises(KeyboardInterrupt): collect(bundle, registration)
+                        execute.assert_not_called()
+                    self.assertTrue(signaled)
+                    self.assertEqual(previous, {s:signal.getsignal(s) for s in previous})
+                    verify(bundle/'progress')
+                    self.assertEqual(list((bundle/'slots').iterdir()), [])
+                    m = read_json(bundle/'frozen/manifest.json')
+                    progress = retained_progress(bundle, m, order())
+                    self.assertEqual(progress['registration'], read_json(registration))
+                    self.assertIsNone(progress['active'])
+                    self.assertIsNone(progress['stopped'])
+                    result = analyze(bundle, self.root/('registration-output-'+str(signum)+'-'+boundary))
+                    self.assertTrue(all(s['status'] == 'not_started' for s in result['slots']))
+                    collect(bundle, registration)
+                    self.assertEqual(len(list((bundle/'slots').iterdir())), 2)
+                    shutil.rmtree(bundle)
+
+    @staticmethod
+    def resource_observations():
+        return {
+            'cpu_seconds': {'value': 0, 'scope': 'whole invocation: Go, Java, MySQL and observers'},
+            'memory_bytes': {'value': 1024, 'scope': 'whole invocation: Go, Java, MySQL and observers',
+                             'method': 'sampled', 'cadence_ms': 100,
+                             'limitation': 'peaks between samples may be missed'},
+            'container_creations': {'value': 1, 'scope': 'invocation allocation'},
+            'evidence_bytes': {'value': 2048, 'scope': 'retained invocation evidence'},
+            'cache_bytes': {'value': None, 'reason': 'aggregate cache size unavailable'},
+        }
+
+    def test_resource_observations_revalidated_offline(self):
+        directory, slot, _ = self.raw()
+        m = self.manifest(); m['phase'] = 'measurement'
+        valid = self.resource_observations()
+        changed = []
+        for counter in valid:
+            for change in ('missing', 'null-reason', 'scope', 'boolean', 'negative', 'string'):
+                value = copy.deepcopy(valid)
+                if change == 'missing': del value[counter]
+                elif change == 'null-reason': value[counter] = {'value': None, 'reason': ' '}
+                else:
+                    value[counter] = {'value': 1, 'scope': 'invocation'}
+                    if change == 'scope': value[counter]['scope'] = ''
+                    else: value[counter]['value'] = {'boolean': True, 'negative': -1, 'string': '0'}[change]
+                changed.append((counter+'-'+change, value))
+        for field, value in (('method', 'unknown'), ('cadence_ms', 99), ('cadence_ms', True), ('limitation', '')):
+            resource = copy.deepcopy(valid); resource['memory_bytes'][field] = value
+            changed.append(('memory-'+field, resource))
+        for counter in ('memory_bytes', 'container_creations', 'evidence_bytes', 'cache_bytes'):
+            resource = copy.deepcopy(valid)
+            resource[counter] = dict(resource[counter], value=1.5, scope='invocation')
+            changed.append((counter+'-fractional', resource))
+        changed.extend([('missing-all', None), ('old-incomplete', {'cpu_seconds': 0}),
+                        ('wrong-type', []), ('unknown-counter', dict(valid, other={'value': 1}))])
+        for name, resources in changed:
+            with self.subTest(case=name):
+                state = {'slot': slot, 'cleanup_proven': True}
+                if resources is not None: state['resources'] = resources
+                write_json(directory/'slot.json', state); seal(directory)
+                result = reduce_slot(directory, slot, m)
+                self.assertEqual(result['status'], 'operational_failed')
+                self.assertTrue(any('resource' in r for r in result['reasons']), result['reasons'])
+                self.assertAlmostEqual(result['first_event_seconds'][0], 0.1)
+                self.assertAlmostEqual(result['first_event_seconds'][1], 0.2)
+                self.assertIsNone(result['usable_evidence_seconds'])
+                # Invalid values remain in sealed originals, never in derived counters.
+                self.assertTrue(all(c['value'] is None and c['reason'] for c in result['resources'].values()))
+        high_water = copy.deepcopy(valid)
+        high_water['memory_bytes'] = {'value': 1024, 'scope': 'whole invocation allocation',
+                                      'method': 'high_water_mark'}
+        for values in (valid, high_water, {k:{'value': None, 'reason': 'counter unavailable'} for k in valid}):
+            write_json(directory/'slot.json', {'slot': slot, 'cleanup_proven': True, 'resources': values})
+            seal(directory)
+            result = reduce_slot(directory, slot, m)
+            self.assertEqual(result['status'], 'complete', result['reasons'])
+            self.assertEqual(result['resources'], values)
+
+    def test_collector_rejects_invalid_resource_receipt(self):
+        bundle, registration = self.measurement_bundle()
+        from tool import execute as real_execute
+        def execute(spec, context, directory, label, secrets):
+            result = real_execute(spec, context, directory, label, secrets)
+            if label == 'observe':
+                receipt = read_json(directory/'observation.json')
+                receipt['resources'] = {'cpu_seconds': 0}
+                write_json(directory/'observation.json', receipt)
+            return result
+        with patch('tool.execute', side_effect=execute): collect(bundle, registration)
+        directory = bundle/'slots'/order()[0]['id']
+        state = read_json(directory/'slot.json')
+        self.assertNotIn('resources', state)
+        self.assertIn('resource', state['error'])
+        self.assertTrue(state['cleanup_proven'])
+        self.assertEqual(read_json(directory/'observation.json')['resources'], {'cpu_seconds': 0})
+        result = analyze(bundle, self.root/'resource-output')
+        self.assertEqual(result['slots'][0]['status'], 'operational_failed')
+        self.assertTrue(any('resource' in r for r in result['slots'][0]['reasons']))
+
+    def test_preparation_failure_retains_cleanup_and_integrity_reasons(self):
+        bundle, registration = self.measurement_bundle()
+        from tool import execute as real_execute
+        def execute(spec, context, directory, label, secrets):
+            result = real_execute(spec, context, directory, label, secrets)
+            if label == 'prepare': result['exit'] = 1
+            if label == 'cleanup':
+                raise ValueError('constructed allocation cleanup failure')
+            return result
+        with patch('tool.execute', side_effect=execute), \
+                patch('tool.protect', side_effect=[None, ValueError('constructed integrity failure')]):
+            collect(bundle, registration)
+        result = analyze(bundle, self.root/'preparation-output')
+        row = result['slots'][0]
+        self.assertEqual(row['status'], 'preparation_failed')
+        self.assertFalse(row['started'])
+        self.assertFalse(row['cleanup_proven'])
+        for reason in ('restore failed', 'constructed allocation cleanup failure',
+                       'constructed integrity failure', 'allocation cleanup unproven'):
+            self.assertIn(reason, row['reasons'])
+        self.assertEqual(result['stopped']['slot'], row['id'])
+        with self.assertRaisesRegex(ValueError, 'stopped'): collect(bundle, registration)
+        self.assertEqual(result, analyze(bundle, self.root/'preparation-reanalysis'))
+
+    def test_cleanup_failure_reason_survives_measured_run(self):
+        directory, slot, _ = self.raw()
+        state = read_json(directory/'slot.json')
+        state.update(cleanup_proven=False, cleanup_error='constructed cleanup proof failure')
+        write_json(directory/'slot.json', state); seal(directory)
+        m = self.manifest()
+        result = reduce_slot(directory, slot, m)
+        self.assertEqual(result['status'], 'operational_failed')
+        self.assertIn('constructed cleanup proof failure', result['reasons'])
+
     def check_checkpoint_signal(self, signum, boundary):
         with self.subTest(signal=signum, boundary=boundary):
             bundle, registration = self.measurement_bundle()
@@ -1427,6 +1579,7 @@ class RunnerTests(unittest.TestCase):
                         self.assertFalse(calls)
                         result = analyze(bundle, self.root/('activation-output-'+str(signum)+'-'+str(unsupported)+'-'+boundary))
                         self.assertIn('interrupted', result['stopped']['reason'])
+                        self.assertIn('collector interrupted', result['slots'][0]['reasons'])
                         self.assertIsNone(read_json(bundle/'progress/checkpoint.json')['active'])
                         self.assertEqual(len(list((bundle/'slots').iterdir())), 1)
                         (bundle/'stopped.json').unlink()
@@ -1565,7 +1718,9 @@ f=p/'proof'/(stage+'.json');f.write_text(json.dumps({'constructed':True,'stage':
 v={'evidence':{str(f.relative_to(p)):hashlib.sha256(f.read_bytes()).hexdigest()}}
 if stage=='prepare':
  v.update(host_id='constructed',disk_image='constructed',fresh_memory=True,clean_data=True,vcpus=4,memory_bytes=16*1024**3)
-if stage=='observe':v.update(host_id='constructed',resources={'cpu_seconds':None,'reason':'constructed'})
+if stage=='observe':
+ v.update(host_id='constructed',resources={k:{'value':None,'reason':'constructed counter unavailable'}
+          for k in ('cpu_seconds','memory_bytes','container_creations','evidence_bytes','cache_bytes')})
 if stage=='cleanup':v.update(proven=True)
 if stage=='warm_cleanup':
  v.update(outputs_removed=True,data_removed=True,cache_preserved=True,startup_caches=[],

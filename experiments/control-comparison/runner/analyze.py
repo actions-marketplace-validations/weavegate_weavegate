@@ -318,11 +318,20 @@ def reduce_slot(root, slot, manifest):
     verify(root)
     state = read_json(root / 'slot.json')
     require(state.get('slot') == slot, 'slot identity differs')
+    # Lifecycle failures apply even when preparation never spawned the arm.
+    operational = state.get('integrity_errors', [])[:]
+    for key in ('error', 'cleanup_error'):
+        if state.get(key): operational.append(state[key])
+    if state.get('interrupted'): operational.append('collector interrupted')
+    if state.get('cleanup_proven') is not True:
+        operational.append('allocation cleanup unproven')
     if state.get('unsupported'):
         require(state['unsupported'] == unsupported and not (root / 'run.command.json').exists(), 'unsupported slot was executed/unregistered')
-        result.update(status='unsupported', reasons=[state['unsupported']]); return result
+        result.update(status='unsupported', reasons=[state['unsupported']] + operational); return result
     if not (root / 'run.command.json').exists():
-        result.update(status='preparation_failed', reasons=[state.get('error', 'preparation incomplete')]); return result
+        result.update(status='preparation_failed', cleanup_proven=state.get('cleanup_proven') is True,
+                      reasons=operational if state.get('error') else ['preparation incomplete'] + operational)
+        return result
     command = read_json(root / 'run.command.json')
     result.update(started=command['started'], invocation_seconds=command['seconds'], exit=command['exit'],
                   budget_expired=command['timeout'] or command['seconds'] > slot['cap_seconds'])
@@ -333,26 +342,25 @@ def reduce_slot(root, slot, manifest):
         evidence = {'operational_reasons': ['missing/invalid evidence: ' + str(error)],
                     'quality_reasons': [], 'cleanup_proven': False, 'first_event_seconds': None}
     result.update(evidence)
-    operational = evidence['operational_reasons'][:]
-    operational.extend(state.get('integrity_errors', []))
-    if state.get('interrupted'): operational.append('collector interrupted')
+    operational = evidence['operational_reasons'] + operational
     if command['error'] or not command['started'] or not command['containment_proven']:
         operational.append('command spawn/containment failure')
     if command.get('finished') is not True or command.get('interrupted') is not False:
         operational.append('command unfinished/interrupted')
-    if manifest['phase'] == 'measurement' and state.get('cleanup_proven') is not True:
-        operational.append('allocation cleanup unproven')
+    result['resources'] = unavailable_resources('aggregate counters unavailable in feasibility collection')
+    if 'resources' in state or manifest['phase'] == 'measurement':
+        try:
+            result['resources'] = resource_observations(state.get('resources'))
+        except ValueError as error:
+            operational.append(str(error))
+            result['resources'] = unavailable_resources('resource observation missing/invalid; see sealed slot evidence')
+    result['allocation_cleanup_proven'] = state.get('cleanup_proven') is True
     result['status'] = ('operational_failed' if operational else 'quality_failed' if evidence['quality_reasons']
                         else 'budget_exhausted' if result['budget_expired'] else 'complete')
     result['reasons'] = operational + evidence['quality_reasons']
-    if state.get('error'):
-        result['status'] = 'operational_failed'
-        result['reasons'].append(state['error'])
     result['first_event_membership'] = membership(result.get('first_event_seconds'), slot['cap_seconds'])
     result['usable_evidence_seconds'] = state.get('evidence_received_seconds') if result['status'] == 'complete' else None
     result['usable_evidence_membership'] = membership(result['usable_evidence_seconds'], slot['cap_seconds'])
-    result['resources'] = state.get('resources', {'cpu_seconds': None, 'memory_bytes': None,
-        'reason': 'aggregate application/container counters unavailable; no zero imputation'})
     return result
 
 
