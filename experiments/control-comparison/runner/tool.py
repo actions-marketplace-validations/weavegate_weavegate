@@ -74,6 +74,9 @@ def freeze(source, destination):
     source, destination = Path(source), Path(destination)
     m = read_json(source)
     validate(m)
+    m['source_inventory'] = {name: digest(HERE / name) for name in RUNNER_SOURCES}
+    m['source_inventory'].update({'shared/' + name + '.py': digest(SHARED / (name + '.py'))
+                                  for name in SHARED_MODULES})
     destination.mkdir(parents=True, exist_ok=False)
     frozen = destination / 'frozen'; frozen.mkdir()
     write_json(frozen / 'manifest.json', m)
@@ -87,12 +90,13 @@ def freeze(source, destination):
         if not target.exists(): shutil.copyfile(path, target)
         require(digest(target) == checksum, 'input changed while freezing: ' + path)
     sources = frozen / 'source'; sources.mkdir()
-    for p in HERE.glob('*.py'): shutil.copyfile(p, sources / p.name)
+    for name in RUNNER_SOURCES: shutil.copyfile(HERE / name, sources / name)
     shared = sources / 'shared'; shared.mkdir()
     for module in SHARED_MODULES:
         name = module + '.py'
         shutil.copyfile(SHARED / name, shared / name)
     seal(frozen)
+    frozen_sources(destination)
     (destination / 'slots').mkdir()
     save_progress(destination, {})
     print('E5_FREEZE_RESULT slots=600 blocks=120 attempts=1')
@@ -133,6 +137,7 @@ def warm_cache(receipt, directory):
 def protect(bundle, active):
     """Authenticate frozen inputs and every previously sealed slot at boundaries."""
     verify(bundle / 'frozen')
+    frozen_sources(bundle)
     verify(bundle / 'progress')
     progress = read_json(bundle / 'progress' / 'checkpoint.json')
     retained_registration(bundle, progress)
@@ -194,6 +199,7 @@ def collect_locked(bundle, registration, max_slots):
         progress = retained_progress(bundle, m, slots)
         require(progress['stopped'] is None, 'campaign stopped; no replacement attempts')
         frozen_sources(bundle)
+        frozen_seal = digest(bundle / 'frozen' / 'SHA256SUMS')
         require(max_slots is None or (m['phase'] == 'feasibility' and max_slots > 0), 'positive slot limit is feasibility-only')
         registered(bundle, m, registration)
         live_pins(m)
@@ -205,20 +211,25 @@ def collect_locked(bundle, registration, max_slots):
             if directory.exists(): continue
             if max_slots is not None and done >= max_slots: break
             live_pins(m)
-            with ExitStack() as activation:
+            with ExitStack() as ownership, ExitStack() as activation:
                 activation.enter_context(defer_interrupts())
                 save_progress(bundle, consumed, active=slot['id'])
                 directory.mkdir()
+                check_directory, retained_directory = ownership.enter_context(pinned_directory(directory))
                 context = dict(slot, trial_dir=str(directory), campaign_dir=str(bundle), redact_env=[])
                 state = {'slot': slot, 'started_at': utc(), 'cleanup_proven': True}
-                write_json(directory / 'slot.json', state)
+                check_directory()
+                write_json(retained_directory / 'slot.json', state)
                 stop_reason = None
                 allocation_started = False
                 unsupported = m.get('unsupported', {}).get(slot['workload'] + '/' + slot['arm'])
                 if unsupported: state['unsupported'] = unsupported
                 def check_boundary():
                     check_lock()
+                    check_directory()
                     protect(bundle, directory)
+                    require(digest(bundle / 'frozen' / 'SHA256SUMS') == frozen_seal,
+                            'frozen seal changed during collection')
                     require(json_equal(read_json(bundle / 'progress' / 'checkpoint.json')['slots'], consumed),
                             'progress slot mapping changed during collection')
                 try:
@@ -295,6 +306,10 @@ def collect_locked(bundle, registration, max_slots):
                 finally:
                     def checkpoint():
                         nonlocal stop_reason
+                        # Never follow a replaced active path during recovery.
+                        # Keep the pre-existing active checkpoint for fail-closed resume.
+                        check_lock(marker=False)
+                        check_directory()
                         if state['cleanup_proven'] is not True and stop_reason is None:
                             stop_reason = 'allocation cleanup unproven'
                         # A host/fixture cleanup proof cannot establish that the
@@ -322,9 +337,12 @@ def collect_locked(bundle, registration, max_slots):
                         state['ended_at'] = utc()
                         stopped = {'reason': stop_reason, 'slot': slot['id'], 'at': utc()} if stop_reason else None
                         state['stop'] = stopped
-                        write_json(directory / 'slot.json', state)
-                        seal(directory)
-                        consumed[slot['id']] = digest(directory / 'SHA256SUMS')
+                        check_directory()
+                        write_json(retained_directory / 'slot.json', state)
+                        check_directory()
+                        seal(retained_directory)
+                        consumed[slot['id']] = digest(retained_directory / 'SHA256SUMS')
+                        check_lock(marker=False)
                         save_progress(bundle, consumed, stopped=stopped)
                         if stopped: write_json(bundle / 'stopped.json', stopped)
                     try:
@@ -334,6 +352,8 @@ def collect_locked(bundle, registration, max_slots):
                         with defer_interrupts():
                             if m['phase'] == 'measurement' and allocation_started:
                                 try:
+                                    check_lock(marker=False)
+                                    check_directory()
                                     trusted = cleanup_dependencies(m)
                                     live_pins({'pins': {p: m['pins'][p] for p in trusted}})
                                     before_cleanup = inventory(directory)

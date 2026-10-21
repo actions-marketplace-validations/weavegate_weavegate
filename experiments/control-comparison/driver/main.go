@@ -168,24 +168,8 @@ func run(ctx context.Context, o options, cfg config.Config) (resultErr error) {
 	if err != nil {
 		return err
 	}
-	envctx, end := timing.Start(ctx, "fixture_provision")
-	db, err := f.Provision(envctx, prepared)
-	end()
+	db, seed, err := provisionReady(ctx, f, prepared, ledger)
 	if err != nil {
-		return err
-	}
-	db.SQL.SetMaxOpenConns(1)
-	var version, isolation string
-	if err = db.SQL.QueryRowContext(ctx, "SELECT VERSION(), @@session.transaction_isolation").Scan(&version, &isolation); err != nil {
-		return err
-	}
-	ledger["environment"] = map[string]any{"version": version, "isolation": isolation, "image": prepared.Image(), "schema": prepared.MigrationDigest(), "seed": prepared.SeedDigest()}
-	seed, err := snapshot(ctx, db)
-	if err != nil {
-		return err
-	}
-	ledger["seed"] = seed
-	if err = f.Ready(db); err != nil {
 		return err
 	}
 	if o.arm == "B0" {
@@ -250,6 +234,30 @@ func run(ctx context.Context, o options, cfg config.Config) (resultErr error) {
 		}
 	}
 	return nil
+}
+
+func provisionReady(ctx context.Context, f fixture.Provisioner, prepared fixture.Prepared, ledger map[string]any) (*fixture.DB, map[string][]map[string]any, error) {
+	envctx, end := timing.Start(ctx, "fixture_provision")
+	defer end()
+	db, err := f.Provision(envctx, prepared)
+	if err != nil {
+		return nil, nil, err
+	}
+	db.SQL.SetMaxOpenConns(1)
+	var version, isolation string
+	if err = db.SQL.QueryRowContext(envctx, "SELECT VERSION(), @@session.transaction_isolation").Scan(&version, &isolation); err != nil {
+		return nil, nil, err
+	}
+	ledger["environment"] = map[string]any{"version": version, "isolation": isolation, "image": prepared.Image(), "schema": prepared.MigrationDigest(), "seed": prepared.SeedDigest()}
+	seed, err := snapshot(envctx, db)
+	if err != nil {
+		return nil, nil, err
+	}
+	ledger["seed"] = seed
+	if err = f.Ready(db); err != nil {
+		return nil, nil, err
+	}
+	return db, seed, nil
 }
 
 func save(path string, value any) error {

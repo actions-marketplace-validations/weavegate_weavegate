@@ -5,7 +5,7 @@ import runpy
 from pathlib import Path
 runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
               init_globals={'dependencies': ('support',)})
-from support import digest, read_json, write_json
+from support import digest, pinned_directory, read_json, write_json
 
 
 class Monitor:
@@ -32,6 +32,8 @@ class Monitor:
             self.error = str(error)
 
     def __enter__(self):
+        self.ownership = pinned_directory(self.directory)
+        self.check_directory, self.directory = self.ownership.__enter__()
         self.start = time.monotonic_ns()
         self.thread = threading.Thread(target=self.watch, daemon=True)
         self.thread.start()
@@ -39,9 +41,14 @@ class Monitor:
 
     def __exit__(self, *unused):
         self.stop.set(); self.thread.join()
-        try: self.scan()
-        except Exception as error: self.error = str(error)
-        write_json(self.directory / 'stream.json', {'clock': 'collector-monotonic',
-            'envelope_ns': time.monotonic_ns() - self.start, 'cadence_ms': 100,
-            'limitation': 'receipt may lag atomic publication by polling and validation time',
-            'receipts': self.receipts, 'error': self.error})
+        try:
+            self.check_directory()
+            try: self.scan()
+            except Exception as error: self.error = str(error)
+            self.check_directory()
+            write_json(self.directory / 'stream.json', {'clock': 'collector-monotonic',
+                'envelope_ns': time.monotonic_ns() - self.start, 'cadence_ms': 100,
+                'limitation': 'receipt may lag atomic publication by polling and validation time',
+                'receipts': self.receipts, 'error': self.error})
+        finally:
+            self.ownership.__exit__(*unused)

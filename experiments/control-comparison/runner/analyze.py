@@ -35,13 +35,20 @@ def membership(interval, cap):
 
 def stages(spans, seconds, allow_missing=False):
     """Intervals stay on their own clock; nested coverage uses union length."""
+    require(type(seconds) in (int, float) and math.isfinite(seconds) and seconds >= 0,
+            'invalid invocation timing duration')
     totals = defaultdict(list)
     intervals = []
     roots = [s for s in spans if s['name'] == 'command']
     if allow_missing and not spans: return {'missing': 'command timing unavailable'}
     require(len(roots) == 1, 'one command timing root required')
     root = roots[0]
+    for span in spans:
+        require(all(type(span.get(key)) is int and span[key] >= 0
+                    for key in ('id', 'parent_id', 'start_ns', 'duration_ns')),
+                'invalid timing clock/hierarchy value')
     require(root['id'] == 1 and root['parent_id'] == 0, 'invalid command timing root')
+    require(root['duration_ns'] / 1e9 <= seconds, 'command timing exceeds invocation')
     start, end = root['start_ns'], root['start_ns'] + root['duration_ns']
     for index, s in enumerate(spans):
         require(s['id'] == index + 1 and 0 <= s['parent_id'] < s['id'], 'invalid timing hierarchy')

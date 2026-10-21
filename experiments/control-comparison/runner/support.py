@@ -8,7 +8,7 @@ import re
 import zipfile
 import copy
 import runpy
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
               init_globals={'dependencies': ('fixture_contract',)})
@@ -34,8 +34,12 @@ for name in SHARED_MODULES:
 # its required modules (including redaction's plan dependency) are loaded.
 sys.path.pop(0)
 from common import (canonical, child, digest, files, json_equal, positive, read_json, seal, sha,
-                    timestamp, utc, verify, write_json)  # noqa: E402
-from execution import defer_interrupts, execute, succeeded  # noqa: E402
+                    timestamp, utc, verify as shared_verify, write_json)  # noqa: E402
+from execution import defer_interrupts, execute as shared_execute, succeeded  # noqa: E402
+
+RUNNER_SOURCES = ('analyze.py', 'fixture_contract.py', 'imports.py', 'prepare.py',
+                  'record_fixture_contract.py', 'smoke.py', 'stream.py', 'support.py',
+                  'test_runner.py', 'tool.py')
 
 SEED = 'weavegate-e5-v1-20261019'
 PROTOCOL_SHA256 = 'e2d1b47e705665772fca53d3f53f209778f4790af8b6c269c8e113379fbd8959'
@@ -132,10 +136,56 @@ def check_inventory(root, expected):
     require(inventory(root) == expected, 'retained evidence changed: ' + str(root))
 
 
+def verify(root):
+    root = Path(root)
+    require(not root.is_symlink() and root.is_dir(), 'bundle directory missing or symlink: ' + str(root))
+    shared_verify(root)
+
+
 def frozen_sources(bundle):
-    for directory, actual in (('source', HERE), ('source/shared', SHARED)):
-        for path in (bundle / 'frozen' / directory).glob('*.py'):
-            require(digest(actual / path.name) == digest(path), 'collector/analyzer source changed after freeze')
+    expected = read_json(bundle / 'frozen' / 'manifest.json').get('source_inventory')
+    names = set(RUNNER_SOURCES) | {'shared/' + m + '.py' for m in SHARED_MODULES}
+    require(isinstance(expected, dict) and set(expected) == names, 'registered source inventory differs')
+    for directory, actual, names in (('source', HERE, RUNNER_SOURCES),
+                                     ('source/shared', SHARED, tuple(m + '.py' for m in SHARED_MODULES))):
+        retained = bundle / 'frozen' / directory
+        require({p.name for p in retained.glob('*.py')} == set(names), 'frozen source inventory differs')
+        for name in names:
+            require(digest(actual / name) == digest(retained / name), 'collector/analyzer source changed after freeze')
+            key = str((retained / name).relative_to(bundle / 'frozen' / 'source'))
+            require(digest(retained / name) == expected[key], 'registered source changed after freeze')
+
+
+@contextmanager
+def pinned_directory(directory):
+    """Own the original inode and never redirect collector writes after a rename.
+
+    /proc/self/fd is collector-local; child argv/cwd keep their registered paths.
+    The handle stays open until command containment and final receipts complete.
+    A lost pathname leaves the existing active checkpoint unrecoverable.
+    """
+    directory = Path(directory)
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    def check():
+        try:
+            if os.path.samestat(os.fstat(descriptor), os.stat(directory, follow_symlinks=False)):
+                return
+        except OSError:
+            pass
+        raise ValueError('directory pathname replaced: ' + str(directory))
+    try:
+        check()
+        try:
+            yield check, Path('/proc/self/fd') / str(descriptor)
+        finally:
+            check()
+    finally:
+        os.close(descriptor)
+
+
+def execute(spec, context, directory, step, secrets):
+    with pinned_directory(directory) as (_, retained):
+        return shared_execute(spec, context, retained, step, secrets)
 
 
 def normalized_fixture_config(config):
@@ -279,11 +329,22 @@ def campaign_lock(bundle, shared=False):
                 except OSError:
                     pass
                 raise ValueError('campaign lock pathname replaced')
-            check()
-            try:
-                yield check
-            finally:
-                check()
+            with ExitStack() as stack:
+                checks = [stack.enter_context(pinned_directory(bundle / name))[0]
+                          for name in ('frozen', 'progress', 'slots')]
+                def check_all(*, marker=True):
+                    # The directory lock still excludes peers if only .lock was
+                    # replaced. Safe storage may retain that failure's cleanup
+                    # and stop checkpoint without trusting the replaced marker.
+                    require(os.path.samestat(os.fstat(descriptor), os.stat(bundle, follow_symlinks=False)),
+                            'campaign directory pathname replaced')
+                    for check_directory in checks: check_directory()
+                    if marker: check()
+                check_all()
+                try:
+                    yield check_all
+                finally:
+                    check_all()
         finally:
             os.close(marker)
     finally:

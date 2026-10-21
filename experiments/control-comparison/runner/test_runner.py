@@ -1528,7 +1528,7 @@ class RunnerTests(unittest.TestCase):
                     cleanup_calls.append(label)
                 return real_execute(spec, context, directory, label, secrets)
             def seal(path):
-                if boundary == 'slot-seal' and path.parent == bundle/'slots': interrupt()
+                if boundary == 'slot-seal' and path.resolve().parent == bundle/'slots': interrupt()
                 return real_seal(path)
             def progress(root, consumed, **kwargs):
                 if boundary == 'progress' and consumed: interrupt()
@@ -1679,7 +1679,7 @@ class RunnerTests(unittest.TestCase):
                             real_write(path, value)
                             if boundary == 'initial-state' and path.name == 'slot.json': interrupt()
                         def sealing(path):
-                            if boundary == 'unsupported-seal' and path.parent == bundle/'slots': interrupt()
+                            if boundary == 'unsupported-seal' and path.resolve().parent == bundle/'slots': interrupt()
                             real_seal(path)
                         previous = signal.getsignal(signal.SIGTERM)
                         with patch('tool.save_progress', side_effect=progress), patch('tool.write_json', side_effect=write), \
@@ -2111,6 +2111,162 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
         state = read_json(bundle/'slots'/order()[0]['id']/'slot.json')
         self.assertIn('registration', state['stop']['reason'])
 
+
+    def test_frozen_source_inventory_cannot_shrink_or_expand(self):
+        bundle, _ = self.bundle()
+        frozen = bundle/'frozen'
+        originals = {p: p.read_bytes() for p in (frozen/'source').rglob('*.py')}
+        for path, data in originals.items():
+            with self.subTest(missing=str(path.relative_to(frozen))):
+                path.unlink(); seal(frozen)
+                with self.assertRaisesRegex(ValueError, 'source inventory'):
+                    analyze(bundle, self.root/('analysis-'+path.name))
+                self.assertFalse((self.root/('analysis-'+path.name)).exists())
+            path.write_bytes(data); seal(frozen)
+        added = frozen/'source/injected.py'; added.write_text('# unregistered module\n'); seal(frozen)
+        with self.assertRaisesRegex(ValueError, 'source inventory'):
+            collect(bundle, max_slots=1)
+
+    def test_hook_source_reseal_stops_before_measurement(self):
+        from tool import execute as real_execute
+        bundle, registration = self.measurement_bundle()
+        calls = []
+        def mutate(spec, context, directory, label, secrets):
+            calls.append(label)
+            result = real_execute(spec, context, directory, label, secrets)
+            if label == 'prepare':
+                path = bundle/'frozen/source/analyze.py'
+                path.write_bytes(path.read_bytes()+b'\n# altered frozen analyzer\n')
+                seal(bundle/'frozen')
+            return result
+        with patch('tool.execute', side_effect=mutate): collect(bundle, registration)
+        self.assertEqual(calls, ['prepare', 'cleanup'])
+        state = read_json(bundle/'slots'/order()[0]['id']/'slot.json')
+        self.assertIn('source changed', state['stop']['reason'])
+
+    def test_active_slot_replacement_never_writes_or_seals_target(self):
+        from tool import execute as real_execute
+        parent = self.root
+        for phase in ('prepare', 'run', 'observe', 'cleanup'):
+            for replacement in ('symlink', 'directory'):
+                with self.subTest(phase=phase, replacement=replacement):
+                    self.root = parent/(phase+'-'+replacement); self.root.mkdir()
+                    bundle, registration = self.measurement_bundle()
+                    frozen_before = inventory(bundle/'frozen')
+                    target = bundle/'frozen'
+                    moved = self.root/'original-slot'
+                    calls = []
+                    def mutate(spec, context, directory, label, secrets):
+                        calls.append(label)
+                        result = real_execute(spec, context, directory, label, secrets)
+                        if label == phase:
+                            directory.rename(moved)
+                            if replacement == 'symlink': directory.symlink_to(target, target_is_directory=True)
+                            else: directory.mkdir()
+                        return result
+                    with patch('tool.execute', side_effect=mutate):
+                        with self.assertRaisesRegex(ValueError, 'directory.*replaced'):
+                            collect(bundle, registration)
+                    self.assertEqual(inventory(target), frozen_before)
+                    checkpoint = read_json(bundle/'progress/checkpoint.json')
+                    self.assertEqual(checkpoint['active'], order()[0]['id'])
+                    self.assertEqual(checkpoint['slots'], {})
+                    self.assertEqual(len(list((bundle/'slots').iterdir())), 1)
+                    if phase != 'cleanup': self.assertNotIn('cleanup', calls)
+                    if replacement == 'directory': self.assertEqual(list((bundle/'slots'/order()[0]['id']).iterdir()), [])
+
+    def test_command_directory_swap_cannot_redirect_final_receipt(self):
+        from tool import execute
+        root = self.root/'command'; root.mkdir()
+        target = self.root/'target'; target.mkdir()
+        # The hook preserves receipt bytes at the target, defeating a digest-only check.
+        script = self.root/'swap.py'
+        script.write_text("""import pathlib, shutil, sys
+p, target = map(pathlib.Path, sys.argv[1:])
+shutil.copytree(p, target, dirs_exist_ok=True)
+p.rename(p.with_name('moved'))
+p.symlink_to(target, target_is_directory=True)
+(target/'snapshot').write_bytes((target/'run.command.json').read_bytes())
+""")
+        spec = {'argv':[sys.executable, str(script), str(root), str(target)],
+                'cwd':str(self.root), 'env':{}, 'timeout_seconds':5}
+        with self.assertRaises(ValueError):
+            execute(spec, {'redact_env':[]}, root, 'run', [])
+        self.assertEqual((target/'run.command.json').read_bytes(), (target/'snapshot').read_bytes())
+
+    def test_stream_directory_swap_cannot_write_into_target(self):
+        from stream import Monitor
+        root = self.root/'stream'; root.mkdir()
+        target = self.root/'target'; target.mkdir()
+        with self.assertRaisesRegex(ValueError, 'directory.*replaced'):
+            with Monitor(root):
+                root.rename(self.root/'moved')
+                root.symlink_to(target, target_is_directory=True)
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_command_timing_must_fit_invocation_and_have_integer_clock(self):
+        valid = {'id':1, 'parent_id':0, 'name':'command', 'start_ns':0, 'duration_ns':1000000000}
+        self.assertEqual(stages([valid], 1)['remainder_seconds'], 1)
+        for seconds, change in ((1, {'duration_ns':2000000000}),
+                                (float('inf'), {}), (True, {}),
+                                (1, {'start_ns':-1}), (1, {'duration_ns':True}),
+                                (1, {'id':True}), (1, {'parent_id':False})):
+            with self.subTest(seconds=seconds, change=change):
+                with self.assertRaises(ValueError): stages([dict(valid, **change)], seconds)
+        root, slot, _, expected = self.product_raw('T-R')
+        directory = root/'raw/runs/constructed'
+        manifest = read_json(directory/'manifest.json')
+        manifest['timings']['spans'][0]['duration_ns'] = 2000000000
+        write_json(directory/'manifest.json', manifest)
+        merged = read_json(directory/'report.json'); merged['manifest'] = manifest
+        write_json(directory/'report.json', merged); seal(root)
+        m = self.manifest(); m['inputs'][slot['workload']][slot['variant']] = expected
+        result = reduce_slot(root, slot, m)
+        self.assertEqual(result['status'], 'operational_failed')
+        self.assertTrue(any('timing' in reason for reason in result['reasons']))
+
+    def test_campaign_directory_replacement_cannot_redirect_recovery(self):
+        from tool import execute as real_execute
+        parent = self.root
+        for name in ('slots', 'progress'):
+            with self.subTest(directory=name):
+                self.root = parent/name; self.root.mkdir()
+                bundle, registration = self.measurement_bundle()
+                frozen_before = inventory(bundle/'frozen')
+                def mutate(spec, context, directory, label, secrets):
+                    result = real_execute(spec, context, directory, label, secrets)
+                    if label == 'prepare':
+                        path = bundle/name
+                        path.rename(self.root/'original')
+                        path.symlink_to(bundle/'frozen', target_is_directory=True)
+                    return result
+                with patch('tool.execute', side_effect=mutate):
+                    with self.assertRaisesRegex(ValueError, 'directory.*replaced'):
+                        collect(bundle, registration)
+                self.assertEqual(inventory(bundle/'frozen'), frozen_before)
+
+    def test_offline_analysis_rejects_symlinked_consumed_slot(self):
+        bundle, m = self.bundle()
+        collect(bundle, max_slots=1)
+        path = bundle/'slots'/order()[0]['id']
+        moved = self.root/'original-slot'; path.rename(moved)
+        path.symlink_to(moved, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'directory.*symlink'):
+            analyze(bundle, self.root/'analysis')
+
+    def test_frozen_tool_checks_sources_against_registered_manifest(self):
+        bundle, registration = self.measurement_bundle()
+        registered(bundle, read_json(bundle/'frozen/manifest.json'), registration)
+        path = bundle/'frozen/source/analyze.py'
+        path.write_bytes(path.read_bytes()+b'\n# changed source\n'); seal(bundle/'frozen')
+        with patch('support.HERE', bundle/'frozen/source'), patch('support.SHARED', bundle/'frozen/source/shared'):
+            with self.assertRaisesRegex(ValueError, 'registered source changed'):
+                frozen_sources(bundle)
+        command = [sys.executable, '-B', str(bundle/'frozen/source/tool.py'), 'analyze', str(bundle), str(self.root/'output')]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('registered source changed', result.stderr)
+        self.assertFalse((self.root/'output').exists())
 
 if __name__ == '__main__':
     result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(RunnerTests))
