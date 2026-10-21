@@ -221,6 +221,14 @@ that config before freeze. Scenario names and argument keys retain their origina
 spelling.
 This restricted experiment input format lets the Python standard-library checker
 use the same data accepted by the Go YAML loader without another parser dependency.
+Literal absolute paths and explicit `./` or `../` input paths must already exist
+and be pinned; a hook cannot reserve an absent script for preparation to generate.
+Runtime output paths use the declared placeholders. Ordinary `PATH`, home and
+temporary-directory environment settings are not interpreted as file inputs.
+Infrastructure URLs are not local file paths. All live dependencies are checked
+again before warm-up and warm cleanup, as well as before the other lifecycle
+commands. Bare dynamic imports and subprocess lookup still require explicit
+inventory and audit.
 Dynamic imports, subprocess lookup and other runtime dependencies still require
 explicit pins and audit. A
 measurement T command invokes the registered CLI directly; transport wrappers
@@ -360,9 +368,24 @@ concurrent analyses may use separate output directories.
 Both operations also lock the campaign directory inode, so replacing `.lock` cannot
 admit a competing collector or analyzer. Path identity checks detect replacement
 at collection boundaries and before analysis output is written.
+Every collection boundary compares the exact prior-slot directory set and each
+slot's seal digest with the progress checkpoint. Deleting a slot, inserting one,
+or rewriting and resealing earlier evidence stops collection before another
+measured command; the checkpoint mapping must also match the collector's retained
+in-memory mapping. Analysis and collection bind the frozen manifest and order
+bytes to the retained public registration hashes, even if someone regenerates the
+local frozen-directory seal.
 Analysis output must resolve outside the campaign, including through symlinks;
 an output path within frozen inputs, progress or sealed slots is rejected before
 creating files.
+Completed analysis directories contain a `SHA256SUMS` inventory covering both
+`results.json` and `report.md`; regeneration includes the same deterministic seal.
+Malformed product/baseline JSON structures are operational slot failures and
+remain in the 600-slot accounting, rather than aborting the entire reduction.
+Completed artifacts require exactly one command timing root with all spans
+attached to it. Missing or duplicate roots fail evidence validation. A killed
+baseline with no final receipt still retains its published per-execution
+observations and explicitly unavailable stage timing.
 Baseline receipts must match the requested arm and variant. Product observations
 must declare `replay` for T-R and `explore` for T-E, including warm-up. Evidence
 from another slot or mode cannot count as a completed observation.

@@ -134,9 +134,14 @@ def protect(bundle, active):
     """Authenticate frozen inputs and every previously sealed slot at boundaries."""
     verify(bundle / 'frozen')
     verify(bundle / 'progress')
-    retained_registration(bundle, read_json(bundle / 'progress' / 'checkpoint.json'))
-    for path in (bundle / 'slots').iterdir():
-        if path != active: verify(path)
+    progress = read_json(bundle / 'progress' / 'checkpoint.json')
+    retained_registration(bundle, progress)
+    prior = {name: checksum for name, checksum in progress['slots'].items() if name != active.name}
+    paths = {path.name: path for path in (bundle / 'slots').iterdir() if path != active}
+    require(paths.keys() == prior.keys(), 'prior slots differ from progress checkpoint')
+    for name, path in paths.items():
+        verify(path)
+        require(digest(path / 'SHA256SUMS') == prior[name], 'prior slot seal differs from progress checkpoint: ' + name)
 
 
 def unchanged(directory, before):
@@ -214,6 +219,8 @@ def collect_locked(bundle, registration, max_slots):
                 def check_boundary():
                     check_lock()
                     protect(bundle, directory)
+                    require(json_equal(read_json(bundle / 'progress' / 'checkpoint.json')['slots'], consumed),
+                            'progress slot mapping changed during collection')
                 try:
                     # Pending activation signals are delivered only after recovery
                     # owns the slot. No allocation has been touched at this point.
@@ -231,6 +238,7 @@ def collect_locked(bundle, registration, max_slots):
                             state['preparation'] = receipt
                             check_boundary()
                             if slot['cache'] == 'warm':
+                                live_pins(m)
                                 warm = directory / 'warmup'; warm.mkdir()
                                 warm_context = dict(context, trial_dir=str(warm), arm='T-R')
                                 cmd = execute(m['commands'][slot['workload']][slot['variant']]['T-R'], warm_context, warm, 'run', [])
@@ -241,6 +249,7 @@ def collect_locked(bundle, registration, max_slots):
                                         and not observed['quality_reasons'] and not observed['operational_reasons'], 'warm-up failed')
                                 state['warmup'] = {'seconds': cmd['seconds'], 'exit': cmd['exit']}
                                 before = inventory(directory)
+                                live_pins(m)
                                 cleanup = execute(m['hooks']['warm_cleanup'], context, directory, 'warm-cleanup', [])
                                 require(succeeded(cleanup) and cleanup.get('containment_proven') is True,
                                         'warm-up output/data cleanup failed')
@@ -265,7 +274,7 @@ def collect_locked(bundle, registration, max_slots):
                             observed = (baseline if slot['arm'].startswith('B') else product)(directory, slot, cmd, expected)
                             state['evidence_received_seconds'] = [cmd['seconds'], time.monotonic() - start]
                             state['cleanup_proven'] = observed['cleanup_proven']
-                        except (OSError, ValueError, KeyError, TypeError) as error:
+                        except EVIDENCE_ERRORS as error:
                             state['error'] = 'evidence: ' + str(error)
                         unchanged(directory, original)
                         check_boundary()

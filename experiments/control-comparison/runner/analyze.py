@@ -33,16 +33,19 @@ def membership(interval, cap):
     return 'budget_membership_unknown'
 
 
-def stages(spans, seconds):
+def stages(spans, seconds, allow_missing=False):
     """Intervals stay on their own clock; nested coverage uses union length."""
     totals = defaultdict(list)
     intervals = []
     roots = [s for s in spans if s['name'] == 'command']
-    if len(roots) != 1: return {'missing': 'command timing unavailable'}
+    if allow_missing and not spans: return {'missing': 'command timing unavailable'}
+    require(len(roots) == 1, 'one command timing root required')
     root = roots[0]
+    require(root['id'] == 1 and root['parent_id'] == 0, 'invalid command timing root')
     start, end = root['start_ns'], root['start_ns'] + root['duration_ns']
     for index, s in enumerate(spans):
         require(s['id'] == index + 1 and 0 <= s['parent_id'] < s['id'], 'invalid timing hierarchy')
+        require(index == 0 or s['parent_id'] > 0, 'unrooted timing span')
         a, b = s['start_ns'], s['start_ns'] + s['duration_ns']
         require(0 <= s['duration_ns'] and start <= a <= b <= end, 'invalid timing interval')
         if s['parent_id']:
@@ -72,7 +75,8 @@ def baseline(root, slot, command, expected):
               'quality_reasons': [], 'operational_reasons': [], 'first_event_seconds': None,
               'stable_confirmation': False, 'cleanup_proven': False, 'executions': []}
     raw = root / 'raw'
-    if (raw / 'run.json').is_file():
+    final_receipt = (raw / 'run.json').is_file()
+    if final_receipt:
         run = read_json(raw / 'run.json')
         require(run.get('arm') == slot['arm'] and run.get('variant') == slot['variant'],
                 'baseline identity differs from requested slot')
@@ -90,7 +94,7 @@ def baseline(root, slot, command, expected):
     if command['exit'] != 0 and not command['timeout']:
         result['operational_reasons'].append('baseline operational exit')
     whole = command['seconds']
-    result['stages'] = stages(run['timings']['spans'], whole)
+    result['stages'] = stages(run['timings']['spans'], whole, allow_missing=not final_receipt)
     if slot['arm'] == 'B0':
         require(run['executions'] == 0 and run.get('seed') is not None, 'B0 lifecycle evidence missing')
         return result
@@ -347,7 +351,7 @@ def reduce_slot(root, slot, manifest):
     expected = manifest['inputs'][slot['workload']][slot['variant']]
     try:
         evidence = (baseline if slot['arm'].startswith('B') else product)(root, slot, command, expected)
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except EVIDENCE_ERRORS as error:
         evidence = {'operational_reasons': ['missing/invalid evidence: ' + str(error)],
                     'quality_reasons': [], 'cleanup_proven': False, 'first_event_seconds': None}
     result.update(evidence)
@@ -385,6 +389,8 @@ def analyze_locked(bundle, output, check_lock):
     bundle, output = Path(bundle), Path(output)
     verify(bundle / 'frozen')
     frozen_sources(bundle)
+    verify(bundle / 'progress')
+    retained_registration(bundle, read_json(bundle / 'progress' / 'checkpoint.json'))
     manifest = read_json(bundle / 'frozen' / 'manifest.json')
     domain_expectations(manifest)
     prerequisite_completion(manifest, bundle / 'frozen' / 'inputs')
@@ -509,4 +515,5 @@ def analyze_locked(bundle, output, check_lock):
     lines += ['', 'All first-event bounds, per-execution outcomes, failures, resources and within-block pairs are in results.json.',
               'T-R minus B1 is total controlled-path cost, not isolated sync-point overhead.', '']
     (output / 'report.md').write_text('\n'.join(lines))
+    seal(output)
     return payload

@@ -56,6 +56,7 @@ EXPECTED_DOMAIN_ROWS = {
 }
 STATUSES = ('complete', 'quality_failed', 'operational_failed', 'budget_exhausted',
             'preparation_failed', 'unsupported', 'not_started')
+EVIDENCE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, OverflowError)
 
 
 def require(condition, message):
@@ -353,24 +354,31 @@ def live_pins(manifest):
 
 def file_dependencies(spec, pins, label, inputs=()):
     """Check visible file inputs; dynamic imports/subprocesses remain audited pins."""
-    values = [(v, True, False) for v in spec['argv']]
-    values += [(v, k in ('CLASSPATH', 'PYTHONPATH'), False) for k, v in spec['env'].items()]
-    values += [(v, True, True) for v in inputs]
-    for value, include_directory, required in values:
+    values = [(v, True, False, True) for v in spec['argv']]
+    values += [(v, k in ('CLASSPATH', 'PYTHONPATH'), False,
+                k not in ('PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP')) for k, v in spec['env'].items()]
+    values += [(v, True, True, True) for v in inputs]
+    for value, include_directory, required, literal_paths in values:
         require(isinstance(value, str) and (value or not required), label + ' dependency path required')
         # Options, classpath lists and Java lib/* wildcards are input paths.
         # Runtime receipt/output placeholders are not frozen inputs.
-        for name in value.split('=', 1)[-1].split(os.pathsep):
+        argument = value.split('=', 1)[-1]
+        if re.match(r'^[A-Za-z][A-Za-z0-9+.-]*://', argument) and not required:
+            continue  # Infrastructure URLs are not local file dependencies.
+        for name in argument.split(os.pathsep):
             if not name or '{' in name:
                 require(not required, label + ' dependency must be a frozen path')
                 continue
             path = Path(os.path.abspath(Path(spec['cwd']) / name))
-            if path.name == '*' and path.parent.is_dir():
+            wildcard = path.name == '*' and path.parent.is_dir()
+            if wildcard:
                 dependencies = sorted(p for p in path.parent.iterdir() if p.suffix.lower() == '.jar' and p.is_file())
             else:
                 dependencies = (files(path) if include_directory and path.is_dir()
                                 else [path] if path.is_file() else [])
-            require(not required or path.is_file() or path.is_dir(), label + ' dependency missing: ' + name)
+            literal = literal_paths and (Path(name).is_absolute() or name.startswith(('./', '../')))
+            require(not (required or literal) or path.is_file() or path.is_dir() or wildcard,
+                    label + ' dependency missing: ' + name)
             require(all(str(p) in pins for p in dependencies), label + ' file dependency is unpinned: ' + name)
 
 
@@ -526,6 +534,9 @@ def retained_registration(bundle, progress):
     if value is not None:
         require(path.is_file(), 'retained registration missing')
         require(json_equal(read_json(path), value), 'registration differs from sealed checkpoint')
+        for key, name in (('manifest_sha256', 'manifest.json'), ('order_sha256', 'order.json')):
+            require(value.get(key) == digest(bundle / 'frozen' / name),
+                    'registration hash differs: ' + name)
     return value
 
 

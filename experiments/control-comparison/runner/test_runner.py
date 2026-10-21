@@ -1950,6 +1950,167 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
                 self.assertFalse(result['stable_confirmation'])
                 shutil.rmtree(root)
 
+    def test_malformed_raw_evidence_preserves_all_slot_accounting(self):
+        parent = self.root
+        for defect in ('baseline_object', 'fingerprints', 'timings'):
+            with self.subTest(defect=defect):
+                self.root = parent/defect; self.root.mkdir()
+                m = self.manifest()
+                if defect == 'baseline_object':
+                    slot = order()[0]
+                    root, _, _ = self.raw(slot)
+                    write_json(root/'raw/run.json', [])
+                else:
+                    root, _, _, expected = self.product_raw('T-E')
+                    slot = order()[2]
+                    m['inputs'][slot['workload']][slot['variant']] = expected
+                    directory = root/'raw/runs/constructed'
+                    manifest = read_json(directory/'manifest.json'); manifest['variant'] = slot['variant']
+                    observation = read_json(directory/'observation.json')
+                    if defect == 'fingerprints': observation['fingerprints'] = None
+                    else: manifest['timings'] = None
+                    merged = read_json(directory/'report.json')
+                    merged.update(manifest=manifest, observation=observation)
+                    for name, value in (('manifest',manifest), ('observation',observation), ('report',merged)):
+                        write_json(directory/(name+'.json'), value)
+                m['unsupported'] = {s['workload']+'/'+s['arm']: 'constructed prefix'
+                                    for s in order()[:slot['ordinal']-1]}
+                write_json(self.root/'input.json', m)
+                bundle = self.root/'bundle'; freeze(self.root/'input.json', bundle)
+                consumed = {}
+                for prior in order()[:slot['ordinal']-1]:
+                    path = bundle/'slots'/prior['id']; path.mkdir()
+                    write_json(path/'slot.json', {'slot':prior, 'unsupported':'constructed prefix'})
+                    seal(path); consumed[prior['id']] = digest(path/'SHA256SUMS')
+                write_json(root/'slot.json', {'slot':slot, 'cleanup_proven':True}); seal(root)
+                retained = bundle/'slots'/slot['id']; root.rename(retained)
+                consumed[slot['id']] = digest(retained/'SHA256SUMS'); save_progress(bundle, consumed)
+                result = analyze(bundle, self.root/'analysis')
+                self.assertEqual(len(result['slots']), 600)
+                row = result['slots'][slot['ordinal']-1]
+                self.assertEqual(row['status'], 'operational_failed')
+                self.assertTrue(any('missing/invalid evidence' in reason for reason in row['reasons']))
+
+    def test_analysis_output_is_sealed_and_tamper_evident(self):
+        bundle, _ = self.bundle()
+        output = self.root/'analysis'; analyze(bundle, output)
+        verify(output)
+        self.assertEqual(set(read_json(output/'SHA256SUMS')), {'results.json', 'report.md'})
+        again = self.root/'again'; analyze(bundle, again)
+        self.assertEqual(inventory(output), inventory(again))
+        for name in ('results.json', 'report.md'):
+            path = output/name; original = path.read_bytes()
+            path.write_bytes(original+b'\n')
+            with self.assertRaisesRegex(ValueError, 'checksum'): verify(output)
+            path.write_bytes(original)
+
+    def test_boundaries_authenticate_prior_slots_against_checkpoint(self):
+        from tool import execute as real_execute
+        parent = self.root
+        for defect in ('delete', 'reseal', 'insert', 'reseal_checkpoint'):
+            with self.subTest(defect=defect):
+                self.root = parent/defect; self.root.mkdir()
+                bundle, registration = self.measurement_bundle()
+                calls = []
+                def mutate(spec, context, directory, label, secrets):
+                    calls.append((context['id'], label))
+                    result = real_execute(spec, context, directory, label, secrets)
+                    if context['id'] == order()[1]['id'] and label == 'prepare':
+                        prior = bundle/'slots'/order()[0]['id']
+                        if defect == 'delete': shutil.rmtree(prior)
+                        elif defect == 'insert':
+                            prior = bundle/'slots'/'unregistered'; prior.mkdir(); seal(prior)
+                        else:
+                            (prior/'injected').write_text('replaced evidence'); seal(prior)
+                            if defect == 'reseal_checkpoint':
+                                checkpoint = read_json(bundle/'progress/checkpoint.json')
+                                checkpoint['slots'][prior.name] = digest(prior/'SHA256SUMS')
+                                write_json(bundle/'progress/checkpoint.json', checkpoint); seal(bundle/'progress')
+                    return result
+                with patch('tool.execute', side_effect=mutate): collect(bundle, registration)
+                self.assertNotIn((order()[1]['id'], 'run'), calls)
+                self.assertFalse(any(identity == order()[2]['id'] for identity, _ in calls))
+                state = read_json(bundle/'slots'/order()[1]['id']/'slot.json')
+                self.assertTrue(any('slot' in reason for reason in state['integrity_errors']))
+
+    def test_missing_literal_hook_dependencies_fail_before_freeze(self):
+        m = self.measurement_manifest()
+        for hook in m['hooks']:
+            for path in (str(self.root/'generated.py'), './generated.py', '../generated.py',
+                         '--settings='+str(self.root/'missing.json')):
+                with self.subTest(hook=hook, path=path):
+                    changed = copy.deepcopy(m)
+                    changed['hooks'][hook]['argv'].append(path)
+                    with self.assertRaisesRegex(ValueError, 'dependency missing'):
+                        validate(changed)
+
+    def test_hook_dependencies_are_rechecked_before_warmup(self):
+        from tool import proof as real_proof
+        def mutate(directory, filename, *args, **kwargs):
+            receipt = real_proof(directory, filename, *args, **kwargs)
+            if filename == 'preparation.json':
+                script = self.root/'hook.py'
+                script.write_text(script.read_text()+'\n# changed after preparation\n')
+            return receipt
+        with patch('tool.proof', side_effect=mutate):
+            state, calls = self.warm_collection({})
+        self.assertIn('live pin changed', state['error'])
+        self.assertFalse(any(label == 'run' for label, _ in calls))
+
+    def test_required_command_timing_cannot_be_missing_or_duplicated(self):
+        parent = self.root
+        for defect in ('missing', 'duplicate', 'unrooted'):
+            with self.subTest(defect=defect):
+                self.root = parent/defect; self.root.mkdir()
+                root, slot, _, expected = self.product_raw('T-E')
+                directory = root/'raw/runs/constructed'
+                manifest = read_json(directory/'manifest.json')
+                spans = manifest['timings']['spans']
+                if defect == 'missing': spans[0]['name'] = 'unidentified_root'
+                elif defect == 'duplicate':
+                    spans.append(dict(spans[0], id=len(spans)+1))
+                else: spans[-1]['parent_id'] = 0
+                write_json(directory/'manifest.json', manifest)
+                merged = read_json(directory/'report.json'); merged['manifest'] = manifest
+                write_json(directory/'report.json', merged); seal(root)
+                m = self.manifest(); m['inputs'][slot['workload']][slot['variant']] = expected
+                result = reduce_slot(root, slot, m)
+                self.assertEqual(result['status'], 'operational_failed')
+                self.assertTrue(any('timing' in reason for reason in result['reasons']))
+
+    def test_offline_analysis_binds_frozen_bytes_to_registration(self):
+        parent = self.root
+        for name in ('manifest.json', 'order.json'):
+            with self.subTest(file=name):
+                self.root = parent/name; self.root.mkdir()
+                bundle, registration = self.measurement_bundle()
+                registered(bundle, read_json(bundle/'frozen/manifest.json'), registration)
+                path = bundle/'frozen'/name
+                if name == 'manifest.json':
+                    value = read_json(path); value['campaign_id'] = 'substituted'; write_json(path, value)
+                else: path.write_bytes(path.read_bytes()+b'\n')  # Same order, different registered bytes.
+                seal(bundle/'frozen')
+                with self.assertRaisesRegex(ValueError, 'registration.*hash'):
+                    analyze(bundle, self.root/'analysis')
+                self.assertFalse((self.root/'analysis').exists())
+
+    def test_registered_frozen_bytes_are_checked_at_hook_boundaries(self):
+        from tool import execute as real_execute
+        bundle, registration = self.measurement_bundle()
+        calls = []
+        def mutate(spec, context, directory, label, secrets):
+            calls.append(label)
+            result = real_execute(spec, context, directory, label, secrets)
+            if label == 'prepare':
+                path = bundle/'frozen/manifest.json'
+                value = read_json(path); value['campaign_id'] = 'substituted'; write_json(path, value)
+                seal(bundle/'frozen')
+            return result
+        with patch('tool.execute', side_effect=mutate): collect(bundle, registration)
+        self.assertEqual(calls, ['prepare', 'cleanup'])
+        state = read_json(bundle/'slots'/order()[0]['id']/'slot.json')
+        self.assertIn('registration', state['stop']['reason'])
+
 
 if __name__ == '__main__':
     result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(RunnerTests))
