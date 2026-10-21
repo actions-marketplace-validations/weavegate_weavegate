@@ -204,11 +204,11 @@ func snapshot(ctx context.Context, db *fixture.DB) (map[string][]map[string]any,
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = rows.Close() }()
 	var tables []string
 	for rows.Next() {
 		var name string
 		if err = rows.Scan(&name); err != nil {
-			_ = rows.Close()
 			return nil, err
 		}
 		tables = append(tables, name)
@@ -219,47 +219,54 @@ func snapshot(ctx context.Context, db *fixture.DB) (map[string][]map[string]any,
 	}
 	result := map[string][]map[string]any{}
 	for _, table := range tables {
-		rows, err = db.SQL.QueryContext(ctx, "SELECT * FROM `"+strings.ReplaceAll(table, "`", "``")+"`")
+		items, err := snapshotTable(ctx, db, table)
 		if err != nil {
 			return nil, err
 		}
-		columns, err := rows.Columns()
-		if err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		items := []map[string]any{}
-		for rows.Next() {
-			values := make([]any, len(columns))
-			pointers := make([]any, len(columns))
-			for i := range values {
-				pointers[i] = &values[i]
-			}
-			if err = rows.Scan(pointers...); err != nil {
-				_ = rows.Close()
-				return nil, err
-			}
-			item := map[string]any{}
-			for i, k := range columns {
-				v := values[i]
-				if b, ok := v.([]byte); ok {
-					v = string(b)
-				}
-				item[k] = v
-			}
-			items = append(items, item)
-		}
-		if err = errors.Join(rows.Err(), rows.Close()); err != nil {
-			return nil, err
-		}
-		sort.Slice(items, func(i, j int) bool {
-			a, _ := json.Marshal(items[i])
-			b, _ := json.Marshal(items[j])
-			return bytes.Compare(a, b) < 0
-		})
 		result[table] = items
 	}
 	return result, nil
+}
+
+func snapshotTable(ctx context.Context, db *fixture.DB, table string) ([]map[string]any, error) {
+	rows, err := db.SQL.QueryContext(ctx, "SELECT * FROM `"+strings.ReplaceAll(table, "`", "``")+"`")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	items := []map[string]any{}
+	for rows.Next() {
+		values := make([]any, len(columns))
+		pointers := make([]any, len(columns))
+		for i := range values {
+			pointers[i] = &values[i]
+		}
+		if err = rows.Scan(pointers...); err != nil {
+			return nil, err
+		}
+		item := map[string]any{}
+		for i, k := range columns {
+			v := values[i]
+			if b, ok := v.([]byte); ok {
+				v = string(b)
+			}
+			item[k] = v
+		}
+		items = append(items, item)
+	}
+	if err = errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	sort.Slice(items, func(i, j int) bool {
+		a, _ := json.Marshal(items[i])
+		b, _ := json.Marshal(items[j])
+		return bytes.Compare(a, b) < 0
+	})
+	return items, nil
 }
 
 // reap shares the stop request's deadline. KILL has one additional bounded reap

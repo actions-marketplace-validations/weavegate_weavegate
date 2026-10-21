@@ -40,13 +40,13 @@ func (f *readinessFixture) Ready(*fixture.DB) error { return f.probe(f.ctx, "rea
 type readinessConnector struct{ f *readinessFixture }
 
 func (c readinessConnector) Connect(context.Context) (driver.Conn, error) {
-	return readinessConn{c.f}, nil
+	return readinessConn(c), nil
 }
-func (c readinessConnector) Driver() driver.Driver { return readinessDriver{c.f} }
+func (c readinessConnector) Driver() driver.Driver { return readinessDriver(c) }
 
 type readinessDriver struct{ f *readinessFixture }
 
-func (d readinessDriver) Open(string) (driver.Conn, error) { return readinessConn{d.f}, nil }
+func (d readinessDriver) Open(string) (driver.Conn, error) { return readinessConn(d), nil }
 
 type readinessConn struct{ f *readinessFixture }
 
@@ -93,7 +93,11 @@ func TestProvisionTimingIncludesReadinessAndFailures(t *testing.T) {
 		t.Run("failure="+failure, func(t *testing.T) {
 			f := &readinessFixture{fail: failure}
 			db := sql.OpenDB(readinessConnector{f})
-			defer db.Close()
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Error(err)
+				}
+			})
 			f.db = &fixture.DB{SQL: db}
 			ctx, recorder := timing.New(context.Background())
 			ctx, finish := timing.Start(ctx, "command")
