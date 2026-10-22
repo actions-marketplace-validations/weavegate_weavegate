@@ -106,7 +106,7 @@ def cleanup_inventory(directory):
     return {'paths': paths, 'identities': identities}
 
 
-def cleanup_valid(directory):
+def cleanup_valid(directory, *, collection_boundary=False):
     command = read_json(directory / 'cleanup.command.json')
     if not succeeded(command):
         raise ValueError('cleanup command failed')
@@ -118,8 +118,17 @@ def cleanup_valid(directory):
     if (not isinstance(inputs, dict) or not isinstance(inputs.get('paths'), dict)
             or not inputs['paths'] or not isinstance(inputs.get('identities'), list)):
         raise ValueError('missing cleanup input inventory')
-    identities = inputs['identities']
+    # Recorded device/inode numbers are authoritative only at the collection
+    # boundary. A copy can reuse those numbers for unrelated files. Offline
+    # reduction requires the sealed cleanup_inputs_valid result and rechecks
+    # aliases against the current retained files instead.
+    identities = inputs['identities'][:] if collection_boundary else []
     inputs = inputs['paths']
+    for name, checksum in inputs.items():
+        path = child(directory, name)
+        if checksum is not None and path.exists():
+            stat = path.stat()
+            identities.append([stat.st_dev, stat.st_ino])
     # The inventory cannot record its own inode before it is written. Reject
     # aliases of live controls too, including cleanup-inputs.json itself.
     for name in CONTROL:
