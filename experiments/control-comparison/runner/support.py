@@ -10,6 +10,7 @@ import copy
 import runpy
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
+from urllib.parse import urlsplit
 runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
               init_globals={'dependencies': ('fixture_contract',)})
 from fixture_contract import FIXTURE_INPUTS, FIXTURE_REVISION, REFERENCE_BUILD
@@ -34,7 +35,7 @@ for name in SHARED_MODULES:
 # its required modules (including redaction's plan dependency) are loaded.
 sys.path.pop(0)
 from common import (canonical, child, digest, files, json_equal, positive, read_json, seal, sha,
-                    timestamp, utc, verify as shared_verify, write_json)  # noqa: E402
+                    timestamp, utc, verify as shared_verify, write_bytes, write_json)  # noqa: E402
 from execution import defer_interrupts, execute as shared_execute, succeeded  # noqa: E402
 
 RUNNER_SOURCES = ('analyze.py', 'fixture_contract.py', 'imports.py', 'prepare.py',
@@ -66,6 +67,29 @@ EVIDENCE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, Ind
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def unsupported_declarations(manifest):
+    declarations = manifest.get('unsupported', {})
+    require(isinstance(declarations, dict), 'unsupported must be a workload/arm mapping')
+    keys = {w + '/' + a for w in WORKLOADS for a in ARMS}
+    for key, value in declarations.items():
+        require(key in keys, 'unsupported workload/arm is not registered: ' + str(key))
+        require(isinstance(value, dict) and set(value) == {'issue_url', 'reason'},
+                'unsupported declaration requires issue_url and reason')
+        require(isinstance(value['reason'], str) and value['reason'].strip(), 'unsupported reason required')
+        url = value['issue_url']
+        require(isinstance(url, str) and url and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url),
+                'unsupported issue URL invalid')
+        try:
+            parsed = urlsplit(url)
+            valid = (parsed.scheme == 'https' and parsed.hostname and parsed.path not in ('', '/')
+                     and parsed.username is None and parsed.password is None
+                     and (parsed.port is None or parsed.port > 0))
+        except ValueError:
+            valid = False
+        require(valid, 'unsupported issue URL must identify an HTTPS issue without credentials')
+    return declarations
 
 
 RESOURCE_COUNTERS = ('cpu_seconds', 'memory_bytes', 'container_creations', 'evidence_bytes', 'cache_bytes')
@@ -603,6 +627,7 @@ def retained_registration(bundle, progress):
 
 def retained_progress(bundle, manifest, slots):
     """Fail closed on gaps, lost suffixes, crashes, or continuation after a stop."""
+    declarations = unsupported_declarations(manifest)
     paths = list((bundle / 'slots').iterdir())
     consumed = {p.name for p in paths}
     require(consumed == {s['id'] for s in slots[:len(consumed)]},
@@ -620,8 +645,10 @@ def retained_progress(bundle, manifest, slots):
     for index, slot in enumerate(slots[:len(consumed)]):
         state = read_json(bundle / 'slots' / slot['id'] / 'slot.json')
         require(state.get('slot') == slot, 'slot identity differs')
-        if state.get('unsupported'):
-            require(state['unsupported'] == manifest.get('unsupported', {}).get(slot['workload'] + '/' + slot['arm'])
+        declaration = declarations.get(slot['workload'] + '/' + slot['arm'])
+        require(json_equal(state.get('unsupported'), declaration), 'unsupported slot declaration differs')
+        if declaration is not None:
+            require(state['unsupported'] == declaration
                     and not (bundle / 'slots' / slot['id'] / 'run.command.json').exists(),
                     'unsupported slot was executed/unregistered')
         else:

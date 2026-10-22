@@ -15,6 +15,9 @@ from analyze import analyze, baseline, bound, membership, product, reduce_slot, 
 from tool import collect, freeze, registered, validate, proof
 
 
+UNSUPPORTED = {'issue_url': 'https://example.com/issues/1', 'reason': 'Constructed unsupported arm'}
+
+
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -323,14 +326,14 @@ class RunnerTests(unittest.TestCase):
 
     def test_complete_checkpoint_requires_every_consumed_slot(self):
         m = self.manifest()
-        m['unsupported'] = {w + '/' + a: 'constructed unsupported' for w in WORKLOADS for a in ARMS}
+        m['unsupported'] = {w + '/' + a: UNSUPPORTED for w in WORKLOADS for a in ARMS}
         write_json(self.root/'input.json', m)
         bundle = self.root/'bundle'
         freeze(self.root/'input.json', bundle)
         consumed = {}
         for slot in order():
             directory = bundle/'slots'/slot['id']; directory.mkdir()
-            write_json(directory/'slot.json', {'slot': slot, 'unsupported': 'constructed unsupported'})
+            write_json(directory/'slot.json', {'slot': slot, 'unsupported': UNSUPPORTED})
             seal(directory)
             consumed[slot['id']] = digest(directory/'SHA256SUMS')
         save_progress(bundle, consumed)
@@ -748,12 +751,12 @@ class RunnerTests(unittest.TestCase):
 
     def test_registration_cannot_be_replaced_after_partial_collection(self):
         m = self.measurement_manifest()
-        m['unsupported'] = {'matching/B2': 'constructed unsupported'}
+        m['unsupported'] = {'matching/B2': UNSUPPORTED}
         bundle, registration = self.measurement_bundle(m)
         registered(bundle, m, registration)
         slot = order()[0]
         directory = bundle/'slots'/slot['id']; directory.mkdir()
-        write_json(directory/'slot.json', {'slot':slot, 'unsupported':'constructed unsupported'})
+        write_json(directory/'slot.json', {'slot':slot, 'unsupported':UNSUPPORTED})
         seal(directory)
         save_progress(bundle, {slot['id']:digest(directory/'SHA256SUMS')})
         replacement = read_json(registration)
@@ -786,11 +789,11 @@ class RunnerTests(unittest.TestCase):
 
     def test_unregistered_consumed_checkpoint_cannot_register_late(self):
         m = self.measurement_manifest()
-        m['unsupported'] = {'matching/B2':'constructed unsupported'}
+        m['unsupported'] = {'matching/B2':UNSUPPORTED}
         bundle, registration = self.measurement_bundle(m)
         slot = order()[0]
         directory = bundle/'slots'/slot['id']; directory.mkdir()
-        write_json(directory/'slot.json', {'slot':slot, 'unsupported':'constructed unsupported'})
+        write_json(directory/'slot.json', {'slot':slot, 'unsupported':UNSUPPORTED})
         seal(directory)
         save_progress(bundle, {slot['id']:digest(directory/'SHA256SUMS')})
         with patch('tool.execute') as execute:
@@ -852,14 +855,14 @@ class RunnerTests(unittest.TestCase):
         m = self.measurement_manifest()
         warm = next(s for s in order() if s['cache'] == 'warm')
         # Retain the preceding consumed prefix without spending runtime on it.
-        m['unsupported'] = {w+'/'+a:'constructed unsupported' for w in WORKLOADS for a in ARMS}
+        m['unsupported'] = {w+'/'+a:UNSUPPORTED for w in WORKLOADS for a in ARMS}
         del m['unsupported'][warm['workload']+'/'+warm['arm']]
         bundle, registration = self.measurement_bundle(m)
         registered(bundle, m, registration)
         consumed = {}
         for slot in order()[:warm['ordinal']-1]:
             directory = bundle/'slots'/slot['id']; directory.mkdir()
-            write_json(directory/'slot.json', {'slot':slot, 'unsupported':'constructed unsupported'})
+            write_json(directory/'slot.json', {'slot':slot, 'unsupported':UNSUPPORTED})
             seal(directory); consumed[slot['id']] = digest(directory/'SHA256SUMS')
         save_progress(bundle, consumed)
         from tool import execute as real_execute
@@ -1661,7 +1664,7 @@ class RunnerTests(unittest.TestCase):
                     if boundary == 'unsupported-seal' and not unsupported: continue
                     with self.subTest(signal=signum, unsupported=unsupported, boundary=boundary):
                         m = self.manifest()
-                        if unsupported: m['unsupported'] = {'matching/B2': 'constructed unsupported'}
+                        if unsupported: m['unsupported'] = {'matching/B2': UNSUPPORTED}
                         write_json(self.root/'input.json', m)
                         bundle = self.root/'activation'
                         freeze(self.root/'input.json', bundle)
@@ -1973,14 +1976,14 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
                     merged.update(manifest=manifest, observation=observation)
                     for name, value in (('manifest',manifest), ('observation',observation), ('report',merged)):
                         write_json(directory/(name+'.json'), value)
-                m['unsupported'] = {s['workload']+'/'+s['arm']: 'constructed prefix'
+                m['unsupported'] = {s['workload']+'/'+s['arm']: UNSUPPORTED
                                     for s in order()[:slot['ordinal']-1]}
                 write_json(self.root/'input.json', m)
                 bundle = self.root/'bundle'; freeze(self.root/'input.json', bundle)
                 consumed = {}
                 for prior in order()[:slot['ordinal']-1]:
                     path = bundle/'slots'/prior['id']; path.mkdir()
-                    write_json(path/'slot.json', {'slot':prior, 'unsupported':'constructed prefix'})
+                    write_json(path/'slot.json', {'slot':prior, 'unsupported':UNSUPPORTED})
                     seal(path); consumed[prior['id']] = digest(path/'SHA256SUMS')
                 write_json(root/'slot.json', {'slot':slot, 'cleanup_proven':True}); seal(root)
                 retained = bundle/'slots'/slot['id']; root.rename(retained)
@@ -2267,6 +2270,197 @@ p.symlink_to(target, target_is_directory=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('registered source changed', result.stderr)
         self.assertFalse((self.root/'output').exists())
+
+    def test_unsupported_declarations_require_registered_keys_and_issue_reasons(self):
+        valid = {'issue_url': 'https://github.com/weavegate/weavegate/issues/190',
+                 'reason': 'Constructed launcher boundary requires an engine change'}
+        m = self.manifest()
+        validate(dict(m, unsupported={'matching/B2': valid}))
+        bad = [None, True, [], 'matching/B2', {'missing/B2': valid}, {'matching/B3': valid},
+               {'matching/fixed/B2': valid}]
+        bad += [{'matching/B2': value} for value in
+                (True, False, None, '', 'unsupported', {}, dict(valid, reason=' '),
+                 dict(valid, issue_url=''), dict(valid, issue_url='http://example.com/issues/1'),
+                 dict(valid, issue_url='https://'), dict(valid, issue_url='https://host/issue with space'),
+                 dict(valid, issue_url='https://user:password@host/issues/1'),
+                 dict(valid, typo='extra'))]
+        for index, value in enumerate(bad):
+            with self.subTest(value=value):
+                write_json(self.root/'unsupported.json', dict(m, unsupported=value))
+                with self.assertRaisesRegex(ValueError, 'unsupported'):
+                    freeze(self.root/'unsupported.json', self.root/('invalid-'+str(index)))
+                self.assertFalse((self.root/('invalid-'+str(index))).exists())
+
+    def test_offline_and_collection_reject_malformed_unsupported_inventory(self):
+        bundle, _ = self.bundle()
+        path = bundle/'frozen/manifest.json'
+        manifest = read_json(path); manifest['unsupported'] = {'matching/B2': True}
+        write_json(path, manifest); seal(bundle/'frozen')
+        with patch('tool.execute') as execute:
+            with self.assertRaisesRegex(ValueError, 'unsupported'): collect(bundle, max_slots=1)
+            execute.assert_not_called()
+        with self.assertRaisesRegex(ValueError, 'unsupported'): analyze(bundle, self.root/'analysis')
+        self.assertFalse((self.root/'analysis').exists())
+
+    def test_collector_evidence_uses_exact_invocation_origin(self):
+        from types import SimpleNamespace
+        parent = self.root
+        for index in (0, 1):  # Baseline and product paths use the same collector clock.
+            with self.subTest(arm=order()[index]['arm']):
+                self.root = parent/str(index); self.root.mkdir()
+                m = self.manifest()
+                if index:
+                    m['unsupported'] = {'matching/B2': {'issue_url': 'https://example.com/issues/1',
+                                                       'reason': 'Constructed prefix'}}
+                write_json(self.root/'input.json', m)
+                bundle = self.root/'bundle'; freeze(self.root/'input.json', bundle)
+                slot = order()[index]
+                origin = 11_000_000_000
+                endpoint = slot['cap_seconds'] + 1
+                command = {'seconds': 1, 'collector_start_ns': origin, 'started': True,
+                           'timeout': False, 'exit': 0, 'error': None, 'containment_proven': True,
+                           'finished': True, 'interrupted': False}
+                def execute(spec, context, directory, label, secrets):
+                    write_json(directory/(label+'.command.json'), command)
+                    return command
+                evidence = {'cleanup_proven': True, 'quality_reasons': [], 'operational_reasons': [],
+                            'first_event_seconds': None}
+                clock = SimpleNamespace(monotonic_ns=lambda: origin + endpoint * 10**9,
+                                        monotonic=iter((10, 11 + endpoint)).__next__)
+                with patch('tool.execute', side_effect=execute), patch('tool.time', clock), \
+                     patch('analyze.baseline', return_value=evidence), patch('analyze.product', return_value=evidence):
+                    collect(bundle, max_slots=index+1)
+                    root = bundle/'slots'/slot['id']
+                    state = read_json(root/'slot.json')
+                    self.assertEqual(state['evidence_received_seconds'], [endpoint, endpoint])
+                    result = reduce_slot(root, slot, m)
+                self.assertEqual(result['usable_evidence_membership'], 'late')
+
+    def test_stream_receipts_use_exact_collector_origin_and_valid_bounds(self):
+        root, slot, command = self.raw()
+        command['collector_start_ns'] = 20_000_000_000
+        expected = self.manifest()['inputs']['quota']['vulnerable']
+        stream = {'clock': 'collector-monotonic', 'start_monotonic_ns': 19_000_000_000,
+                  'envelope_ns': 5_000_000_000, 'cadence_ms': 100, 'error': None,
+                  'receipts': {'raw/execution-001.json': {'received_ns': 3_000_000_000,
+                                                       'sha256': digest(root/'raw/execution-001.json')}}}
+        write_json(root/'stream.json', stream)
+        result = baseline(root, slot, command, expected)
+        self.assertEqual(result['usable_first_event_seconds'], [2, 2])
+        for value in (-1, True, 6_000_000_000, 500_000_000):
+            with self.subTest(received_ns=value):
+                changed = copy.deepcopy(stream)
+                changed['receipts']['raw/execution-001.json']['received_ns'] = value
+                write_json(root/'stream.json', changed)
+                with self.assertRaisesRegex(ValueError, 'stream'):
+                    baseline(root, slot, command, expected)
+
+    def test_analysis_includes_remainder_and_uses_each_arms_count(self):
+        bundle, manifest = self.bundle()
+        manifest = read_json(bundle/'frozen/manifest.json')
+        manifest['inputs']['matching']['fixed']['counts'].update(B1=2, **{'T-R': 4})
+        write_json(bundle/'frozen/manifest.json', manifest); seal(bundle/'frozen')
+        def reduced(root, slot, unused):
+            result = dict(slot, status='not_started', reasons=[], started=False)
+            if (slot['workload'], slot['variant'], slot['cache'], slot['arm'], slot['block']) == \
+                    ('matching', 'fixed', 'cold', 'B1', '09'):
+                spans = [{'id': 1, 'parent_id': 0, 'name': 'command', 'start_ns': 0, 'duration_ns': 3*10**9},
+                         {'id': 2, 'parent_id': 1, 'name': 'work', 'start_ns': 0, 'duration_ns': 2*10**9}]
+                result.update(status='complete', started=True, invocation_seconds=4, stages=stages(spans, 4))
+            return result
+        with patch('analyze.reduce_slot', side_effect=reduced):
+            result = analyze(bundle, self.root/'analysis')
+        cell = next(c for c in result['cells'] if (c['workload'], c['variant'], c['cache'], c['arm']) ==
+                    ('matching', 'fixed', 'cold', 'B1'))
+        self.assertEqual(cell['stage_seconds'].get('remainder'), {'n': 1, 'median': 2, 'p90': 2, 'min': 2, 'max': 2})
+        self.assertEqual(cell['amortized_execution_seconds']['median'], 2)
+        self.assertIn('| matching | fixed | cold | B1 | remainder | 2.000000 (1) |',
+                      (self.root/'analysis/report.md').read_text())
+
+    def test_analysis_output_swap_does_not_modify_campaign(self):
+        from analyze import write_json as real_write
+        from analyze import seal as real_seal
+        from analyze import write_bytes as real_bytes
+        parent = self.root
+        for boundary in ('results', 'report', 'seal', 'after-seal'):
+            for kind in ('symlink', 'directory'):
+                with self.subTest(boundary=boundary, kind=kind):
+                    self.root = parent/(boundary+'-'+kind); self.root.mkdir()
+                    bundle, _ = self.bundle()
+                    target = bundle/'frozen'; before = inventory(target)
+                    output = self.root/'analysis'
+                    def swap():
+                        output.rename(self.root/'original-analysis')
+                        if kind == 'symlink': output.symlink_to(target, target_is_directory=True)
+                        else: output.mkdir()
+                    def write(path, value):
+                        if boundary == 'results': swap()
+                        real_write(path, value)
+                    def seal_output(path):
+                        if boundary == 'seal': swap()
+                        real_seal(path)
+                        if boundary == 'after-seal': swap()
+                    def write_report(path, data):
+                        if boundary == 'report': swap()
+                        real_bytes(path, data)
+                    with patch('analyze.write_json', side_effect=write), patch('analyze.seal', side_effect=seal_output), \
+                         patch('analyze.write_bytes', side_effect=write_report):
+                        with self.assertRaisesRegex(ValueError, 'directory.*replaced'):
+                            analyze(bundle, output)
+                    self.assertEqual(inventory(target), before)
+                    if kind == 'directory': self.assertEqual(list(output.iterdir()), [])
+
+    def test_analysis_report_symlink_cannot_overwrite_originals(self):
+        from analyze import write_json as real_write
+        bundle, _ = self.bundle()
+        output = self.root/'analysis'
+        target = bundle/'frozen/protocol.md'; before = target.read_bytes()
+        def write(path, value):
+            real_write(path, value)
+            (path.parent/'report.md').symlink_to(target)
+        with patch('analyze.write_json', side_effect=write): analyze(bundle, output)
+        self.assertEqual(target.read_bytes(), before)
+        self.assertFalse((output/'report.md').is_symlink())
+        verify(output)
+
+    def test_invalid_usable_receipt_times_fail_without_losing_accounting(self):
+        root, slot, _, expected = self.product_raw('T-R')
+        manifest = self.manifest(); manifest['inputs']['matching']['vulnerable'] = expected
+        for value in ([0, 0], [-1, -1], [1, 2], [True, True], [1], 'invalid', None):
+            with self.subTest(value=value):
+                state = read_json(root/'slot.json'); state['evidence_received_seconds'] = value
+                write_json(root/'slot.json', state); seal(root)
+                result = reduce_slot(root, slot, manifest)
+                self.assertEqual(result['status'], 'operational_failed')
+                self.assertIsNone(result['usable_evidence_seconds'])
+                self.assertTrue(any('receipt time' in reason for reason in result['reasons']))
+
+    def test_command_receipt_clock_contains_real_spawn(self):
+        import time
+        root = self.root/'command'; root.mkdir()
+        spec = {'argv': [sys.executable, '-B', '-c', 'print("constructed")'],
+                'cwd': str(self.root), 'env': {}, 'timeout_seconds': 5}
+        real_spawn = subprocess.Popen
+        spawned = []
+        def spawn(*args, **kwargs):
+            spawned.append(time.monotonic_ns())
+            return real_spawn(*args, **kwargs)
+        with patch('execution.subprocess.Popen', side_effect=spawn):
+            command = execute(spec, {'redact_env': []}, root, 'run', [])
+        self.assertTrue(succeeded(command))
+        self.assertEqual(read_json(root/'run.command.json'), command)
+        self.assertLessEqual(command['collector_start_ns'], spawned[0])
+        self.assertLessEqual((spawned[0] - command['collector_start_ns']) / 1e9, command['seconds'])
+
+    def test_declared_unsupported_slot_cannot_be_collected_as_supported(self):
+        m = self.manifest(); m['unsupported'] = {'matching/B2': UNSUPPORTED}
+        write_json(self.root/'input.json', m)
+        bundle = self.root/'bundle'; freeze(self.root/'input.json', bundle)
+        slot = order()[0]; directory = bundle/'slots'/slot['id']; directory.mkdir()
+        write_json(directory/'slot.json', {'slot': slot, 'cleanup_proven': True})
+        seal(directory); save_progress(bundle, {slot['id']: digest(directory/'SHA256SUMS')})
+        with self.assertRaisesRegex(ValueError, 'unsupported slot declaration'):
+            analyze(bundle, self.root/'analysis')
 
 if __name__ == '__main__':
     result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(RunnerTests))

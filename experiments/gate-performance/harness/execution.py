@@ -121,6 +121,9 @@ def execute(spec, context, directory, step, secrets):
     write_json(receipt, result)
     checkpoints = {digest(receipt)}
     start = time.monotonic_ns()
+    # Consumers in this collector may align receipt observations to this exact
+    # invocation origin. This clock is never compared with a child process.
+    result['collector_start_ns'] = start
     completed_ns = None
     process = None
     try:

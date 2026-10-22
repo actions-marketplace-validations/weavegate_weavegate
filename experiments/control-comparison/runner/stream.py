@@ -22,8 +22,9 @@ class Monitor:
             # Atomic rename in the driver makes partial JSON unavailable.
             value = read_json(path)
             if value.get('evaluation') is not None:
+                checksum = digest(path)
                 self.receipts[name] = {'received_ns': time.monotonic_ns() - self.start,
-                                       'sha256': digest(path)}
+                                       'sha256': checksum}
 
     def watch(self):
         try:
@@ -47,6 +48,7 @@ class Monitor:
             except Exception as error: self.error = str(error)
             self.check_directory()
             write_json(self.directory / 'stream.json', {'clock': 'collector-monotonic',
+                'start_monotonic_ns': self.start,
                 'envelope_ns': time.monotonic_ns() - self.start, 'cadence_ms': 100,
                 'limitation': 'receipt may lag atomic publication by polling and validation time',
                 'receipts': self.receipts, 'error': self.error})

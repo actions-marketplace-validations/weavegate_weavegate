@@ -228,6 +228,9 @@ Malformed observations, operational exits and timeouts remain failed attempts;
 the mate still runs after proven cleanup. Unproven cleanup leaves the mate not
 started, writes `stopped.json` and prohibits further collection.
 
+Command receipts retain `collector_start_ns`, the collector monotonic origin used
+for `seconds`. It permits receipt-time alignment within the same collector only;
+it must not be compared with child-process clocks or another collector's origin.
 Command receipts persist `started` after successful process creation and retain
 `finished`, `interrupted`, exit, error, timestamps and elapsed seconds. The
 collector defers cancellation during spawn until it owns the child handle;

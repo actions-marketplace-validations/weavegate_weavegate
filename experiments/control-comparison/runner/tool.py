@@ -20,6 +20,7 @@ from stream import Monitor
 def validate(m):
     require(type(m.get('schema')) is int and m['schema'] == 1 and type(m.get('protocol_revision')) is int and m['protocol_revision'] == 1, 'schema/protocol revision must be 1')
     require(m.get('phase') in ('feasibility', 'measurement'), 'phase required')
+    unsupported_declarations(m)
     require(isinstance(m.get('campaign_id'), str) and m['campaign_id'], 'campaign ID required')
     require(m.get('seed') == SEED, 'protocol seed differs')
     require(m.get('protocol', {}).get('sha256') == PROTOCOL_SHA256, 'frozen protocol differs')
@@ -273,7 +274,6 @@ def collect_locked(bundle, registration, max_slots):
                         live_pins(m)
                         original = inventory(directory)
                         spec = m['commands'][slot['workload']][slot['variant']][slot['arm']]
-                        start = time.monotonic()
                         with Monitor(directory):
                             cmd = execute(spec, context, directory, 'run', [])
                         require(cmd.get('containment_proven') is True, 'measured process containment unproven')
@@ -283,7 +283,9 @@ def collect_locked(bundle, registration, max_slots):
                         expected = m['inputs'][slot['workload']][slot['variant']]
                         try:
                             observed = (baseline if slot['arm'].startswith('B') else product)(directory, slot, cmd, expected)
-                            state['evidence_received_seconds'] = [cmd['seconds'], time.monotonic() - start]
+                            received = (time.monotonic_ns() - cmd['collector_start_ns']) / 1e9
+                            require(received >= cmd['seconds'], 'evidence receipt precedes command completion')
+                            state['evidence_received_seconds'] = [received, received]
                             state['cleanup_proven'] = observed['cleanup_proven']
                         except EVIDENCE_ERRORS as error:
                             state['error'] = 'evidence: ' + str(error)

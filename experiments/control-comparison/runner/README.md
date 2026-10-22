@@ -165,7 +165,14 @@ This reference build is not E1 registration or acceptance evidence.
 | `environment` | `host_id`, `vm_image`, `cpu_model`, `kernel`, `docker`, `background_policy`, `mysql_image`, `vcpus: 4`, `memory_bytes: 17179869184` |
 | `prerequisites` | Pinned completion-record paths for `go_acceptance`, `java_acceptance`, `paired_acceptance`, `corpus_acceptance`, `baseline_feasibility` |
 | `hooks` | `prepare`, `warm_cleanup`, `observe`, `cleanup` command specifications; cleanup declares its trusted `execution_pins` subset |
-| `unsupported` | Optional workload/arm to issue URL and reason; planned denominators are retained |
+| `unsupported` | Optional registered `workload/arm` to `{issue_url, reason}` object; planned denominators are retained |
+
+An unsupported declaration requires a nonempty reason and an absolute HTTPS issue
+URL with a host and path, without credentials or whitespace. Unknown workload/arm
+keys, extra fields, boolean values and bare strings fail before freezing. The
+same checks apply during collection and offline analysis; a consumed unsupported
+slot must retain the exact declaration and cannot contain a measured command.
+Issue availability and justification remain part of the independent audit.
 
 Each prerequisite completion record contains `schema: 1`, its `kind`, the exact
 `candidate` object (CLI/SDK digests and `source_revision`), `fixture_revision`,
@@ -373,6 +380,11 @@ bundle; a changed checkout cannot analyze it under the same campaign identity.
 Analysis holds a shared campaign lock through validation, reduction and output
 writing. It fails immediately while collection holds the exclusive lock;
 concurrent analyses may use separate output directories.
+Analysis pins its new output directory with a no-follow descriptor. Both reports
+and their checksum inventory are written through that handle, with output and
+campaign pathname checks through sealing. Replacing the output pathname stops
+publication without writing into or resealing its replacement. Report files use
+atomic replacement so a substituted file symlink cannot overwrite originals.
 Both operations also lock the campaign directory inode, so replacing `.lock` cannot
 admit a competing collector or analyzer. Path identity checks detect replacement
 at collection boundaries and before analysis output is written.
@@ -432,6 +444,14 @@ and timing stays unknown, as the protocol requires.
 Unknown alignment uses the protocol's interval bounds; absent or ambiguous
 timing stays unknown. Domain discovery, receipt of usable evidence, stable
 confirmation and clean final completion are separate fields.
+Command receipts retain `collector_start_ns`, the collector monotonic origin used
+for invocation duration. Product validation records its elapsed time from that
+same origin as a zero-width interval; validation after the cap is late even when
+the process exited within budget. Baseline stream receipts retain their collector
+origin and exact receive offsets after JSON reading and hashing; offline analysis
+checks their envelope, hashes and execution evidence before mapping them to that
+same invocation origin. Collector origins are never compared with child clocks.
+Invalid receipt times fail the slot while retaining the planned accounting.
 
 Requested steps are checked against their resolved trace events. Matching's
 fixed path legitimately reports inferred database blocking and skips its final
@@ -477,6 +497,11 @@ searches explicitly show that confirmation did not run; zero or partial violatin
 confirmations remain visible. Stable confirmation requires all planned replays
 to violate with one matching fingerprint, the requested schedule and a valid
 worker trace, independently of later cleanup or operational failures.
+Stage summaries include `remainder`, one scalar per complete slot: invocation
+duration minus the union of measured stage intervals. It appears with median,
+p90, minimum, maximum and sample count in JSON and the timing table. B1 and T-R
+amortized costs each use their own declared execution count, including feasibility
+runs with different counts.
 
 This infrastructure does not publish E5 measurements, update E1 figures or add
 a README comparison table. Those follow the registered campaign and its audit.

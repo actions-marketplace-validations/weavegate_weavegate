@@ -160,16 +160,26 @@ def baseline(root, slot, command, expected):
     result['usable_first_event_seconds'] = None
     if (root / 'stream.json').exists():
         stream = read_json(root / 'stream.json')
-        slack = stream['envelope_ns'] / 1e9 - whole
-        require(slack >= 0 and stream['error'] is None, 'stream observation invalid')
+        require(stream['clock'] == 'collector-monotonic' and stream['error'] is None
+                and all(type(v) is int and v >= 0 for v in
+                        (stream['start_monotonic_ns'], stream['envelope_ns'], command['collector_start_ns'])),
+                'stream observation clock invalid')
+        offset = command['collector_start_ns'] - stream['start_monotonic_ns']
+        require(0 <= offset and whole <= (stream['envelope_ns'] - offset) / 1e9,
+                'stream observation does not contain invocation')
+        require(isinstance(stream['receipts'], dict), 'stream receipts invalid')
+        execution_names = {str(p.relative_to(root)) for p in executions}
+        for name, receipt in stream['receipts'].items():
+            require(name in execution_names, 'stream receipt execution missing')
+            require(type(receipt['received_ns']) is int
+                    and offset <= receipt['received_ns'] <= stream['envelope_ns'], 'stream receipt time invalid')
+            require(digest(root / name) == receipt['sha256'], 'streamed evidence changed')
         for item in result['executions']:
             name = 'raw/execution-%03d.json' % item['index']
             receipt = stream['receipts'].get(name)
-            if receipt:
-                require(digest(root / name) == receipt['sha256'], 'streamed evidence changed')
             if receipt and item['valid'] and item['domain']:
-                t = receipt['received_ns'] / 1e9
-                result['usable_first_event_seconds'] = [max(0, t - slack), t]
+                t = (receipt['received_ns'] - offset) / 1e9
+                result['usable_first_event_seconds'] = [t, t]
                 break
     return result
 
@@ -331,13 +341,14 @@ def product(root, slot, command, expected):
 
 def reduce_slot(root, slot, manifest):
     result = dict(slot, status='not_started', reasons=[], started=False)
-    unsupported = manifest.get('unsupported', {}).get(slot['workload'] + '/' + slot['arm'])
+    unsupported = unsupported_declarations(manifest).get(slot['workload'] + '/' + slot['arm'])
     if unsupported and not root.exists():
         result.update(status='unsupported', reasons=[unsupported]); return result
     if not root.exists(): return result
     verify(root)
     state = read_json(root / 'slot.json')
     require(state.get('slot') == slot, 'slot identity differs')
+    require(json_equal(state.get('unsupported'), unsupported), 'unsupported slot declaration differs')
     # Lifecycle failures apply even when preparation never spawned the arm.
     operational = state.get('integrity_errors', [])[:] + state.get('containment_errors', [])
     for key in ('error', 'cleanup_error'):
@@ -367,6 +378,14 @@ def reduce_slot(root, slot, manifest):
         operational.append('command spawn/containment failure')
     if command.get('finished') is not True or command.get('interrupted') is not False:
         operational.append('command unfinished/interrupted')
+    received = state.get('evidence_received_seconds')
+    if 'evidence_received_seconds' in state:
+        try:
+            require(isinstance(received, list) and len(received) == 2
+                    and all(type(v) in (int, float) and math.isfinite(v) for v in received)
+                    and command['seconds'] <= received[0] == received[1], 'invalid collector receipt time')
+        except (ValueError, TypeError, OverflowError):
+            operational.append('invalid collector receipt time')
     result['resources'] = unavailable_resources('aggregate counters unavailable in feasibility collection')
     if 'resources' in state or manifest['phase'] == 'measurement':
         try:
@@ -379,7 +398,7 @@ def reduce_slot(root, slot, manifest):
                         else 'budget_exhausted' if result['budget_expired'] else 'complete')
     result['reasons'] = operational + evidence['quality_reasons']
     result['first_event_membership'] = membership(result.get('first_event_seconds'), slot['cap_seconds'])
-    result['usable_evidence_seconds'] = state.get('evidence_received_seconds') if result['status'] == 'complete' else None
+    result['usable_evidence_seconds'] = received if result['status'] == 'complete' else None
     result['usable_evidence_membership'] = membership(result['usable_evidence_seconds'], slot['cap_seconds'])
     return result
 
@@ -425,13 +444,15 @@ def analyze_locked(bundle, output, check_lock):
                     for r in complete:
                         for name, durations in r.get('stages', {}).get('durations_seconds', {}).items():
                             stage_values[name].extend(durations)
+                        if 'remainder_seconds' in r.get('stages', {}):
+                            stage_values['remainder'].append(r['stages']['remainder_seconds'])
                     cells.append({'workload': workload, 'variant': variant, 'cache': cache, 'arm': arm,
                         'planned': 10, 'started': sum(r['started'] for r in values),
                         'statuses': {s: sum(r['status'] == s for r in values) for s in STATUSES},
                         'invocation_seconds': stats([r.get('invocation_seconds') for r in complete]),
                         'all_started_seconds': stats([r.get('invocation_seconds') for r in values if r['started']]),
                         'stage_seconds': {name: stats(values) for name, values in sorted(stage_values.items())},
-                        'amortized_execution_seconds': stats([r['invocation_seconds'] / manifest['inputs'][workload][variant]['counts']['T-R']
+                        'amortized_execution_seconds': stats([r['invocation_seconds'] / manifest['inputs'][workload][variant]['counts'][arm]
                                                              for r in complete]) if arm in ('B1','T-R') else None,
                         'observed_detections': sum(r.get('first_event_membership') == 'in_budget' for r in values),
                         'valid_exposure_blocks': sum(r.get('valid_evaluations', 0) > 0 for r in values),
@@ -464,8 +485,6 @@ def analyze_locked(bundle, output, check_lock):
     resolved_output = output.resolve()
     require(resolved_output != bundle and bundle not in resolved_output.parents,
             'analysis output must be outside campaign')
-    output.mkdir(parents=True, exist_ok=False)
-    write_json(output / 'results.json', payload)
     lines = ['# E5 retained evidence', '', 'Phase: ' + manifest['phase'] + '. Same-host descriptive data only.',
              'p90 uses interpolation; at n=10 it is not a population tail estimate.', '',
              '| Workload | Variant | Cache | Arm | Complete / planned | Failures / missing | Median seconds (n) | p90 | Detection / 10 | Baseline exposure / 10 |',
@@ -512,7 +531,7 @@ def analyze_locked(bundle, output, check_lock):
             fingerprints, r.get('selected_schedule') or 'none retained', first_bound(r),
             r.get('stable_confirmation', False)))
     lines += ['', '## Stage observations', '',
-              'Inclusive named spans; overlapping parents are never added together. Guest startup is not inferred by subtraction.', '',
+              'Inclusive named spans; overlapping parents are never added together. Remainder is unmatched invocation time, one value per complete slot. Guest startup is not inferred by subtraction.', '',
               '| Workload | Variant | Cache | Arm | Stage | Median seconds (n) | p90 | Min | Max |',
               '| --- | --- | --- | --- | --- | --- | --- | --- | --- |']
     for c in cells:
@@ -521,6 +540,15 @@ def analyze_locked(bundle, output, check_lock):
                 c['workload'],c['variant'],c['cache'],c['arm'],name,fmt(s['median']),s['n'],fmt(s['p90']),fmt(s['min']),fmt(s['max'])))
     lines += ['', 'All first-event bounds, per-execution outcomes, failures, resources and within-block pairs are in results.json.',
               'T-R minus B1 is total controlled-path cost, not isolated sync-point overhead.', '']
-    (output / 'report.md').write_text('\n'.join(lines))
-    seal(output)
+    output.mkdir(parents=True, exist_ok=False)
+    with pinned_directory(output) as (check_output, retained):
+        check_lock()
+        write_json(retained / 'results.json', payload)
+        check_output()
+        write_bytes(retained / 'report.md', '\n'.join(lines).encode())
+        check_output()
+        check_lock()
+        seal(retained)
+        check_output()
+        check_lock()
     return payload
