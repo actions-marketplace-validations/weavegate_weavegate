@@ -1,5 +1,6 @@
 """Reduce original Oracle/product evidence. Never infer a verdict from SQL or exits."""
 from collections import Counter, defaultdict
+import html
 import runpy
 import shlex
 from pathlib import Path
@@ -132,8 +133,17 @@ def baseline(root, slot, command, expected):
         if any(v['oracle_id'] != assertion for v in violations):
             result['quality_reasons'].append('receipt assertion failed')
         if domain and slot['variant'] == 'fixed': result['quality_reasons'].append('fixed domain violation')
-        interval = (bound(value['oracle_end_ns'] / 1e9, run['process_elapsed_ns'] / 1e9, whole)
-                    if evaluation and 'process_elapsed_ns' in run else None)
+        interval = None
+        if evaluation and 'process_elapsed_ns' in run:
+            ends = value['oracle_ends_ns']
+            require(type(value['oracle_end_ns']) is int and type(run['process_elapsed_ns']) is int
+                    and 0 <= value['oracle_end_ns'] <= run['process_elapsed_ns']
+                    and isinstance(ends, dict) and set(ends) == set(names)
+                    and all(type(v) is int and 0 <= v <= value['oracle_end_ns'] for v in ends.values()),
+                    'invalid per-assertion completion times')
+            require([ends[name] for name in names] == sorted(ends.values()),
+                    'per-assertion completion order differs')
+            interval = bound(ends[assertion] / 1e9, run['process_elapsed_ns'] / 1e9, whole)
         if valid and domain and result['first_event_seconds'] is None: result['first_event_seconds'] = interval
         result['executions'].append({'index': number, 'valid': valid, 'domain': domain,
                                      'fingerprint': evaluation['fingerprint'] if evaluation else None,
@@ -222,6 +232,18 @@ def product(root, slot, command, expected):
     result = {'quality_reasons': [], 'operational_reasons': [], 'cleanup_proven': False,
               'first_event_seconds': None, 'stable_confirmation': False}
     manifests = list((root / 'raw').glob('runs/*/manifest.json'))
+    runs = root / 'raw' / 'runs'
+    if (not manifests and (not runs.exists() or not any(runs.iterdir()))
+            and command['timeout'] and command['exit'] == 130
+            and command['started'] and command['finished'] and not command['interrupted']
+            and command['error'] is None and command['containment_proven']):
+        # The CLI cancels before WriteRun. Allocation cleanup still requires
+        # independent proof in the slot; absence is never a PASS or detection.
+        result['evidence_absence'] = 'collection_cap_before_publication'
+        stderr = root / 'run.stderr'
+        if stderr.exists() and b'weavegate: warning: cleanup failed:' in stderr.read_bytes():
+            result['operational_reasons'].append('product cleanup failed before publication')
+        return result
     require(len(manifests) == 1, 'one original product run required')
     directory = manifests[0].parent
     m = read_json(manifests[0]); o = read_json(directory / 'observation.json')
@@ -293,6 +315,7 @@ def product(root, slot, command, expected):
     executions = [s for s in spans if s['name'] == 'schedule_run']
     if len(executions) != o['schedules_explored'] + (o['repeat'] if saved else 0):
         result['quality_reasons'].append('execution timing count differs')
+    result['evaluated_executions'] = len(executions)
     for execution in executions:
         names = Counter(s['name'] for s in spans if s['parent_id'] == execution['id'])
         if any(names[n] != 1 for n in ('fixture_reset', 'adapter_create', 'adapter_start', 'schedule_execute', 'oracle_evaluate', 'adapter_stop')):
@@ -390,6 +413,7 @@ def reduce_slot(root, slot, manifest):
                       reasons=operational if state.get('error') else ['preparation incomplete'] + operational)
         return result
     command = None
+    evidence_valid = False
     result.update(invocation_seconds=None, exit=None, budget_expired=None, command_receipt_valid=False)
     expected = manifest['inputs'][slot['workload']][slot['variant']]
     try:
@@ -404,6 +428,7 @@ def reduce_slot(root, slot, manifest):
                       exit=command['exit'], budget_expired=command['timeout'] or command['seconds'] > slot['cap_seconds'])
         try:
             evidence = (baseline if slot['arm'].startswith('B') else product)(root, slot, command, expected)
+            evidence_valid = not evidence.get('evidence_absence') and not evidence['quality_reasons']
         except EVIDENCE_ERRORS as error:
             evidence = {'operational_reasons': ['missing/invalid evidence: ' + str(error)],
                         'quality_reasons': [], 'cleanup_proven': False, 'first_event_seconds': None}
@@ -413,7 +438,7 @@ def reduce_slot(root, slot, manifest):
         operational.append('command spawn/containment failure')
     if command and (command['finished'] is not True or command['interrupted'] is not False):
         operational.append('command unfinished/interrupted')
-    received = state.get('evidence_received_seconds')
+    received = state.get('evidence_received_seconds') if command is not None else None
     if command is not None and 'evidence_received_seconds' in state:
         try:
             require(isinstance(received, list) and len(received) == 2
@@ -421,6 +446,7 @@ def reduce_slot(root, slot, manifest):
                     and command['seconds'] <= received[0] == received[1], 'invalid collector receipt time')
         except (ValueError, TypeError, OverflowError):
             operational.append('invalid collector receipt time')
+            received = None
     result['resources'] = unavailable_resources('aggregate counters unavailable in feasibility collection')
     if 'resources' in state or manifest['phase'] == 'measurement':
         try:
@@ -433,7 +459,9 @@ def reduce_slot(root, slot, manifest):
                         else 'budget_exhausted' if result['budget_expired'] else 'complete')
     result['reasons'] = operational + evidence['quality_reasons']
     result['first_event_membership'] = membership(result.get('first_event_seconds'), slot['cap_seconds'])
-    result['usable_evidence_seconds'] = received if result['status'] == 'complete' else None
+    # Later observation/cleanup failures cannot erase an already validated
+    # receipt. Its timing and clean final completion are separate observations.
+    result['usable_evidence_seconds'] = received if evidence_valid else None
     result['usable_evidence_membership'] = membership(result['usable_evidence_seconds'], slot['cap_seconds'])
     return result
 
@@ -511,8 +539,11 @@ def analyze_locked(bundle, output, check_lock):
                         'invocation_seconds': stats([r.get('invocation_seconds') for r in complete]),
                         'all_started_seconds': stats([r.get('invocation_seconds') for r in values if r['started']]),
                         'stage_seconds': {name: stats(values) for name, values in sorted(stage_values.items())},
-                        'amortized_execution_seconds': stats([r['invocation_seconds'] / manifest['inputs'][workload][variant]['counts'][arm]
-                                                             for r in complete]) if arm in ('B1','T-R') else None,
+                        'amortized_execution_seconds': stats([
+                            r['invocation_seconds'] / r['evaluated_executions'] for r in complete
+                            if r.get('evaluated_executions', 0) > 0]) if arm == 'T-E' else
+                            stats([r['invocation_seconds'] / manifest['inputs'][workload][variant]['counts'][arm]
+                                   for r in complete]) if arm in ('B1','T-R') else None,
                         'observed_detections': sum(detected_in_budget(r) for r in values),
                         'valid_exposure_blocks': sum(r.get('valid_evaluations', 0) > 0 for r in values),
                         'stable_confirmations': sum(r.get('stable_confirmation', False) for r in values),
@@ -538,6 +569,7 @@ def analyze_locked(bundle, output, check_lock):
                               ratio=stats([p['ratio'] for p in selected]),
                               t_complete=sum(p['t_complete'] for p in selected)))
     payload = {'schema': 1, 'phase': manifest['phase'], 'campaign_id': manifest['campaign_id'], 'stopped': stopped,
+               'deviations': campaign_deviations(manifest),
                'source': analysis_source(bundle, manifest, progress),
                'claim': 'same-host descriptive observations only', 'slots': rows, 'cells': cells,
                'pairs': pairs, 'cost_cells': cost_cells}
@@ -548,7 +580,9 @@ def analyze_locked(bundle, output, check_lock):
     lines = ['# E5 retained evidence', '', 'Phase: ' + manifest['phase'] + '. Same-host descriptive data only.',
              'p90 uses interpolation; at n=10 it is not a population tail estimate.', '']
     source = payload['source']
-    lines += ['## Authenticated source', '', 'Campaign: ' + manifest['campaign_id'], '',
+    lines += ['## Registered deviations', '']
+    lines += ['- ' + html.escape(d).replace('\n', ' ') for d in payload['deviations']] or ['None registered.']
+    lines += ['', '## Authenticated source', '', 'Campaign: ' + manifest['campaign_id'], '',
               '```json', canonical(source).decode().rstrip(), '```', '',
               'Reproduce from the retained bundle with its frozen tool (destination must be new):', '',
               '```sh', source['replay']['command'], '```', '',
@@ -570,6 +604,16 @@ def analyze_locked(bundle, output, check_lock):
         d, r = c['difference_seconds'], c['ratio']
         lines.append('| %s | %s | %s | %s (%d) | %s (%d) | %d / 10 |' % (
             c['workload'], c['variant'], c['cache'], fmt(d['median']), d['n'], fmt(r['median']), r['n'], c['t_complete']))
+    lines += ['', '## Descriptive cost per evaluated execution', '',
+              'Whole invocation divided by actual evaluations, including T-E discovery and confirmation. Complete slots only; variable search work is not equal-work throughput.', '',
+              '| Workload | Variant | Cache | Arm | Median seconds (n) | p90 | Min | Max |',
+              '| --- | --- | --- | --- | --- | --- | --- | --- |']
+    for c in cells:
+        s = c['amortized_execution_seconds']
+        if s is None: continue
+        lines.append('| %s | %s | %s | %s | %s (%d) | %s | %s | %s |' % (
+            c['workload'], c['variant'], c['cache'], c['arm'], fmt(s['median']), s['n'],
+            fmt(s['p90']), fmt(s['min']), fmt(s['max'])))
     lines += ['', '## Observed search slots', '',
               'Every unstarted slot and reason remains in the accounting above and results.json.',
               'Fixed-row detections are unexpected domain violations, not intended discoveries.', '',

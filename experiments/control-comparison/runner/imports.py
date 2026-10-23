@@ -10,7 +10,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RUNNER_MODULES = ('support', 'analyze', 'stream', 'fixture_contract', 'tool',
-                  'prepare', 'smoke', 'record_fixture_contract', 'imports')
+                  'prepare', 'smoke', 'record_fixture_contract', 'imports', 'snapshot')
 
 
 def check(name, module):

@@ -133,6 +133,7 @@ type execution struct {
 	Done              map[string]any     `json:"done"`
 	Evaluation        *oracle.Evaluation `json:"evaluation"`
 	OracleEndNS       int64              `json:"oracle_end_ns"`
+	OracleEndsNS      map[string]int64   `json:"oracle_ends_ns"`
 	ChildReaped       bool               `json:"child_reaped"`
 	ConnectionsClosed bool               `json:"connections_closed"`
 	ResetVerified     bool               `json:"reset_verified"`
@@ -178,18 +179,6 @@ func run(ctx context.Context, o options, cfg config.Config) (resultErr error) {
 	if len(cfg.Scenarios[o.scenario].Workers) != 2 {
 		return errors.New("exactly two workers required")
 	}
-	var assertions []oracle.Oracle
-	for _, a := range cfg.Oracle.Assertions {
-		v, err := sqlassert.NewZeroRow(a.ID, a.SQL)
-		if err != nil {
-			return err
-		}
-		assertions = append(assertions, v)
-	}
-	evaluator, err := oracle.NewSet(assertions...)
-	if err != nil {
-		return err
-	}
 	n := 20
 	if o.arm == "B2" {
 		n = 100
@@ -203,8 +192,12 @@ func run(ctx context.Context, o options, cfg config.Config) (resultErr error) {
 			return err
 		}
 		x := execution{Index: i}
+		evaluator, err := executionOracles(cfg, &x, origin)
+		if err != nil {
+			return err
+		}
 		execctx, endexec := timing.Start(ctx, "execution")
-		err := func() error {
+		err = func() error {
 			resetctx, end := timing.Start(execctx, "fixture_reset")
 			err := f.Reset(resetctx)
 			if err == nil {
@@ -234,6 +227,36 @@ func run(ctx context.Context, o options, cfg config.Config) (resultErr error) {
 		}
 	}
 	return nil
+}
+
+// completedOracle observes the end of one declaration without taking verdict
+// composition or normalization away from oracle.Set.
+type completedOracle struct {
+	oracle.Oracle
+	completed func(string)
+}
+
+func (o completedOracle) Evaluate(ctx context.Context, db oracle.DB, run oracle.RunContext) ([]oracle.Violation, error) {
+	violations, err := o.Oracle.Evaluate(ctx, db, run)
+	if err == nil {
+		o.completed(o.ID())
+	}
+	return violations, err
+}
+
+func executionOracles(cfg config.Config, x *execution, origin time.Time) (*oracle.Set, error) {
+	x.OracleEndsNS = make(map[string]int64)
+	var assertions []oracle.Oracle
+	for _, a := range cfg.Oracle.Assertions {
+		v, err := sqlassert.NewZeroRow(a.ID, a.SQL)
+		if err != nil {
+			return nil, err
+		}
+		assertions = append(assertions, completedOracle{Oracle: v, completed: func(id string) {
+			x.OracleEndsNS[id] = time.Since(origin).Nanoseconds()
+		}})
+	}
+	return oracle.NewSet(assertions...)
 }
 
 func provisionReady(ctx context.Context, f fixture.Provisioner, prepared fixture.Prepared, ledger map[string]any) (*fixture.DB, map[string][]map[string]any, error) {

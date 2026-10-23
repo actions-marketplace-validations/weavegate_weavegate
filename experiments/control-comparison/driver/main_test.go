@@ -9,8 +9,55 @@ import (
 	"testing"
 
 	"github.com/weavegate/weavegate/internal/fixture"
+	"github.com/weavegate/weavegate/internal/oracle"
 	"github.com/weavegate/weavegate/internal/timing"
 )
+
+type callbackOracle struct {
+	id       string
+	evaluate func() ([]oracle.Violation, error)
+}
+
+func (o callbackOracle) ID() string { return o.id }
+func (o callbackOracle) Evaluate(context.Context, oracle.DB, oracle.RunContext) ([]oracle.Violation, error) {
+	return o.evaluate()
+}
+
+func TestAssertionCompletionPrecedesLaterOracle(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		ends := map[string]int{}
+		clock := 0
+		domain := callbackOracle{"domain", func() ([]oracle.Violation, error) {
+			return []oracle.Violation{{OracleID: "domain", Kind: oracle.KindAssertion, Rows: []oracle.Row{{"id": int64(1)}}}}, nil
+		}}
+		receipt := callbackOracle{"receipt", func() ([]oracle.Violation, error) {
+			if ends["domain"] != 1 {
+				t.Fatal("domain completion deferred until after receipt query")
+			}
+			if fail {
+				return nil, errors.New("receipt failed")
+			}
+			return nil, nil
+		}}
+		wrap := func(o oracle.Oracle) oracle.Oracle {
+			return completedOracle{o, func(id string) { clock++; ends[id] = clock }}
+		}
+		set, err := oracle.NewSet(wrap(domain), wrap(receipt))
+		if err != nil {
+			t.Fatal(err)
+		}
+		evaluation, err := set.Evaluate(context.Background(), nil, oracle.RunContext{})
+		if (err != nil) != fail {
+			t.Fatalf("fail=%t error=%v", fail, err)
+		}
+		if !fail && (len(evaluation.Results) != 2 || ends["receipt"] != 2) {
+			t.Fatalf("composition or completion missing: %+v %+v", evaluation, ends)
+		}
+		if fail && ends["receipt"] != 0 {
+			t.Fatal("failed assertion acquired completion time")
+		}
+	}
+}
 
 type readinessFixture struct {
 	fixture.Fixture

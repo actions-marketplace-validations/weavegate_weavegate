@@ -14,8 +14,9 @@ from contextlib import contextmanager, ExitStack
 from pathlib import Path
 from urllib.parse import urlsplit
 runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
-              init_globals={'dependencies': ('fixture_contract',)})
+              init_globals={'dependencies': ('fixture_contract', 'snapshot')})
 from fixture_contract import FIXTURE_INPUTS, FIXTURE_REVISION, REFERENCE_BUILD
+from snapshot import frozen_launch, runtime_identity
 
 HERE = Path(__file__).resolve().parent
 SHARED = HERE / 'shared'
@@ -42,7 +43,7 @@ from execution import defer_interrupts, execute as shared_execute, succeeded  # 
 
 RUNNER_SOURCES = ('analyze.py', 'fixture_contract.py', 'imports.py', 'prepare.py',
                   'record_fixture_contract.py', 'smoke.py', 'stream.py', 'support.py',
-                  'test_runner.py', 'tool.py')
+                  'test_runner.py', 'tool.py', 'snapshot.py')
 
 SEED = 'weavegate-e5-v1-20261019'
 PROTOCOL_SHA256 = 'e2d1b47e705665772fca53d3f53f209778f4790af8b6c269c8e113379fbd8959'
@@ -69,6 +70,13 @@ EVIDENCE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, Ind
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def campaign_deviations(manifest):
+    value = manifest.get('deviations', [])
+    require(isinstance(value, list) and all(isinstance(d, str) and d.strip() for d in value),
+            'deviations must be a list of nonempty descriptions')
+    return value
 
 
 def unsupported_declarations(manifest):
@@ -328,7 +336,14 @@ def pinned_directory(directory, identity=None):
 
 def execute(spec, context, directory, step, secrets):
     with pinned_directory(directory, context.get('directory_identity')) as (_, retained):
-        return shared_execute(spec, context, retained, step, secrets)
+        if 'execution_pins' not in context:
+            return shared_execute(spec, context, retained, step, secrets)
+        with frozen_launch(context['execution_pins'], context['execution_runtime'],
+                           context.get('execution_directories', ()),
+                           (spec['cwd'], context.get('trial_dir'), context.get('campaign_dir'),
+                            spec['env'].get('HOME'), spec['env'].get('TMPDIR')),
+                           timeout=spec['timeout_seconds']) as launch:
+            return shared_execute(spec, context, retained, step, secrets, launch=launch)
 
 
 def normalized_fixture_config(config):
@@ -555,6 +570,28 @@ def live_pins(manifest):
         require(digest(name) == expected, 'live pin changed: ' + name)
     if manifest.get('phase') == 'measurement':
         measurement_dependencies(manifest)
+
+
+def execution_directories(manifest):
+    directories = set()
+    specs = list(manifest.get('hooks', {}).values())
+    specs += [c for variants in manifest.get('commands', {}).values()
+              for commands in variants.values() for c in commands.values()]
+    for spec in specs:
+        values = spec['argv'] + [v for k, v in spec['env'].items() if k in ('CLASSPATH', 'PYTHONPATH')]
+        for value in values:
+            argument = value.split('=', 1)[-1]
+            if '://' in argument: continue
+            for name in argument.split(os.pathsep):
+                if not name or '{' in name: continue
+                path = Path(os.path.abspath(Path(spec['cwd']) / name))
+                if path.name == '*': path = path.parent
+                if path.is_dir(): directories.add(str(path))
+    for variants in manifest.get('inputs', {}).values():
+        for expected in variants.values():
+            path = expected['config']['Target'].get('Schema', {}).get('Migrations')
+            if path: directories.add(path)
+    return sorted(directories)
 
 
 def file_dependencies(spec, pins, label, inputs=()):

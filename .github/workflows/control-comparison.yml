@@ -31,6 +31,8 @@ jobs:
           cache: maven
       - name: Build fixed fixture inputs
         run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
           mkdir -p e5-evidence/build
           sdk/java/mvnw -B -f sdk/java/pom.xml -Dmaven.test.skip=true install 2>&1 | tee e5-evidence/build/sdk.log
           for fixture in spring-matching spring-quota spring-job-claim; do
@@ -45,9 +47,10 @@ jobs:
         run: |
           go test ./experiments/control-comparison/driver -v -count=20 2>&1 | tee e5-evidence/reap.log
           grep -F 'E5_REAP_RESULT deadline=shared kill=bounded exit=retained' e5-evidence/reap.log
-          python3 -B experiments/control-comparison/runner/test_runner.py 2>&1 | tee e5-evidence/accounting.log
+          sudo python3 -B experiments/control-comparison/runner/test_runner.py 2>&1 | tee e5-evidence/accounting.log
           grep -F 'E5_RUNNER_RESULT order=600 accounting=all_slots cleanup=quarantine analysis=deterministic' e5-evidence/accounting.log
-          python3 -B experiments/control-comparison/runner/smoke.py "$GITHUB_WORKSPACE/e5-evidence/smoke" 2>&1 | tee e5-evidence/smoke.log
+          sudo env "PATH=$PATH" "JAVA_HOME=$JAVA_HOME" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" \
+            python3 -B experiments/control-comparison/runner/smoke.py "$GITHUB_WORKSPACE/e5-evidence/smoke" 2>&1 | tee e5-evidence/smoke.log
           for workload in matching quota job; do
             for variant in vulnerable fixed; do
               grep -F "E5_BASELINE_RESULT workload=$workload variant=$variant executions=20 proxy=original hooks=inactive oracle=existing resets=checked cleanup=proved" e5-evidence/smoke.log

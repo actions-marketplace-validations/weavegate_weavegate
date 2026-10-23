@@ -20,7 +20,9 @@ def smoke(destination, count):
         for variant in ('vulnerable', 'fixed'):
             directory = destination / (workload + '-' + variant); directory.mkdir()
             slot = dict(order()[0], workload=workload, variant=variant, arm='B1', cap_seconds=600)
-            context = dict(slot, trial_dir=str(directory), campaign_dir=str(destination), redact_env=[])
+            context = dict(slot, trial_dir=str(directory), campaign_dir=str(destination), redact_env=[],
+                           execution_pins=m['pins'], execution_runtime=runtime_identity(),
+                           execution_directories=execution_directories(m))
             with Monitor(directory):
                 command = execute(m['commands'][workload][variant]['B1'], context, directory, 'run', [])
             result = baseline(directory, slot, command, m['inputs'][workload][variant])

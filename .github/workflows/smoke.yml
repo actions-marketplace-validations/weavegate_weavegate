@@ -336,7 +336,11 @@ jobs:
 
       - name: Check E5 control accounting without running measurements
         run: |
-          python3 -B experiments/control-comparison/runner/test_runner.py 2>&1 | tee /tmp/e5-runner.out
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # The frozen launcher is executed from a sealed memfd; root avoids
+          # the hosted image's pathname-based unprivileged-userns policy.
+          sudo python3 -B experiments/control-comparison/runner/test_runner.py 2>&1 | tee /tmp/e5-runner.out
           grep -F 'E5_RUNNER_RESULT order=600 accounting=all_slots cleanup=quarantine analysis=deterministic' /tmp/e5-runner.out
 
       - name: Check the documentation index

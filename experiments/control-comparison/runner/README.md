@@ -7,10 +7,13 @@ E1 candidate, acceptance evidence and registered infrastructure. The optional
 `E5 control feasibility` workflow runs only through `workflow_dispatch`; it is
 not a required measurement gate.
 
-The tools require Linux, Go from `go.mod`, Python 3.9+, Java 21 and Docker with
+The tools require Linux, `bubblewrap` (`bwrap`), Go from `go.mod`, Python 3.9+, Java 21 and Docker with
 the MySQL 8.4 image already present. Python uses only its standard library. The
 launcher compiles against the dependencies already inside each fixture JAR;
-there is no new engine, SDK or analysis dependency.
+there is no new engine or SDK dependency. Execution requires mount/user namespace
+permission, including for a launcher executed from a sealed memfd. CI uses `sudo`
+for these experiment checks to accommodate the hosted image's pathname-based
+user-namespace policy. Offline analysis does not create namespaces or need `bwrap`.
 
 ## Build and verify feasibility
 
@@ -51,6 +54,11 @@ domain assertions; the driver retains its complete evaluation and fingerprint.
 The `fixture_provision` interval includes the version/isolation query, initial
 seed snapshot and explicit readiness check, and closes on every failure path
 before teardown begins.
+Each execution also retains `oracle_ends_ns`, keyed by assertion ID. A wrapper
+records completion immediately after each successful Oracle call; the existing
+Oracle set still owns declaration order, normalization, verdicts and fingerprints.
+Baseline first-event bounds use the named domain assertion's endpoint rather
+than `oracle_end_ns`, which includes any later receipt assertions.
 
 `launcher/BaselineMain.java` loads the original business classes extracted from
 the application JAR. Its separate classpath includes that JAR's exact library
@@ -112,6 +120,29 @@ Every measurement T-R/T-E executable must hash to `candidate.cli_sha256`,
 including the T-R command used for warm-up. An unused candidate pin does not
 authenticate a command that invokes a different executable.
 
+Freeze registers the `execution_runtime` path and digest for `bwrap` and retains
+its bytes alongside input pins. Before every hook, warm-up or measured command,
+the collector copies each applicable pin into a sealed memfd, then hashes those
+sealed bytes. The launcher uses read-only copies in a private mount tree at the
+original absolute paths, including files referenced inside configs. Input
+directories such as classpaths and migrations contain only registered files;
+adding a host file or replacing a file or ancestor after validation cannot change
+the command's inputs. Cleanup snapshots only its trusted `execution_pins` subset.
+Missing namespace support or a changed runtime fails closed.
+
+Snapshot construction is preparation outside invocation timing; namespace setup
+is inside the measured invocation. The collector preserves the original argv,
+cwd and environment in its command receipt. The workload gets its own process
+session: cap cancellation signals that session, allowing normal detached cleanup
+and preserving its exit code; forced termination owns both it and the namespace
+supervisor. Existing output directories are host mounts. Hooks write new retained
+files under `{trial_dir}`, not beside frozen inputs in the private cwd tree.
+Unpinned OS libraries, runtime files, services and output storage remain host
+resources requiring the registered environment and independent audit. This is
+input integrity, not isolation from hostile code or an operator controlling the
+collector account. The read-only snapshot does not make an unlisted dependency
+registered.
+
 To prepare a measurement manifest, use the template's schema and replace its
 development artifacts/commands with the actual E1 candidate and registered
 infrastructure. Do this **before** freezing or running any warm-up. The local
@@ -166,6 +197,7 @@ This reference build is not E1 registration or acceptance evidence.
 | `prerequisites` | Pinned completion-record paths for `go_acceptance`, `java_acceptance`, `paired_acceptance`, `corpus_acceptance`, `baseline_feasibility` |
 | `hooks` | `prepare`, `warm_cleanup`, `observe`, `cleanup` command specifications; cleanup declares its trusted `execution_pins` subset |
 | `unsupported` | Optional registered `workload/arm` to `{issue_url, reason}` object; planned denominators are retained |
+| `deviations` | Optional list of nonempty limitation descriptions, retained verbatim in results JSON and escaped for the Markdown report |
 
 An unsupported declaration requires a nonempty reason and an absolute HTTPS issue
 URL with a host and path, without credentials or whitespace. Unknown workload/arm
@@ -484,6 +516,8 @@ timing stays unknown. Domain discovery, receipt of usable evidence, stable
 confirmation and clean final completion are separate fields.
 Cell `stable_confirmations` counts validated confirmation blocks even if later
 observation or cleanup fails; status counts retain that operational failure.
+Valid product receipt timing and in-budget detection likewise survive those later
+failures; malformed receipt times or invalid evidence never enter that numerator.
 Inconsistent domain rows, execution stages or traversal evidence invalidate
 confirmation instead of entering that numerator.
 Command receipts retain `collector_start_ns`, the collector monotonic origin used
@@ -529,7 +563,12 @@ operational failure, including B0, even when its inner receipt has no error. All
 measured commands must have finished without interruption. These failures retain
 earlier domain observations and first-event bounds; clean cap cancellation keeps
 its budget-exhausted classification. Failed/slow values remain in per-slot JSON
-and the started-duration statistics. Complete-pair cost summaries use paired differences/ratios, never a
+and the started-duration statistics. A contained, finished product command that
+exits 130 solely on the collection cap may have no published run. Its absence is
+explicitly `collection_cap_before_publication`; independent allocation cleanup
+proof is still required. Partial published runs, unrelated exits, malformed
+evidence and unproven cleanup remain operational failures.
+Complete-pair cost summaries use paired differences/ratios, never a
 difference of medians. B2 retains attempted/valid/violating counts, `x/m`,
 `x/planned`, and missing exposure. Repeated executions are not independent host
 samples. Results carry no confidence intervals or significance claims.
@@ -549,6 +588,12 @@ duration minus the union of measured stage intervals. It appears with median,
 p90, minimum, maximum and sample count in JSON and the timing table. B1 and T-R
 amortized costs each use their own declared execution count, including feasibility
 runs with different counts.
+T-E uses `evaluated_executions`, the validated count of actual search plus
+confirmation executions, including exhausted searches with no confirmation.
+JSON and Markdown summarize this descriptive cost per evaluated execution with
+valid count, median, p90, minimum and maximum, using complete slots only. It is
+not equal-work throughput. Both outputs also publish the frozen campaign's
+registered deviations, including feasibility's unestablished VM and cache strata.
 
 This infrastructure does not publish E5 measurements, update E1 figures or add
 a README comparison table. Those follow the registered campaign and its audit.

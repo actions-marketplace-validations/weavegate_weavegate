@@ -20,6 +20,7 @@ from stream import Monitor
 def validate(m):
     require(type(m.get('schema')) is int and m['schema'] == 1 and type(m.get('protocol_revision')) is int and m['protocol_revision'] == 1, 'schema/protocol revision must be 1')
     require(m.get('phase') in ('feasibility', 'measurement'), 'phase required')
+    campaign_deviations(m)
     unsupported_declarations(m)
     require(isinstance(m.get('campaign_id'), str) and m['campaign_id'], 'campaign ID required')
     require(m.get('seed') == SEED, 'protocol seed differs')
@@ -75,6 +76,9 @@ def freeze(source, destination):
     source, destination = Path(source), Path(destination)
     m = read_json(source)
     validate(m)
+    m['execution_runtime'] = runtime_identity()
+    runtime = m['execution_runtime']
+    require(m['pins'].get(runtime['path'], runtime['sha256']) == runtime['sha256'], 'execution runtime pin differs')
     m['source_inventory'] = {name: digest(HERE / name) for name in RUNNER_SOURCES}
     m['source_inventory'].update({'shared/' + name + '.py': digest(SHARED / (name + '.py'))
                                   for name in SHARED_MODULES})
@@ -86,7 +90,7 @@ def freeze(source, destination):
     require(digest(frozen / 'protocol.md') == m['protocol']['sha256'], 'protocol pin differs')
     originals = frozen / 'inputs'; originals.mkdir()
     # Retain bytes, not hashes alone; identical files are stored once by digest.
-    for path, checksum in m['pins'].items():
+    for path, checksum in dict(m['pins'], **{runtime['path']: runtime['sha256']}).items():
         target = originals / checksum
         if not target.exists(): shutil.copyfile(path, target)
         require(digest(target) == checksum, 'input changed while freezing: ' + path)
@@ -235,7 +239,9 @@ def collect_locked(bundle, registration, max_slots):
                 check_directory, retained_directory = ownership.enter_context(
                     created_child(int(check_lock.directories['slots'].name), slot['id'],
                                   lambda: check_lock(marker=False)))
-                context = dict(slot, trial_dir=str(directory), campaign_dir=str(bundle), redact_env=[])
+                context = dict(slot, trial_dir=str(directory), campaign_dir=str(bundle), redact_env=[],
+                               execution_pins=m['pins'], execution_runtime=m['execution_runtime'],
+                               execution_directories=execution_directories(m))
                 metadata = retained_directory.stat()
                 context['directory_identity'] = (metadata.st_dev, metadata.st_ino)
                 state = {'slot': slot, 'started_at': utc(), 'cleanup_proven': True}
@@ -313,7 +319,10 @@ def collect_locked(bundle, registration, max_slots):
                             observed = (baseline if slot['arm'].startswith('B') else product)(directory, slot, cmd, expected)
                             received = (time.monotonic_ns() - cmd['collector_start_ns']) / 1e9
                             require(received >= cmd['seconds'], 'evidence receipt precedes command completion')
-                            state['evidence_received_seconds'] = [received, received]
+                            if not observed.get('evidence_absence'):
+                                state['evidence_received_seconds'] = [received, received]
+                            else:
+                                state['evidence_absence'] = observed['evidence_absence']
                             state['cleanup_proven'] = observed['cleanup_proven']
                         except EVIDENCE_ERRORS as error:
                             state['error'] = 'evidence: ' + str(error)
@@ -387,7 +396,10 @@ def collect_locked(bundle, registration, max_slots):
                                     trusted = cleanup_dependencies(m)
                                     live_pins({'pins': {p: m['pins'][p] for p in trusted}})
                                     before_cleanup = hook_snapshot(directory)
-                                    cleanup = execute(m['hooks']['cleanup'], context, directory, 'cleanup', [])
+                                    cleanup_context = dict(context, execution_pins={p: m['pins'][p] for p in trusted},
+                                                           execution_directories=execution_directories(
+                                                               {'hooks': {'cleanup': m['hooks']['cleanup']}}))
+                                    cleanup = execute(m['hooks']['cleanup'], cleanup_context, directory, 'cleanup', [])
                                     require(succeeded(cleanup) and cleanup.get('containment_proven') is True,
                                             'cleanup command failed')
                                     proof(directory, 'cleanup.json', {'proven': True}, previous=before_cleanup)

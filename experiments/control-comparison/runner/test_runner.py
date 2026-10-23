@@ -5,6 +5,7 @@ import fcntl
 import json
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -71,6 +72,7 @@ class RunnerTests(unittest.TestCase):
         for i in (1, 2):
             write_json(raw / ('execution-%03d.json' % i), {'index': i, 'seed': run['seed'],
                 'child_reaped': True, 'connections_closed': True, 'reset_verified': True, 'oracle_end_ns': i * 100000000,
+                'oracle_ends_ns': {WORKLOADS[slot['workload']][2]: i * 100000000},
                 'evaluation': {'fingerprint': 'a'*64, 'results': [{'oracle_id': WORKLOADS[slot['workload']][2],
                     'violations': [{'oracle_id': WORKLOADS[slot['workload']][2], 'rows': [{'synthetic': 1}]}]}]}})
         cmd = {'seconds': 1, 'started': True, 'timeout': False, 'exit': 0, 'error': None,
@@ -399,6 +401,7 @@ class RunnerTests(unittest.TestCase):
         for p in (root/'raw').glob('execution-*.json'):
             v=read_json(p);v['evaluation']['results'][0]['violations']=[]
             v['evaluation']['results'].append({'oracle_id':'receipt','violations':[{'oracle_id':'receipt','rows':[{}]}]})
+            v['oracle_ends_ns']['receipt'] = v['oracle_end_ns']
             write_json(p,v)
         r=baseline(root,slot,cmd,expected)
         self.assertEqual(r['domain_violations'],0)
@@ -1707,10 +1710,12 @@ class RunnerTests(unittest.TestCase):
             with self.subTest(label=label):
                 m = self.measurement_manifest()
                 program = self.root/'interrupt-child.py'
-                pidfile = self.root/'child.pid'
-                program.write_text("import os,signal\nfrom pathlib import Path\n"
-                                   + "Path("+repr(str(pidfile))+").write_text(str(os.getpid()))\n"
-                                   + "os.kill(os.getppid(), signal.SIGTERM)\nsignal.pause()\n")
+                address = str(self.root/'ready.sock')
+                listener = socket.socket(socket.AF_UNIX)
+                listener.bind(address); listener.listen(1); listener.settimeout(30)
+                program.write_text("import os,signal,socket\n"
+                                   + "s=socket.socket(socket.AF_UNIX);s.connect("+repr(address)+")\n"
+                                   + "s.sendall(str(os.getpgrp()).encode());s.close()\nsignal.pause()\n")
                 m['pins'][str(program)] = digest(program)
                 if label == 'run':
                     m['commands']['matching']['fixed']['B2']['argv'][1] = str(program)
@@ -1721,12 +1726,21 @@ class RunnerTests(unittest.TestCase):
                 probe = ('import support,sys; from tool import collect; '
                          'reference=support.read_json(sys.argv[1]); support.FIXTURE_INPUTS=reference["fixtures"]; '
                          'support.REFERENCE_BUILD=reference["build"]; collect(sys.argv[2],sys.argv[3])')
-                child = subprocess.run([sys.executable, '-B', '-c', probe, str(self.root/'reference.json'),
-                                        str(bundle), str(registration)], cwd=HERE, capture_output=True, timeout=30)
+                child = subprocess.Popen([sys.executable, '-B', '-c', probe, str(self.root/'reference.json'),
+                                          str(bundle), str(registration)], cwd=HERE,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                group = None
                 try:
-                    self.assertEqual(child.returncode, 0, child.stderr.decode())
-                    pid = int(pidfile.read_text())
-                    self.assertFalse(group_running(pid))
+                    # Signal the collector after the measured child explicitly
+                    # announces readiness; a mount supervisor can be its parent.
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.settimeout(30)
+                        group = int(connection.recv(100))
+                    child.send_signal(signal.SIGTERM)
+                    _, stderr = child.communicate(timeout=30)
+                    self.assertEqual(child.returncode, 0, stderr.decode())
+                    self.assertFalse(group_running(group))
                     directory = bundle/'slots'/order()[0]['id']
                     self.assertTrue(read_json(directory/(label+'.command.json'))['interrupted'])
                     self.assertTrue(read_json(directory/'slot.json')['cleanup_proven'])
@@ -1735,10 +1749,12 @@ class RunnerTests(unittest.TestCase):
                     self.assertEqual(len(list((bundle/'slots').iterdir())), 1)
                     with self.assertRaisesRegex(ValueError, 'stopped'): collect(bundle, registration)
                 finally:
-                    if pidfile.exists():
-                        try: os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+                    if group is not None:
+                        try: os.killpg(group, signal.SIGKILL)
                         except ProcessLookupError: pass
-                        pidfile.unlink()
+                    if child.poll() is None: child.kill()
+                    child.communicate(timeout=30)
+                    listener.close(); Path(address).unlink()
                     shutil.rmtree(bundle)
 
     def write_measurement_configs(self, m):
@@ -2093,6 +2109,195 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
                             for k in ('workload','variant','cache','arm')))
                 self.assertEqual(cell['stable_confirmations'], 1)
                 self.assertEqual(cell['statuses']['complete'], 0)
+
+    def test_timely_product_detection_survives_later_hook_failures(self):
+        bundle, root, slot, consumed = self.retained_product_bundle()
+        for failure in ('observation failed', 'cleanup failed'):
+            with self.subTest(failure=failure):
+                state = read_json(root/'slot.json')
+                state.update(error=failure, evidence_received_seconds=[2, 2])
+                write_json(root/'slot.json', state); seal(root)
+                consumed[slot['id']] = digest(root/'SHA256SUMS'); save_progress(bundle, consumed)
+                result = analyze(bundle, self.root/failure)
+                row = result['slots'][slot['ordinal']-1]
+                self.assertEqual(row['status'], 'operational_failed')
+                self.assertEqual(row['usable_evidence_seconds'], [2, 2])
+                cell = next(c for c in result['cells'] if all(c[k] == slot[k]
+                            for k in ('workload','variant','cache','arm')))
+                self.assertEqual(cell['observed_detections'], 1)
+                self.assertEqual(cell['statuses']['complete'], 0)
+
+    def test_exploration_cost_uses_actual_search_and_confirmation_count(self):
+        bundle, root, slot, consumed = self.retained_product_bundle()
+        result = analyze(bundle, self.root/'cost')
+        row = result['slots'][slot['ordinal']-1]
+        cell = next(c for c in result['cells'] if all(c[k] == slot[k]
+                    for k in ('workload','variant','cache','arm')))
+        count = row['exploration_executions'] + 2
+        self.assertEqual(cell['amortized_execution_seconds'], stats([1/count]))
+        self.assertEqual(row['evaluated_executions'], count)
+        self.assertIn('Descriptive cost per evaluated execution', (self.root/'cost/report.md').read_text())
+
+    def test_clean_product_timeout_without_published_run_is_budget_exhausted(self):
+        root, slot, command, expected = self.product_raw('T-E')
+        manifest = self.manifest(); manifest['inputs']['matching']['vulnerable'] = expected
+        shutil.rmtree(root/'raw')
+        command.update(timeout=True, exit=130, seconds=slot['cap_seconds']+1)
+        write_json(root/'run.command.json', command); seal(root)
+        result = reduce_slot(root, slot, manifest)
+        self.assertEqual(result['status'], 'budget_exhausted')
+        self.assertIsNone(result['first_event_seconds'])
+        state = read_json(root/'slot.json'); state['cleanup_proven'] = False
+        write_json(root/'slot.json', state); seal(root)
+        self.assertEqual(reduce_slot(root, slot, manifest)['status'], 'operational_failed')
+        state['cleanup_proven'] = True; write_json(root/'slot.json', state)
+        (root/'run.stderr').write_text('weavegate: warning: cleanup failed: constructed\n')
+        seal(root)
+        self.assertEqual(reduce_slot(root, slot, manifest)['status'], 'operational_failed')
+        (root/'run.stderr').unlink()
+        # A partial published run and unrelated operational exits still fail.
+        for partial, code in ((False, 5), (True, 130)):
+            with self.subTest(partial=partial, code=code):
+                if partial: (root/'raw/runs/incomplete').mkdir(parents=True)
+                command['exit'] = code; write_json(root/'run.command.json', command); seal(root)
+                self.assertEqual(reduce_slot(root, slot, manifest)['status'], 'operational_failed')
+
+    def test_baseline_domain_endpoint_precedes_secondary_assertion(self):
+        root, slot, command = self.raw()
+        expected = self.manifest()['inputs']['quota']['vulnerable']
+        assertion = WORKLOADS['quota'][2]
+        expected['config']['Oracle']['Assertions'].append({'ID':'receipt'})
+        for path in (root/'raw').glob('execution-*.json'):
+            value = read_json(path)
+            value['oracle_end_ns'] = 800_000_000
+            value['oracle_ends_ns'] = {assertion: 100_000_000, 'receipt': 800_000_000}
+            value['evaluation']['results'].append({'oracle_id':'receipt', 'violations':[]})
+            write_json(path, value)
+        result = baseline(root, slot, command, expected)
+        self.assertEqual(result['first_event_seconds'], bound(.1, .9, 1))
+        path = root/'raw/execution-001.json'
+        value = read_json(path)
+        for invalid in ({assertion: 900_000_000, 'receipt': 800_000_000},
+                        {assertion: 800_000_000, 'receipt': 100_000_000},
+                        {assertion: True, 'receipt': 800_000_000}, {assertion: 100_000_000}):
+            with self.subTest(invalid=invalid):
+                value['oracle_ends_ns'] = invalid; write_json(path, value)
+                with self.assertRaisesRegex(ValueError, 'per-assertion completion'):
+                    baseline(root, slot, command, expected)
+
+    def test_analysis_publishes_registered_deviations(self):
+        m = self.manifest()
+        m['deviations'] = ['No VM restoration.', 'Cache state <unestablished>.']
+        write_json(self.root/'input.json', m)
+        bundle = self.root/'bundle'; freeze(self.root/'input.json', bundle)
+        result = analyze(bundle, self.root/'analysis')
+        self.assertEqual(result['deviations'], m['deviations'])
+        report = (self.root/'analysis/report.md').read_text()
+        self.assertIn('No VM restoration.', report)
+        self.assertIn('Cache state &lt;unestablished&gt;.', report)
+
+    def test_launch_uses_validated_bytes_after_live_path_replacement(self):
+        runtime = self.root/'runtime'; runtime.mkdir()
+        executable = runtime/'python'; shutil.copyfile(sys.executable, executable); executable.chmod(0o700)
+        program = runtime/'arm.py'
+        program.write_text('from pathlib import Path\nprint(Path(__file__).with_name("input.txt").read_text())\n')
+        dependency = runtime/'input.txt'; dependency.write_text('registered')
+        pins = {str(p):digest(p) for p in (executable, program, dependency)}
+        sandbox = str(Path(shutil.which('bwrap')).resolve())
+        context = {'redact_env': [], 'execution_pins': pins,
+                   'execution_runtime': {'path': sandbox, 'sha256': digest(sandbox)}}
+        spec = {'argv': [str(executable), '-B', str(program)], 'cwd': str(runtime),
+                'env': {}, 'timeout_seconds': 5}
+        real_spawn = subprocess.Popen
+        def spawn(*args, **kwargs):
+            # Replace the entire ancestor after validation, then restore it
+            # before the next boundary check. No scheduling delay is needed.
+            runtime.rename(self.root/'original-runtime'); runtime.mkdir()
+            shutil.copyfile('/bin/false', executable); executable.chmod(0o700)
+            program.write_text('print("unregistered")\n'); dependency.write_text('unregistered')
+            try:
+                process = real_spawn(*args, **kwargs)
+                process.wait(timeout=5)
+                return process
+            finally:
+                shutil.rmtree(runtime); (self.root/'original-runtime').rename(runtime)
+        directory = self.root/'command'; directory.mkdir()
+        with patch('execution.subprocess.Popen', side_effect=spawn):
+            result = execute(spec, context, directory, 'run', [])
+        live_pins({'pins':pins})
+        self.assertTrue(succeeded(result), result)
+        self.assertEqual((directory/'run.stdout').read_text(), 'registered\n')
+
+    def test_frozen_launch_timeout_preserves_child_cleanup_exit(self):
+        from snapshot import MountedProcess
+        program = self.root/'cancel.py'
+        address = str(self.root/'ready.sock')
+        program.write_text('import signal,socket,sys\n'
+                           'signal.signal(signal.SIGTERM, lambda *args: sys.exit(130))\n'
+                           's=socket.socket(socket.AF_UNIX);s.connect('+repr(address)+')\n'
+                           's.sendall(b"ready");s.close()\nsignal.pause()\n')
+        executable = str(Path(sys.executable).resolve())
+        spec = {'argv':[executable, str(program)], 'cwd':str(self.root), 'env':{},
+                'timeout_seconds':30, 'cancel_grace_seconds':5}
+        context = {'redact_env':[], 'execution_runtime':runtime_identity(),
+                   'execution_pins':{p:digest(p) for p in spec['argv']}}
+        directory = self.root/'run';directory.mkdir()
+        real_wait = MountedProcess.wait
+        waits = []
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(address);listener.listen(1);listener.settimeout(30)
+            def wait(process, timeout=None):
+                waits.append(timeout)
+                if len(waits) == 1:
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.settimeout(30)
+                        self.assertEqual(connection.recv(100), b'ready')
+                    raise subprocess.TimeoutExpired(spec['argv'], 30)
+                return real_wait(process, timeout)
+            with patch.object(MountedProcess, 'wait', wait):
+                result = execute(spec, context, directory, 'run', [])
+        self.assertTrue(result['timeout'])
+        self.assertEqual(result['exit'], 130)
+        self.assertTrue(result['containment_proven'])
+        self.assertIsNone(result['error'])
+
+    def test_frozen_dependencies_are_readonly_and_directory_inventory_is_closed(self):
+        program = self.root/'read.py'
+        inputs = self.root/'inputs';inputs.mkdir()
+        dependency = inputs/'registered.txt';dependency.write_text('registered')
+        program.write_text('from pathlib import Path\n'
+                           'p=Path('+repr(str(dependency))+')\n'
+                           'try: p.write_text("changed")\n'
+                           'except OSError: print("readonly")\n'
+                           'print(",".join(sorted(x.name for x in p.parent.iterdir())))\n')
+        executable = str(Path(sys.executable).resolve())
+        spec = {'argv':[executable,str(program)], 'cwd':str(self.root), 'env':{}, 'timeout_seconds':5}
+        context = {'redact_env':[], 'execution_runtime':runtime_identity(), 'execution_directories':[str(inputs)],
+                   'execution_pins':{str(p):digest(p) for p in (executable, program, dependency)}}
+        real_spawn = subprocess.Popen
+        def spawn(*args, **kwargs):
+            dependency.write_text('unregistered')
+            (inputs/'shadow.py').write_text('unregistered')
+            return real_spawn(*args, **kwargs)
+        directory = self.root/'run';directory.mkdir()
+        with patch('execution.subprocess.Popen', side_effect=spawn):
+            result = execute(spec, context, directory, 'run', [])
+        self.assertTrue(succeeded(result), result)
+        self.assertEqual((directory/'run.stdout').read_text(), 'readonly\nregistered.txt\n')
+
+    def test_namespace_startup_failure_retains_spawn_and_unproven_containment(self):
+        executable = str(Path(sys.executable).resolve())
+        spec = {'argv':[executable,'-c','pass'], 'cwd':str(self.root), 'env':{}, 'timeout_seconds':5}
+        context = {'redact_env':[], 'execution_runtime':runtime_identity(),
+                   'execution_pins':{executable:digest(executable)}}
+        directory = self.root/'run';directory.mkdir()
+        with patch('snapshot.json.loads', side_effect=ValueError('constructed namespace receipt failure')):
+            result = execute(spec, context, directory, 'run', [])
+        self.assertTrue(result['started'])
+        self.assertFalse(result['containment_proven'])
+        self.assertIn('namespace ownership unproven', result['error'])
+        self.assertEqual(read_json(directory/'run.command.json'), result)
 
     def test_malformed_command_receipts_preserve_all_slot_accounting(self):
         bundle, root, slot, consumed = self.retained_product_bundle()

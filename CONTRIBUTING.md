@@ -135,6 +135,12 @@ WEAVEGATE_SPRING_CORPUS=1 WEAVEGATE_SPRING_CORPUS_OUT=/tmp/spring-corpus-evidenc
 
 Changes to the E5 control drivers run their constructed accounting checks:
 
+The Python checks require Linux `bubblewrap` (`bwrap`) and permission to create
+mount/user namespaces. It runs sealed copies of registered executable and input
+bytes at their original paths, preventing changes between hashing and execution.
+The dedicated CI runner uses `sudo` for these checks because a memfd launcher
+does not inherit a pathname-based unprivileged-userns allowance.
+
 ```bash
 python3 -B experiments/control-comparison/runner/test_runner.py
 go test ./experiments/control-comparison/driver -race -count=20
