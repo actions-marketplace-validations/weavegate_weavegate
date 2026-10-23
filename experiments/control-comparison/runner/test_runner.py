@@ -12,7 +12,7 @@ import zipfile
 from unittest.mock import patch
 from support import *
 from analyze import analyze, baseline, bound, membership, product, reduce_slot, stages, stats, validate_trace
-from tool import collect, freeze, registered, validate, proof
+from tool import collect, freeze, registered, validate, proof, hook_snapshot, unchanged
 
 
 UNSUPPORTED = {'issue_url': 'https://example.com/issues/1', 'reason': 'Constructed unsupported arm'}
@@ -487,7 +487,7 @@ class RunnerTests(unittest.TestCase):
         write_json(self.root/'cleanup.json', {'proven':1, 'evidence':{'proof/closed.json':digest(evidence)}})
         with self.assertRaises(ValueError): proof(self.root,'cleanup.json',{'proven':True})
         write_json(self.root/'cleanup.json', {'proven':True, 'evidence':{'proof/closed.json':digest(evidence)}})
-        with self.assertRaises(ValueError): proof(self.root,'cleanup.json',{'proven':True}, previous={'proof/closed.json':digest(evidence)})
+        with self.assertRaises(ValueError): proof(self.root,'cleanup.json',{'proven':True}, previous=hook_snapshot(self.root))
         self.assertTrue(proof(self.root,'cleanup.json',{'proven':True},previous={})['proven'])
 
     def test_out_of_order_consumed_slot_is_rejected(self):
@@ -2451,6 +2451,164 @@ p.symlink_to(target, target_is_directory=True)
         self.assertEqual(read_json(root/'run.command.json'), command)
         self.assertLessEqual(command['collector_start_ns'], spawned[0])
         self.assertLessEqual((spawned[0] - command['collector_start_ns']) / 1e9, command['seconds'])
+
+    def test_analysis_parent_swap_before_creation_preserves_campaign(self):
+        bundle, _ = self.bundle()
+        parent = self.root/'publication'; parent.mkdir()
+        output = parent/'analysis'
+        before = inventory(bundle/'frozen')
+        real_mkdir = os.mkdir
+        swapped = False
+        def mkdir(path, *args, **kwargs):
+            nonlocal swapped
+            if not swapped and Path(path).name == output.name:
+                swapped = True
+                parent.rename(self.root/'original-publication')
+                parent.symlink_to(bundle/'frozen', target_is_directory=True)
+            return real_mkdir(path, *args, **kwargs)
+        with patch('os.mkdir', side_effect=mkdir):
+            with self.assertRaisesRegex(ValueError, 'directory.*replaced'):
+                analyze(bundle, output)
+        self.assertTrue(swapped)
+        self.assertEqual(inventory(bundle/'frozen'), before)
+
+    def test_analysis_detection_requires_timely_usable_evidence(self):
+        bundle, _ = self.bundle()
+        for arm in ('B1', 'B2', 'T-R', 'T-E'):
+            for receipt in ('in_budget', 'late', 'unknown'):
+                with self.subTest(arm=arm, receipt=receipt):
+                    def reduced(root, slot, unused):
+                        row = dict(slot, status='not_started', started=False, reasons=[])
+                        if slot['arm'] == arm and slot['block'] == '09':
+                            row.update(status='complete', started=True, invocation_seconds=1,
+                                       first_event_seconds=[.1, .2], first_event_membership='in_budget',
+                                       usable_evidence_membership=receipt)
+                            if arm.startswith('B'):
+                                value = 1 if receipt == 'in_budget' else slot['cap_seconds'] + 1
+                                row['usable_first_event_seconds'] = None if receipt == 'unknown' else [value, value]
+                        return row
+                    with patch('analyze.reduce_slot', side_effect=reduced):
+                        result = analyze(bundle, self.root/('detection-'+arm+'-'+receipt))
+                    cell = next(c for c in result['cells'] if (c['workload'], c['variant'], c['cache'], c['arm']) ==
+                                ('matching', 'fixed', 'cold', arm))
+                    self.assertEqual(cell['observed_detections'], int(receipt == 'in_budget'))
+
+    def test_hooks_reject_hardlink_alias_of_prior_proof(self):
+        from tool import execute as real_execute
+        parent = self.root
+        for phase in ('observe', 'cleanup'):
+            with self.subTest(phase=phase):
+                self.root = parent/phase; self.root.mkdir()
+                bundle, registration = self.measurement_bundle()
+                def alias(spec, context, directory, label, secrets):
+                    result = real_execute(spec, context, directory, label, secrets)
+                    if label == phase:
+                        original = directory/'proof/prepare.json'
+                        path = directory/'proof/reused.json'
+                        os.link(original, path)
+                        receipt = directory/('observation.json' if phase == 'observe' else 'cleanup.json')
+                        value = read_json(receipt)
+                        value['evidence'] = {'proof/reused.json': digest(original)}
+                        write_json(receipt, value)
+                    return result
+                with patch('tool.execute', side_effect=alias): collect(bundle, registration)
+                state = read_json(bundle/'slots'/order()[0]['id']/'slot.json')
+                self.assertIn('newly retained', state.get('error' if phase == 'observe' else 'cleanup_error', ''))
+                if phase == 'observe':
+                    self.assertNotIn('resources', state)
+                else:
+                    self.assertFalse(state['cleanup_proven'])
+                    self.assertEqual(len(list((bundle/'slots').iterdir())), 1)
+                    with self.assertRaisesRegex(ValueError, 'stopped'): collect(bundle, registration)
+
+    def test_sealed_analysis_identifies_registered_sources_and_replay(self):
+        bundle, registration = self.measurement_bundle()
+        manifest = read_json(bundle/'frozen/manifest.json')
+        registered(bundle, manifest, registration)
+        output = self.root/'analysis'
+        result = analyze(bundle, output)
+        source = result['source']
+        for key, path in (('manifest_sha256', 'frozen/manifest.json'),
+                          ('order_sha256', 'frozen/order.json'),
+                          ('frozen_sha256', 'frozen/SHA256SUMS'),
+                          ('checkpoint_sha256', 'progress/checkpoint.json')):
+            self.assertEqual(source[key], digest(bundle/path))
+            self.assertIn(source[key], (output/'report.md').read_text())
+        self.assertEqual(source['registration'], read_json(registration))
+        self.assertEqual(source['candidate'], manifest['candidate'])
+        self.assertEqual(source['e1_registration'], manifest['e1_registration'])
+        argv = source['replay']['argv']
+        self.assertEqual(argv[1:5], ['-B', str(bundle/'frozen/source/tool.py'), 'analyze', str(bundle)])
+        self.assertIn(source['replay']['command'], (output/'report.md').read_text())
+        verify(output)
+        # The retained tool works independently and emits the same sealed bytes.
+        result = subprocess.run(argv, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(inventory(output), inventory(Path(argv[-1])))
+
+    def test_analysis_source_distinguishes_same_id_campaigns_and_checkpoints(self):
+        parent = self.root
+        sources = []
+        for index in (0, 1):
+            self.root = parent/str(index); self.root.mkdir()
+            m = self.measurement_manifest()
+            m['candidate']['source_revision'] = str(index)*40
+            m['e1_registration']['source_revision'] = m['candidate']['source_revision']
+            self.write_prerequisites(m)
+            bundle, registration = self.measurement_bundle(m)
+            registered(bundle, m, registration)
+            result = analyze(bundle, self.root/'analysis')
+            self.assertEqual(result['campaign_id'], 'constructed')
+            sources.append(result['source'])
+        self.assertNotEqual(sources[0]['candidate'], sources[1]['candidate'])
+        for field in ('manifest_sha256', 'frozen_sha256', 'checkpoint_sha256'):
+            self.assertNotEqual(sources[0][field], sources[1][field])
+        collect(bundle, registration)
+        changed = analyze(bundle, self.root/'after-collection')['source']
+        self.assertEqual(changed['manifest_sha256'], sources[1]['manifest_sha256'])
+        self.assertNotEqual(changed['checkpoint_sha256'], sources[1]['checkpoint_sha256'])
+
+    def test_proof_freshness_rejects_renamed_and_external_inodes(self):
+        originals = self.root/'proof'; originals.mkdir()
+        earlier = originals/'earlier.json'; earlier.write_text('constructed evidence')
+        before = hook_snapshot(self.root)
+        moved = originals/'moved.json'; earlier.rename(moved)
+        write_json(self.root/'cleanup.json', {'proven': True, 'evidence': {'proof/moved.json': digest(moved)}})
+        with self.assertRaisesRegex(ValueError, 'newly retained'):
+            proof(self.root, 'cleanup.json', {'proven': True}, previous=before)
+        # No pre-hook pathname for an external artifact: link count still rejects it.
+        external = self.root/'outside.json'; external.write_text('constructed external')
+        linked = originals/'linked.json'; os.link(external, linked)
+        write_json(self.root/'preparation.json', {'evidence': {'proof/linked.json': digest(linked)}})
+        with self.assertRaisesRegex(ValueError, 'newly retained'):
+            proof(self.root, 'preparation.json', {}, previous={})
+
+    def test_hook_cannot_replace_original_with_identical_bytes(self):
+        path = self.root/'original.json'; path.write_text('constructed')
+        before = hook_snapshot(self.root)
+        path.rename(self.root/'old.json'); path.write_text('constructed')
+        with self.assertRaisesRegex(ValueError, 'hook changed original'):
+            unchanged(self.root, before)
+
+    def test_baseline_first_domain_time_comes_from_valid_execution(self):
+        root, slot, command = self.raw()
+        path = root/'raw/execution-001.json'
+        value = read_json(path); value['child_reaped'] = False; write_json(path, value)
+        result = baseline(root, slot, command, self.manifest()['inputs']['quota']['vulnerable'])
+        self.assertEqual(result['first_event_seconds'], result['executions'][1]['event_seconds'])
+        self.assertEqual(result['valid_evaluations'], 1)
+
+    def test_analysis_creates_missing_parents_and_refuses_existing_output(self):
+        bundle, _ = self.bundle()
+        output = self.root/'new'/'nested'/'analysis'
+        first = analyze(bundle, output); before = inventory(output)
+        verify(output)
+        self.assertEqual(first, analyze(bundle, self.root/'other'))
+        with self.assertRaises(FileExistsError): analyze(bundle, output)
+        self.assertEqual(inventory(output), before)
+        with self.assertRaises(FileExistsError):
+            with created_directory(Path('/')):
+                self.fail('filesystem root accepted as new output')
 
     def test_declared_unsupported_slot_cannot_be_collected_as_supported(self):
         m = self.manifest(); m['unsupported'] = {'matching/B2': UNSUPPORTED}

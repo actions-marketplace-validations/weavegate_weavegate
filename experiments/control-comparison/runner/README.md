@@ -266,9 +266,14 @@ Exit zero or an unsubstantiated boolean is insufficient.
 | `observe` | `observation.json`: registered `host_id`, `resources`, original runtime/version/cache/counter evidence |
 | `cleanup` | `cleanup.json`: `proven: true` plus newly retained proof of child exit, retired connections and fixture removal |
 
-Original hook proof files live under `proof/`; observation and cleanup proofs
-must be newly retained by their respective hooks. Neither can cite an earlier
-preparation or warm-up file as evidence of a later observation or cleanup.
+Original hook proof files live under `proof/` and must be newly retained by
+their respective hooks. Before preparation, warm cleanup, observation and
+final cleanup, the collector records existing file digests and device/inode
+identities. A proof cannot reuse an earlier inode under a new pathname or use
+a hard-link alias, including an alias to a file outside the slot. Each hook
+must preserve the original files' bytes and identities. These checks detect
+observable reuse; independently auditing whether a new file actually proves
+the claimed operation remains necessary.
 Cleanup can run after unrelated input drift when every dependency in its
 separately pinned subset still matches; the campaign stops afterward.
 The subset must include the interpreter, script and all transitive cleanup
@@ -380,9 +385,12 @@ bundle; a changed checkout cannot analyze it under the same campaign identity.
 Analysis holds a shared campaign lock through validation, reduction and output
 writing. It fails immediately while collection holds the exclusive lock;
 concurrent analyses may use separate output directories.
-Analysis pins its new output directory with a no-follow descriptor. Both reports
-and their checksum inventory are written through that handle, with output and
-campaign pathname checks through sealing. Replacing the output pathname stops
+Analysis opens each output ancestor through a retained no-follow parent
+descriptor and creates missing directories relative to those handles. It retains
+the entire chain through sealing, so replacing an ancestor before output creation
+cannot redirect creation into the campaign. Both reports and their checksum
+inventory are written through the output handle, with ancestor, output and
+campaign pathname checks through sealing. Replacing an output pathname stops
 publication without writing into or resealing its replacement. Report files use
 atomic replacement so a substituted file symlink cannot overwrite originals.
 Both operations also lock the campaign directory inode, so replacing `.lock` cannot
@@ -408,6 +416,15 @@ an output path within frozen inputs, progress or sealed slots is rejected before
 creating files.
 Completed analysis directories contain a `SHA256SUMS` inventory covering both
 `results.json` and `report.md`; regeneration includes the same deterministic seal.
+Both files retain the authenticated `source`: manifest and order digests, frozen
+inventory digest, checkpoint digest, public registration, candidate CLI/SDK and
+source identity, E1 registration, and fixture/source revisions when declared.
+Feasibility keeps undeclared candidate/registration identities null. A repeated
+campaign label cannot substitute for these hashes, and the checkpoint identifies
+the exact collected prefix. The source also includes a shell-quoted replay
+command and its argv using the frozen tool. Its deterministic sibling destination
+`<bundle-name>-analysis-replay` must be new; select another new directory if it
+already exists. After relocating a bundle, update the command paths accordingly.
 Malformed product/baseline JSON structures are operational slot failures and
 remain in the 600-slot accounting, rather than aborting the entire reduction.
 Completed artifacts require exactly one command timing root with all spans
@@ -452,6 +469,11 @@ origin and exact receive offsets after JSON reading and hashing; offline analysi
 checks their envelope, hashes and execution evidence before mapping them to that
 same invocation origin. Collector origins are never compared with child clocks.
 Invalid receipt times fail the slot while retaining the planned accounting.
+The detection numerator requires both an in-budget domain event and an in-budget
+usable-evidence endpoint. Baselines use the first valid violating execution's
+stream receipt; product arms use the final validated receipt. Late or unknown
+receipts remain in the per-slot evidence but do not count as in-budget detections.
+An incomplete baseline execution cannot supply the first valid domain-event time.
 
 Requested steps are checked against their resolved trace events. Matching's
 fixed path legitimately reports inferred database blocking and skips its final

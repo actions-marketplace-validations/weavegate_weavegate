@@ -181,6 +181,53 @@ def frozen_sources(bundle):
 
 
 @contextmanager
+def created_directory(directory):
+    """Create through retained, no-follow ancestors, then publish via the leaf FD.
+
+    Checking a resolved pathname before mkdir is insufficient: an ancestor can
+    be redirected in between. Keep every edge of the directory chain pinned
+    through creation and sealing, including parents created by this operation.
+    """
+    directory = Path(directory)
+    require(directory.is_absolute() and '..' not in directory.parts, 'absolute output directory required')
+    if directory == Path(directory.anchor):
+        raise FileExistsError('analysis output already exists: ' + str(directory))
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors = [os.open(directory.anchor, flags)]
+    edges = []
+    def check():
+        for parent, name, descriptor in edges:
+            try:
+                if os.path.samestat(os.fstat(descriptor), os.stat(name, dir_fd=parent, follow_symlinks=False)):
+                    continue
+            except OSError:
+                pass
+            raise ValueError('directory pathname replaced: ' + str(directory))
+    try:
+        for index, name in enumerate(directory.parts[1:], 1):
+            check()
+            parent = descriptors[-1]
+            if index == len(directory.parts) - 1:
+                os.mkdir(name, mode=0o700, dir_fd=parent)
+            else:
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=parent)
+                except FileExistsError:
+                    pass
+            check()
+            descriptor = os.open(name, flags, dir_fd=parent)
+            descriptors.append(descriptor)
+            edges.append((parent, name, descriptor))
+        check()
+        try:
+            yield check, Path('/proc/self/fd') / str(descriptors[-1])
+        finally:
+            check()
+    finally:
+        for descriptor in reversed(descriptors): os.close(descriptor)
+
+
+@contextmanager
 def pinned_directory(directory):
     """Own the original inode and never redirect collector writes after a rename.
 

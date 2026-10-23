@@ -1,6 +1,7 @@
 """Reduce original Oracle/product evidence. Never infer a verdict from SQL or exits."""
 from collections import Counter, defaultdict
 import runpy
+import shlex
 from pathlib import Path
 runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
               init_globals={'dependencies': ('support',)})
@@ -133,7 +134,7 @@ def baseline(root, slot, command, expected):
         if domain and slot['variant'] == 'fixed': result['quality_reasons'].append('fixed domain violation')
         interval = (bound(value['oracle_end_ns'] / 1e9, run['process_elapsed_ns'] / 1e9, whole)
                     if evaluation and 'process_elapsed_ns' in run else None)
-        if domain and result['first_event_seconds'] is None: result['first_event_seconds'] = interval
+        if valid and domain and result['first_event_seconds'] is None: result['first_event_seconds'] = interval
         result['executions'].append({'index': number, 'valid': valid, 'domain': domain,
                                      'fingerprint': evaluation['fingerprint'] if evaluation else None,
                                      'event_seconds': interval, 'budget_membership': membership(interval, slot['cap_seconds'])})
@@ -403,6 +404,30 @@ def reduce_slot(root, slot, manifest):
     return result
 
 
+def detected_in_budget(row):
+    usable = (membership(row.get('usable_first_event_seconds'), row['cap_seconds'])
+              if row['arm'].startswith('B') else row.get('usable_evidence_membership'))
+    return row.get('first_event_membership') == 'in_budget' and usable == 'in_budget'
+
+
+def analysis_source(bundle, manifest, progress):
+    # A fixed sibling destination keeps repeated reductions byte-identical. It
+    # must be absent when replaying; callers can select another new destination.
+    argv = [sys.executable, '-B', str(bundle/'frozen/source/tool.py'), 'analyze',
+            str(bundle), str(bundle.with_name(bundle.name + '-analysis-replay'))]
+    return {
+        'manifest_sha256': digest(bundle/'frozen/manifest.json'),
+        'order_sha256': digest(bundle/'frozen/order.json'),
+        'frozen_sha256': digest(bundle/'frozen/SHA256SUMS'),
+        'checkpoint_sha256': digest(bundle/'progress/checkpoint.json'),
+        'registration': progress['registration'], 'candidate': manifest.get('candidate'),
+        'e1_registration': manifest.get('e1_registration'),
+        'fixture_revision': manifest.get('fixture_revision'),
+        'source_revision': manifest.get('source_revision'),
+        'replay': {'argv': argv, 'command': shlex.join(argv)},
+    }
+
+
 def analyze(bundle, output):
     bundle, output = Path(bundle).resolve(), Path(output).resolve()
     require(output != bundle and bundle not in output.parents, 'analysis output must be outside campaign')
@@ -454,7 +479,7 @@ def analyze_locked(bundle, output, check_lock):
                         'stage_seconds': {name: stats(values) for name, values in sorted(stage_values.items())},
                         'amortized_execution_seconds': stats([r['invocation_seconds'] / manifest['inputs'][workload][variant]['counts'][arm]
                                                              for r in complete]) if arm in ('B1','T-R') else None,
-                        'observed_detections': sum(r.get('first_event_membership') == 'in_budget' for r in values),
+                        'observed_detections': sum(detected_in_budget(r) for r in values),
                         'valid_exposure_blocks': sum(r.get('valid_evaluations', 0) > 0 for r in values),
                         'stable_confirmations': sum(r.get('stable_confirmation', False) and r['status'] == 'complete' for r in values),
                         'first_lower_seconds_conditional': stats([r['first_event_seconds'][0] for r in values if r.get('first_event_seconds')]),
@@ -479,6 +504,7 @@ def analyze_locked(bundle, output, check_lock):
                               ratio=stats([p['ratio'] for p in selected]),
                               t_complete=sum(p['t_complete'] for p in selected)))
     payload = {'schema': 1, 'phase': manifest['phase'], 'campaign_id': manifest['campaign_id'], 'stopped': stopped,
+               'source': analysis_source(bundle, manifest, progress),
                'claim': 'same-host descriptive observations only', 'slots': rows, 'cells': cells,
                'pairs': pairs, 'cost_cells': cost_cells}
     check_lock()
@@ -486,7 +512,13 @@ def analyze_locked(bundle, output, check_lock):
     require(resolved_output != bundle and bundle not in resolved_output.parents,
             'analysis output must be outside campaign')
     lines = ['# E5 retained evidence', '', 'Phase: ' + manifest['phase'] + '. Same-host descriptive data only.',
-             'p90 uses interpolation; at n=10 it is not a population tail estimate.', '',
+             'p90 uses interpolation; at n=10 it is not a population tail estimate.', '']
+    source = payload['source']
+    lines += ['## Authenticated source', '', 'Campaign: ' + manifest['campaign_id'], '',
+              '```json', canonical(source).decode().rstrip(), '```', '',
+              'Reproduce from the retained bundle with its frozen tool (destination must be new):', '',
+              '```sh', source['replay']['command'], '```', '',
+              '## Accounting', '',
              '| Workload | Variant | Cache | Arm | Complete / planned | Failures / missing | Median seconds (n) | p90 | Detection / 10 | Baseline exposure / 10 |',
              '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |']
     def fmt(v): return 'N/A' if v is None else '%.6f' % v
@@ -540,8 +572,7 @@ def analyze_locked(bundle, output, check_lock):
                 c['workload'],c['variant'],c['cache'],c['arm'],name,fmt(s['median']),s['n'],fmt(s['p90']),fmt(s['min']),fmt(s['max'])))
     lines += ['', 'All first-event bounds, per-execution outcomes, failures, resources and within-block pairs are in results.json.',
               'T-R minus B1 is total controlled-path cost, not isolated sync-point overhead.', '']
-    output.mkdir(parents=True, exist_ok=False)
-    with pinned_directory(output) as (check_output, retained):
+    with created_directory(output) as (check_output, retained):
         check_lock()
         write_json(retained / 'results.json', payload)
         check_output()

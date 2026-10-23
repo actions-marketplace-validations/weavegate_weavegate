@@ -103,14 +103,28 @@ def freeze(source, destination):
     print('E5_FREEZE_RESULT slots=600 blocks=120 attempts=1')
 
 
+def hook_snapshot(directory):
+    snapshot = {}
+    for path in files(directory):
+        metadata = os.stat(path, follow_symlinks=False)
+        snapshot[str(path.relative_to(directory))] = {
+            'sha256': digest(path), 'identity': (metadata.st_dev, metadata.st_ino)}
+    return snapshot
+
+
 def proof(directory, filename, expected, previous=None):
     receipt = read_json(directory / filename)
     require(all(json_equal(receipt.get(k), v) for k, v in expected.items()), filename + ' boundary differs')
     require(receipt.get('evidence'), filename + ' needs original evidence')
+    identities = {record['identity'] for record in (previous or {}).values()}
     for name, checksum in receipt['evidence'].items():
         require('/' in name and name.split('/')[0] == 'proof', 'proof originals must be under proof/')
         require(previous is None or name not in previous, filename + ' proof must be newly retained')
-        require(digest(child(directory, name)) == checksum, filename + ' original differs')
+        path = child(directory, name)
+        metadata = os.stat(path, follow_symlinks=False)
+        require(metadata.st_nlink == 1 and (metadata.st_dev, metadata.st_ino) not in identities,
+                filename + ' proof must be newly retained, without earlier inode or hard-link aliases')
+        require(digest(path) == checksum, filename + ' original differs')
     return receipt
 
 
@@ -151,8 +165,11 @@ def protect(bundle, active):
 
 
 def unchanged(directory, before):
-    for name, checksum in before.items():
-        require(digest(child(directory, name)) == checksum, 'hook changed original: ' + name)
+    for name, record in before.items():
+        path = child(directory, name)
+        metadata = os.stat(path, follow_symlinks=False)
+        require((metadata.st_dev, metadata.st_ino) == record['identity']
+                and digest(path) == record['sha256'], 'hook changed original: ' + name)
 
 
 def registered(bundle, m, registration):
@@ -242,11 +259,14 @@ def collect_locked(bundle, registration, max_slots):
                         state['cleanup_proven'] = False
                         check_boundary()
                         if m['phase'] == 'measurement':
+                            before_prepare = hook_snapshot(directory)
                             prep = execute(m['hooks']['prepare'], context, directory, 'prepare', [])
                             require(succeeded(prep) and prep.get('containment_proven') is True, 'restore failed')
                             receipt = proof(directory, 'preparation.json', {'host_id': m['environment']['host_id'],
                                             'disk_image': m['environment']['vm_image'], 'fresh_memory': True,
-                                            'clean_data': True, 'vcpus': 4, 'memory_bytes': 16 * 1024**3})
+                                            'clean_data': True, 'vcpus': 4, 'memory_bytes': 16 * 1024**3},
+                                            previous=before_prepare)
+                            unchanged(directory, before_prepare)
                             state['preparation'] = receipt
                             check_boundary()
                             if slot['cache'] == 'warm':
@@ -260,7 +280,7 @@ def collect_locked(bundle, registration, max_slots):
                                         and cmd.get('containment_proven') is True and observed['cleanup_proven']
                                         and not observed['quality_reasons'] and not observed['operational_reasons'], 'warm-up failed')
                                 state['warmup'] = {'seconds': cmd['seconds'], 'exit': cmd['exit']}
-                                before = inventory(directory)
+                                before = hook_snapshot(directory)
                                 live_pins(m)
                                 cleanup = execute(m['hooks']['warm_cleanup'], context, directory, 'warm-cleanup', [])
                                 require(succeeded(cleanup) and cleanup.get('containment_proven') is True,
@@ -272,7 +292,7 @@ def collect_locked(bundle, registration, max_slots):
                                 unchanged(directory, before)
                             check_boundary()
                         live_pins(m)
-                        original = inventory(directory)
+                        original = hook_snapshot(directory)
                         spec = m['commands'][slot['workload']][slot['variant']][slot['arm']]
                         with Monitor(directory):
                             cmd = execute(spec, context, directory, 'run', [])
@@ -293,7 +313,7 @@ def collect_locked(bundle, registration, max_slots):
                         check_boundary()
                         if m['phase'] == 'measurement':
                             live_pins(m)
-                            observed_files = inventory(directory)
+                            observed_files = hook_snapshot(directory)
                             observer = execute(m['hooks']['observe'], context, directory, 'observe', [])
                             require(succeeded(observer) and observer.get('containment_proven') is True, 'observation failed')
                             receipt = proof(directory, 'observation.json', {'host_id': m['environment']['host_id']}, previous=observed_files)
@@ -358,7 +378,7 @@ def collect_locked(bundle, registration, max_slots):
                                     check_directory()
                                     trusted = cleanup_dependencies(m)
                                     live_pins({'pins': {p: m['pins'][p] for p in trusted}})
-                                    before_cleanup = inventory(directory)
+                                    before_cleanup = hook_snapshot(directory)
                                     cleanup = execute(m['hooks']['cleanup'], context, directory, 'cleanup', [])
                                     require(succeeded(cleanup) and cleanup.get('containment_proven') is True,
                                             'cleanup command failed')
