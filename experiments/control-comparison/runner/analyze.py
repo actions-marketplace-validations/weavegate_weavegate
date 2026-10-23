@@ -307,6 +307,8 @@ def product(root, slot, command, expected):
     if saved:
         require(saved in expected['candidates'], 'unregistered schedule')
         if slot['arm'] == 'T-R': require(saved['id'] == WORKLOADS[slot['workload']][6], 'replay schedule differs')
+        elif not 1 <= o['explore_passes'] <= expected['config']['Run']['ExplorePasses']:
+            result['quality_reasons'].append('discovery exceeds registered exploration pass limit')
         trace_valid = True
         try:
             result['trace_observations'] = validate_trace(trace, saved, slot)

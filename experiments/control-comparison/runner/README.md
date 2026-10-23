@@ -507,6 +507,8 @@ The saved discovery must be the final explored execution and retain a discovery
 fingerprint and domain evidence, including for fixed slots. A clean saved schedule
 cannot replace the fixed arm's three exhaustive passes. A missing or different
 candidate is a quality failure and cannot receive stable confirmation. An
+accepted discovery must occur within one to three registered exploration passes;
+extra passes cannot contribute detection or confirmation observations. An
 exhausted search requires zero violation runs, no assertion violations, an empty
 confirmation fingerprint map, no discovery fingerprint, a non-flaky outcome and
 exit zero; contradictory evidence cannot count as an unexpected miss.
@@ -571,8 +573,11 @@ operational failure, including B0, even when its inner receipt has no error. All
 measured commands must have finished without interruption. These failures retain
 earlier domain observations and first-event bounds; clean cap cancellation keeps
 its budget-exhausted classification. Failed/slow values remain in per-slot JSON
-and the started-duration statistics. A contained, finished product command that
-exits 130 solely on the collection cap may have no published run. Its absence is
+and the started-duration statistics. When cancellation is active, a reaped JVM
+terminated by SIGTERM or HotSpot's normal exit 143 is expected cancellation.
+Forced kills, reap deadlines, unrelated exits and connection/cleanup failures
+remain errors even when cancellation is active. A contained, finished product
+command that exits 130 solely on the collection cap may have no published run. Its absence is
 explicitly `collection_cap_before_publication`; independent allocation cleanup
 proof is still required. Partial published runs, unrelated exits, malformed
 evidence and unproven cleanup remain operational failures.

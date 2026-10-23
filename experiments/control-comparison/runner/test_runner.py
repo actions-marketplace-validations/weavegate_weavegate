@@ -588,7 +588,7 @@ class RunnerTests(unittest.TestCase):
         seal(wrong)
         with self.assertRaisesRegex(ValueError,'ordered prefix'):collect(bundle,max_slots=1)
 
-    def product_raw(self, arm, explored_count=None, exhausted=False, saved_index=None, repeat=2):
+    def product_raw(self, arm, explored_count=None, exhausted=False, saved_index=None, repeat=2, passes=None):
         """Construct a valid vulnerable replay/discovery, including stage/trace evidence."""
         root = self.root / arm; root.mkdir()
         directory = root/'raw/runs/constructed'; directory.mkdir(parents=True)
@@ -608,10 +608,12 @@ class RunnerTests(unittest.TestCase):
             for name in ('fixture_reset','adapter_create','adapter_start','schedule_execute','oracle_evaluate','adapter_stop'):
                 span(name, child)
         explored = 0
+        passes = (3 if exhausted else 1) if passes is None else passes
         if arm == 'T-E':
-            for _ in range(3 if exhausted else 1):
+            for number in range(passes):
                 parent = span('explore_pass', 1)
-                prefix = (expected['candidates'][:explored_count] if explored_count is not None
+                prefix = (expected['candidates'] if number < passes - 1 else
+                          expected['candidates'][:explored_count] if explored_count is not None
                           else expected['candidates'] if exhausted
                           else expected['candidates'][:expected['candidates'].index(saved)+1])
                 for candidate in prefix:
@@ -626,7 +628,7 @@ class RunnerTests(unittest.TestCase):
             'oracles': [{'id': WORKLOADS['matching'][2], 'sql': 'constructed', 'expect_rows': 0}],
             'violation_runs': repeat, 'fingerprints': {'a'*64: repeat}, 'schedules_explored': explored,
             'discovery_fingerprint': 'a'*64 if explored else None, 'flaky': False, 'repeat': repeat,
-            'explore_passes': int(bool(explored)),
+            'explore_passes': passes if arm == 'T-E' else 0,
             'assertion_violations': [{'oracle_id': WORKLOADS['matching'][2], 'rows': [{'synthetic': 1}]}]}
         if exhausted:
             observation.update(violation_runs=0, fingerprints={}, discovery_fingerprint=None,
@@ -645,6 +647,24 @@ class RunnerTests(unittest.TestCase):
         write_json(root/'slot.json', {'slot':slot, 'cleanup_proven':True})
         seal(root)
         return root, slot, command, expected
+
+    def test_discovery_must_fit_registered_exploration_pass_limit(self):
+        for count in (0, 1, 2, 3, 4):
+            with self.subTest(passes=count):
+                root, slot, command, expected = self.product_raw('T-E', passes=count)
+                manifest = self.manifest(); manifest['inputs']['matching']['vulnerable'] = expected
+                state = read_json(root/'slot.json'); state['evidence_received_seconds'] = [2, 2]
+                write_json(root/'slot.json', state); seal(root)
+                result = reduce_slot(root, slot, manifest)
+                shutil.rmtree(root)
+                if 1 <= count <= 3:
+                    self.assertEqual(result['status'], 'complete', result['reasons'])
+                    self.assertTrue(result['stable_confirmation'])
+                else:
+                    self.assertEqual(result['status'], 'quality_failed')
+                    self.assertIn('discovery exceeds registered exploration pass limit', result['reasons'])
+                    self.assertFalse(result['stable_confirmation'])
+                    self.assertIsNone(result['usable_evidence_seconds'])
 
     def test_product_artifact_mode_must_match_requested_arm(self):
         for arm, other in (('T-R','T-E'), ('T-E','T-R')):

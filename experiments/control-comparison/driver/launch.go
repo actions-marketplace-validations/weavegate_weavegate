@@ -86,11 +86,7 @@ func launch(ctx context.Context, o options, cfg config.Config, db *fixture.DB, x
 		endStop()
 		// TERM is expected when the collector's budget cancels an otherwise
 		// healthy child. A forced KILL/failed deadline remains an error.
-		if exit, ok := err.(*exec.ExitError); ctx.Err() != nil && ok {
-			if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() && status.Signal() == syscall.SIGTERM {
-				err = nil
-			}
-		}
+		err = cancellationExit(ctx, err)
 		returnErr = errors.Join(returnErr, err)
 		checkctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -160,6 +156,21 @@ func launch(ctx context.Context, o options, cfg config.Config, db *fixture.DB, x
 	}
 	_, err = event(ctx, events, "closed", time.Until(stopDeadline))
 	stopped = err == nil
+	return err
+}
+
+func cancellationExit(ctx context.Context, err error) error {
+	// Only a direct exit status can be an expected cancellation. A joined reap
+	// deadline or cleanup failure must survive even if it contains TERM/143.
+	if exit, ok := err.(*exec.ExitError); ctx.Err() != nil && ok {
+		if status, ok := exit.Sys().(syscall.WaitStatus); ok {
+			// HotSpot's SIGTERM handler exits normally with 128 + SIGTERM.
+			if (status.Signaled() && status.Signal() == syscall.SIGTERM) ||
+				(status.Exited() && status.ExitStatus() == 128+int(syscall.SIGTERM)) {
+				return nil
+			}
+		}
+	}
 	return err
 }
 
