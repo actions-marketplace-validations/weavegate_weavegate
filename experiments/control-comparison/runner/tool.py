@@ -13,7 +13,7 @@ from pathlib import Path
 runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
               init_globals={'dependencies': ('support', 'analyze', 'stream')})
 from support import *
-from analyze import analyze, reduce_slot
+from analyze import analyze, command_receipt, reduce_slot
 from stream import Monitor
 
 
@@ -232,10 +232,14 @@ def collect_locked(bundle, registration, max_slots):
             with ExitStack() as ownership, ExitStack() as activation:
                 activation.enter_context(defer_interrupts())
                 save_progress(bundle, consumed, active=slot['id'])
-                directory.mkdir()
-                check_directory, retained_directory = ownership.enter_context(pinned_directory(directory))
+                check_directory, retained_directory = ownership.enter_context(
+                    created_child(int(check_lock.directories['slots'].name), slot['id'],
+                                  lambda: check_lock(marker=False)))
                 context = dict(slot, trial_dir=str(directory), campaign_dir=str(bundle), redact_env=[])
+                metadata = retained_directory.stat()
+                context['directory_identity'] = (metadata.st_dev, metadata.st_ino)
                 state = {'slot': slot, 'started_at': utc(), 'cleanup_proven': True}
+                check_lock()
                 check_directory()
                 write_json(retained_directory / 'slot.json', state)
                 stop_reason = None
@@ -271,8 +275,12 @@ def collect_locked(bundle, registration, max_slots):
                             check_boundary()
                             if slot['cache'] == 'warm':
                                 live_pins(m)
-                                warm = directory / 'warmup'; warm.mkdir()
-                                warm_context = dict(context, trial_dir=str(warm), arm='T-R')
+                                warm = directory / 'warmup'
+                                _, retained_warm = ownership.enter_context(
+                                    created_child(int(retained_directory.name), 'warmup', check_directory))
+                                metadata = retained_warm.stat()
+                                warm_context = dict(context, trial_dir=str(warm), arm='T-R',
+                                                    directory_identity=(metadata.st_dev, metadata.st_ino))
                                 cmd = execute(m['commands'][slot['workload']][slot['variant']]['T-R'], warm_context, warm, 'run', [])
                                 from analyze import product
                                 observed = product(warm, dict(slot, arm='T-R'), cmd, m['inputs'][slot['workload']][slot['variant']])
@@ -294,7 +302,7 @@ def collect_locked(bundle, registration, max_slots):
                         live_pins(m)
                         original = hook_snapshot(directory)
                         spec = m['commands'][slot['workload']][slot['variant']][slot['arm']]
-                        with Monitor(directory):
+                        with Monitor(directory, identity=context['directory_identity']):
                             cmd = execute(spec, context, directory, 'run', [])
                         require(cmd.get('containment_proven') is True, 'measured process containment unproven')
                         # Baseline evaluations are persisted per execution. Product artifacts
@@ -342,11 +350,11 @@ def collect_locked(bundle, registration, max_slots):
                             path = directory / (name + '.command.json')
                             if not path.exists(): continue
                             try:
-                                command = read_json(path)
+                                command = command_receipt(read_json(path))
                                 require(command.get('started') is not True
                                         or command.get('containment_proven') is True,
                                         'owned process group may remain alive')
-                            except (OSError, ValueError, AttributeError) as error:
+                            except EVIDENCE_ERRORS as error:
                                 stop_reason = 'process containment unproven: ' + name + ': ' + str(error)
                                 errors = state.setdefault('containment_errors', [])
                                 if stop_reason not in errors: errors.append(stop_reason)

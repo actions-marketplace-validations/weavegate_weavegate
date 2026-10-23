@@ -7,6 +7,8 @@ import math
 import re
 import zipfile
 import copy
+import ctypes
+import tempfile
 import runpy
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
@@ -181,6 +183,66 @@ def frozen_sources(bundle):
 
 
 @contextmanager
+def created_child(parent, name, check_parent):
+    """Pin a private staging inode before publishing a new directory name.
+
+    mkdir has no FD-returning form. Bootstrap in a private random namespace,
+    check its identity and emptiness, and publish the retained inode with
+    renameat2(RENAME_NOREPLACE). Never reopen the public name to acquire ownership.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    check_parent()
+    temporary = tempfile.mkdtemp(prefix='.e5-new-', dir=Path('/proc/self/fd') / str(parent))
+    staging = Path(temporary).name
+    descriptor = None
+    owned = False
+    published = False
+    try:
+        identity = os.stat(staging, dir_fd=parent, follow_symlinks=False)
+        descriptor = os.open(staging, flags, dir_fd=parent)
+        require(os.path.samestat(identity, os.fstat(descriptor)) and not os.listdir(descriptor),
+                'new directory replaced before ownership: ' + name)
+        owned = True
+        check_parent()
+        require(os.path.samestat(os.fstat(descriptor), os.stat(staging, dir_fd=parent, follow_symlinks=False)),
+                'staging directory pathname replaced: ' + name)
+        publish_directory(parent, staging, name)
+        published = True
+        def check():
+            check_parent()
+            try:
+                if os.path.samestat(os.fstat(descriptor), os.stat(name, dir_fd=parent, follow_symlinks=False)):
+                    return
+            except OSError:
+                pass
+            raise ValueError('directory pathname replaced: ' + name)
+        check()
+        try:
+            yield check, Path('/proc/self/fd') / str(descriptor)
+        finally:
+            check()
+    finally:
+        # An untrusted/replaced staging pathname is never recursively removed.
+        if not published and owned:
+            try:
+                if os.path.samestat(os.fstat(descriptor), os.stat(staging, dir_fd=parent, follow_symlinks=False)):
+                    os.rmdir(staging, dir_fd=parent)
+            except OSError:
+                pass
+        if descriptor is not None: os.close(descriptor)
+
+
+def publish_directory(parent, source, destination):
+    """Linux no-clobber rename; fail closed if the filesystem lacks support."""
+    rename = ctypes.CDLL(None, use_errno=True).renameat2
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(parent, os.fsencode(source), parent, os.fsencode(destination), 1) != 0:
+        number = ctypes.get_errno()
+        raise OSError(number, os.strerror(number), destination)
+
+
+@contextmanager
 def created_directory(directory):
     """Create through retained, no-follow ancestors, then publish via the leaf FD.
 
@@ -204,31 +266,35 @@ def created_directory(directory):
                 pass
             raise ValueError('directory pathname replaced: ' + str(directory))
     try:
-        for index, name in enumerate(directory.parts[1:], 1):
-            check()
-            parent = descriptors[-1]
-            if index == len(directory.parts) - 1:
-                os.mkdir(name, mode=0o700, dir_fd=parent)
-            else:
+        with ExitStack() as ownership:
+            for index, name in enumerate(directory.parts[1:], 1):
+                check()
+                parent = descriptors[-1]
                 try:
-                    os.mkdir(name, mode=0o700, dir_fd=parent)
-                except FileExistsError:
-                    pass
+                    if index == len(directory.parts) - 1: raise FileNotFoundError()
+                    identity = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    _, retained = ownership.enter_context(created_child(parent, name, check))
+                    # Duplicate our own handle, never reopen the published pathname.
+                    descriptor = os.dup(int(retained.name))
+                else:
+                    descriptor = os.open(name, flags, dir_fd=parent)
+                    if not os.path.samestat(identity, os.fstat(descriptor)):
+                        os.close(descriptor)
+                        raise ValueError('directory pathname replaced: ' + str(directory))
+                descriptors.append(descriptor)
+                edges.append((parent, name, descriptor))
             check()
-            descriptor = os.open(name, flags, dir_fd=parent)
-            descriptors.append(descriptor)
-            edges.append((parent, name, descriptor))
-        check()
-        try:
-            yield check, Path('/proc/self/fd') / str(descriptors[-1])
-        finally:
-            check()
+            try:
+                yield check, Path('/proc/self/fd') / str(descriptors[-1])
+            finally:
+                check()
     finally:
         for descriptor in reversed(descriptors): os.close(descriptor)
 
 
 @contextmanager
-def pinned_directory(directory):
+def pinned_directory(directory, identity=None):
     """Own the original inode and never redirect collector writes after a rename.
 
     /proc/self/fd is collector-local; child argv/cwd keep their registered paths.
@@ -236,6 +302,9 @@ def pinned_directory(directory):
     A lost pathname leaves the existing active checkpoint unrecoverable.
     """
     directory = Path(directory)
+    if identity is None:
+        metadata = os.stat(directory, follow_symlinks=False)
+        identity = (metadata.st_dev, metadata.st_ino)
     descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     def check():
         try:
@@ -245,6 +314,9 @@ def pinned_directory(directory):
             pass
         raise ValueError('directory pathname replaced: ' + str(directory))
     try:
+        metadata = os.fstat(descriptor)
+        require((metadata.st_dev, metadata.st_ino) == identity,
+                'directory pathname replaced before open: ' + str(directory))
         check()
         try:
             yield check, Path('/proc/self/fd') / str(descriptor)
@@ -255,7 +327,7 @@ def pinned_directory(directory):
 
 
 def execute(spec, context, directory, step, secrets):
-    with pinned_directory(directory) as (_, retained):
+    with pinned_directory(directory, context.get('directory_identity')) as (_, retained):
         return shared_execute(spec, context, retained, step, secrets)
 
 
@@ -401,16 +473,17 @@ def campaign_lock(bundle, shared=False):
                     pass
                 raise ValueError('campaign lock pathname replaced')
             with ExitStack() as stack:
-                checks = [stack.enter_context(pinned_directory(bundle / name))[0]
-                          for name in ('frozen', 'progress', 'slots')]
+                directories = {name: stack.enter_context(pinned_directory(bundle / name))
+                               for name in ('frozen', 'progress', 'slots')}
                 def check_all(*, marker=True):
                     # The directory lock still excludes peers if only .lock was
                     # replaced. Safe storage may retain that failure's cleanup
                     # and stop checkpoint without trusting the replaced marker.
                     require(os.path.samestat(os.fstat(descriptor), os.stat(bundle, follow_symlinks=False)),
                             'campaign directory pathname replaced')
-                    for check_directory in checks: check_directory()
+                    for check_directory, _ in directories.values(): check_directory()
                     if marker: check()
+                check_all.directories = {name: retained for name, (_, retained) in directories.items()}
                 check_all()
                 try:
                     yield check_all

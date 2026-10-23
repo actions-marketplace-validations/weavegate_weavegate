@@ -1925,6 +1925,21 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
                 with self.assertRaisesRegex(ValueError, 'stopped'): collect(bundle, registration)
                 shutil.rmtree(bundle)
 
+    def test_malformed_hook_command_cannot_bypass_containment_checkpoint(self):
+        from tool import execute as real_execute
+        bundle, registration = self.measurement_bundle()
+        def execute(spec, context, directory, label, secrets):
+            result = real_execute(spec, context, directory, label, secrets)
+            if label == 'observe':
+                receipt = dict(result); del receipt['started']
+                write_json(directory/(label+'.command.json'), receipt)
+            return result
+        with patch('tool.execute', side_effect=execute): collect(bundle, registration)
+        result = analyze(bundle, self.root/'analysis')
+        self.assertEqual(len(list((bundle/'slots').iterdir())), 1)
+        self.assertIn('containment unproven: observe', result['stopped']['reason'])
+        self.assertTrue(result['slots'][0]['allocation_cleanup_proven'])
+
     def test_stable_confirmation_requires_all_violating_replays(self):
         parent = self.root
         for defect in ('violation_count', 'replay_count', 'trace'):
@@ -2006,6 +2021,226 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
             path.write_bytes(original+b'\n')
             with self.assertRaisesRegex(ValueError, 'checksum'): verify(output)
             path.write_bytes(original)
+
+    def test_new_directory_replacement_before_open_never_adopts_existing_tree(self):
+        parent = self.root
+        for operation in ('collect', 'analysis', 'analysis-parent'):
+            with self.subTest(operation=operation):
+                self.root = parent/operation; self.root.mkdir()
+                bundle, _ = self.bundle()
+                output = self.root/'analysis'
+                target = bundle/'slots'/order()[0]['id'] if operation == 'collect' else output
+                if operation == 'analysis-parent': output = target/'nested'
+                victim = self.root/'victim'; victim.mkdir()
+                for name in ('slot.json', 'results.json', 'report.md', 'SHA256SUMS'):
+                    (victim/name).write_text('must remain unchanged\n')
+                before = inventory(victim)
+                real_open = os.open
+                real_publish = publish_directory
+                swapped = False
+                def swap():
+                    nonlocal swapped
+                    swapped = True
+                    target.rename(self.root/'displaced')
+                    victim.rename(target)
+                def opened(path, flags, *args, **kwargs):
+                    if not swapped and Path(path).name == target.name and target.is_dir():
+                        swap()
+                    return real_open(path, flags, *args, **kwargs)
+                def published(parent_fd, source, destination):
+                    real_publish(parent_fd, source, destination)
+                    if not swapped and destination == target.name: swap()
+                with patch('os.open', side_effect=opened), patch('support.publish_directory', side_effect=published):
+                    if operation == 'collect':
+                        with self.assertRaises(ValueError): collect(bundle, max_slots=1)
+                    else:
+                        with self.assertRaises(ValueError): analyze(bundle, output)
+                self.assertTrue(swapped)
+                self.assertEqual(inventory(target), before)
+                if operation == 'collect':
+                    self.assertEqual(read_json(bundle/'progress/checkpoint.json')['active'], order()[0]['id'])
+
+    def retained_product_bundle(self):
+        root, _, _, expected = self.product_raw('T-E')
+        slot = next(s for s in order() if s['arm'] == 'T-E' and s['variant'] == 'vulnerable'
+                    and s['workload'] == 'matching')
+        m = self.manifest()
+        m['inputs']['matching']['vulnerable'] = expected
+        write_json(self.root/'input.json', m)
+        bundle = self.root/'bundle'; freeze(self.root/'input.json', bundle)
+        consumed = {}
+        for prior in order()[:slot['ordinal']-1]:
+            path = bundle/'slots'/prior['id']; path.mkdir()
+            write_json(path/'slot.json', {'slot':prior, 'cleanup_proven':True, 'error':'constructed preparation failure'})
+            seal(path); consumed[prior['id']] = digest(path/'SHA256SUMS')
+        write_json(root/'slot.json', {'slot':slot, 'cleanup_proven':True}); seal(root)
+        retained = bundle/'slots'/slot['id']; root.rename(retained)
+        consumed[slot['id']] = digest(retained/'SHA256SUMS'); save_progress(bundle, consumed)
+        return bundle, retained, slot, consumed
+
+    def test_confirmation_aggregate_survives_later_operational_failures(self):
+        bundle, root, slot, consumed = self.retained_product_bundle()
+        for failure in ('observation failed', 'cleanup failed'):
+            with self.subTest(failure=failure):
+                state = read_json(root/'slot.json'); state['error'] = failure
+                write_json(root/'slot.json', state); seal(root)
+                consumed[slot['id']] = digest(root/'SHA256SUMS'); save_progress(bundle, consumed)
+                result = analyze(bundle, self.root/failure)
+                row = result['slots'][slot['ordinal']-1]
+                self.assertEqual(row['status'], 'operational_failed')
+                self.assertTrue(row['stable_confirmation'])
+                cell = next(c for c in result['cells'] if all(c[k] == slot[k]
+                            for k in ('workload','variant','cache','arm')))
+                self.assertEqual(cell['stable_confirmations'], 1)
+                self.assertEqual(cell['statuses']['complete'], 0)
+
+    def test_malformed_command_receipts_preserve_all_slot_accounting(self):
+        bundle, root, slot, consumed = self.retained_product_bundle()
+        original = read_json(root/'run.command.json')
+        invalid = [[], None, {}, 'bad']
+        invalid += [{k:v for k,v in original.items() if k != field} for field in original]
+        invalid += [dict(original, **{field:value}) for field, value in
+                    (('seconds', True), ('seconds', -1), ('seconds', '1'), ('seconds', 10**400),
+                     ('started', 1), ('timeout', 'false'), ('exit', False), ('exit', '0'),
+                     ('error', []), ('containment_proven', 1), ('finished', 1), ('interrupted', 0))]
+        for index, value in enumerate(invalid):
+            with self.subTest(receipt=value):
+                write_json(root/'run.command.json', value); seal(root)
+                consumed[slot['id']] = digest(root/'SHA256SUMS'); save_progress(bundle, consumed)
+                result = analyze(bundle, self.root/('receipt-%d' % index))
+                self.assertEqual(len(result['slots']), 600)
+                row = result['slots'][slot['ordinal']-1]
+                self.assertEqual(row['status'], 'operational_failed')
+                self.assertTrue(any('command receipt' in r for r in row['reasons']))
+
+    def test_publication_never_replaces_existing_empty_directory(self):
+        bundle, _ = self.bundle()
+        output = self.root/'analysis'
+        real_publish = publish_directory
+        occupied = []
+        def publish(parent, source, destination):
+            if destination == output.name:
+                output.mkdir()
+                occupied.append(output.stat())
+            real_publish(parent, source, destination)
+        with patch('support.publish_directory', side_effect=publish):
+            with self.assertRaises(FileExistsError): analyze(bundle, output)
+        self.assertTrue(os.path.samestat(occupied[0], output.stat()))
+        self.assertEqual(list(output.iterdir()), [])
+
+    def test_staging_swap_never_writes_to_frozen_inputs(self):
+        parent = self.root
+        for operation in ('collect', 'analyze'):
+            for boundary in ('created', 'opened', 'published'):
+                with self.subTest(operation=operation, boundary=boundary):
+                    self.root = parent/(operation+'-'+boundary); self.root.mkdir()
+                    bundle, _ = self.bundle()
+                    victim = bundle/'frozen'; before = inventory(victim)
+                    real_mkdir, real_open, real_publish = os.mkdir, os.open, publish_directory
+                    targets = []
+                    def swap(path):
+                        path.rename(self.root/'displaced')
+                        victim.rename(path)
+                        targets.append(path)
+                    def mkdir(path, *args, **kwargs):
+                        real_mkdir(path, *args, **kwargs)
+                        if not targets and boundary == 'created' and Path(path).name.startswith('.e5-new-'):
+                            swap(Path(path))
+                    def opened(path, flags, *args, **kwargs):
+                        if not targets and boundary == 'opened' and Path(path).name.startswith('.e5-new-'):
+                            swap(Path('/proc/self/fd')/str(kwargs['dir_fd'])/path)
+                        return real_open(path, flags, *args, **kwargs)
+                    def publish(parent, source, destination):
+                        if not targets and boundary == 'published':
+                            swap(Path('/proc/self/fd')/str(parent)/source)
+                        real_publish(parent, source, destination)
+                        if targets and boundary == 'published': targets[-1] = targets[-1].with_name(destination)
+                    with patch('os.mkdir', side_effect=mkdir), patch('os.open', side_effect=opened), \
+                         patch('support.publish_directory', side_effect=publish):
+                        with self.assertRaises(ValueError):
+                            if operation == 'collect': collect(bundle, max_slots=1)
+                            else: analyze(bundle, self.root/'analysis')
+                    self.assertEqual(len(targets), 1)
+                    # Resolve the moved tree after retained parent FDs have closed.
+                    moved = next(p.parent for p in self.root.rglob('protocol.md') if p != self.protocol)
+                    self.assertEqual(inventory(moved), before)
+
+    def test_lifecycle_entry_cannot_reacquire_substituted_slot(self):
+        from tool import execute as real_execute, Monitor as RealMonitor
+        parent = self.root
+        for phase in ('prepare', 'run', 'observe', 'cleanup', 'monitor'):
+            with self.subTest(phase=phase):
+                self.root = parent/phase; self.root.mkdir()
+                bundle, registration = self.measurement_bundle()
+                frozen = bundle/'frozen'; before = inventory(frozen)
+                targets = []
+                def swap(directory):
+                    directory.rename(self.root/'displaced-slot')
+                    frozen.rename(directory)
+                    targets.append(directory)
+                def execute(spec, context, directory, step, secrets):
+                    if step == phase: swap(directory)
+                    return real_execute(spec, context, directory, step, secrets)
+                def monitor(directory, *args, **kwargs):
+                    if phase == 'monitor': swap(directory)
+                    return RealMonitor(directory, *args, **kwargs)
+                with patch('tool.execute', side_effect=execute), patch('tool.Monitor', side_effect=monitor):
+                    with self.assertRaises((ValueError, FileNotFoundError)): collect(bundle, registration)
+                self.assertEqual(len(targets), 1)
+                self.assertEqual(inventory(targets[0]), before)
+                self.assertEqual(read_json(bundle/'progress/checkpoint.json')['active'], order()[0]['id'])
+
+    def test_warmup_publication_does_not_adopt_frozen_directory(self):
+        real_mkdir, real_publish = Path.mkdir, publish_directory
+        originals, targets = [], []
+        def swap(directory):
+            frozen = self.root/'measurement/frozen'
+            originals.append(inventory(frozen))
+            directory.rename(self.root/'displaced-warmup')
+            frozen.rename(directory)
+            targets.append(directory)
+        def mkdir(path, *args, **kwargs):
+            real_mkdir(path, *args, **kwargs)
+            if path.name == 'warmup': swap(path)
+        def publish(parent, source, destination):
+            real_publish(parent, source, destination)
+            if destination == 'warmup': swap((Path('/proc/self/fd')/str(parent)/destination).resolve())
+        with patch.object(Path, 'mkdir', mkdir), patch('support.publish_directory', side_effect=publish):
+            with self.assertRaises((ValueError, FileNotFoundError)): self.warm_collection({})
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(inventory(targets[0]), originals[0])
+
+    def test_invalid_product_counts_cannot_abort_analysis_rendering(self):
+        bundle, root, slot, consumed = self.retained_product_bundle()
+        directory = root/'raw/runs/constructed'
+        original = read_json(directory/'observation.json')
+        changes = [{'fingerprints': {'a'*64: 'two'}}, {'fingerprints': {'a'*64: True}},
+                   {'repeat': True}, {'schedules_explored': -1}, {'violation_runs': '2'},
+                   {'flaky': 0}, {'explore_passes': 1.0}]
+        for index, change in enumerate(changes):
+            with self.subTest(change=change):
+                observation = dict(original, **change)
+                merged = read_json(directory/'report.json'); merged['observation'] = observation
+                write_json(directory/'observation.json', observation); write_json(directory/'report.json', merged)
+                seal(root); consumed[slot['id']] = digest(root/'SHA256SUMS'); save_progress(bundle, consumed)
+                result = analyze(bundle, self.root/('counts-%d' % index))
+                self.assertEqual(len(result['slots']), 600)
+                self.assertEqual(result['slots'][slot['ordinal']-1]['status'], 'operational_failed')
+
+    def test_quality_failed_confirmations_are_not_aggregated(self):
+        bundle, root, slot, consumed = self.retained_product_bundle()
+        directory = root/'raw/runs/constructed'
+        observation = read_json(directory/'observation.json')
+        observation['assertion_violations'][0]['rows'] = [{'unexpected': 1}]
+        merged = read_json(directory/'report.json'); merged['observation'] = observation
+        write_json(directory/'observation.json', observation); write_json(directory/'report.json', merged)
+        seal(root); consumed[slot['id']] = digest(root/'SHA256SUMS'); save_progress(bundle, consumed)
+        result = analyze(bundle, self.root/'analysis')
+        row = result['slots'][slot['ordinal']-1]
+        self.assertEqual(row['status'], 'quality_failed')
+        self.assertFalse(row['stable_confirmation'])
+        cell = next(c for c in result['cells'] if all(c[k] == slot[k] for k in ('workload','variant','cache','arm')))
+        self.assertEqual(cell['stable_confirmations'], 0)
 
     def test_boundaries_authenticate_prior_slots_against_checkpoint(self):
         from tool import execute as real_execute
@@ -2458,6 +2693,7 @@ p.symlink_to(target, target_is_directory=True)
         output = parent/'analysis'
         before = inventory(bundle/'frozen')
         real_mkdir = os.mkdir
+        real_publish = publish_directory
         swapped = False
         def mkdir(path, *args, **kwargs):
             nonlocal swapped
@@ -2466,7 +2702,14 @@ p.symlink_to(target, target_is_directory=True)
                 parent.rename(self.root/'original-publication')
                 parent.symlink_to(bundle/'frozen', target_is_directory=True)
             return real_mkdir(path, *args, **kwargs)
-        with patch('os.mkdir', side_effect=mkdir):
+        def published(parent_fd, source, destination):
+            nonlocal swapped
+            if not swapped and destination == output.name:
+                swapped = True
+                parent.rename(self.root/'original-publication')
+                parent.symlink_to(bundle/'frozen', target_is_directory=True)
+            real_publish(parent_fd, source, destination)
+        with patch('os.mkdir', side_effect=mkdir), patch('support.publish_directory', side_effect=published):
             with self.assertRaisesRegex(ValueError, 'directory.*replaced'):
                 analyze(bundle, output)
         self.assertTrue(swapped)

@@ -9,8 +9,9 @@ from support import digest, pinned_directory, read_json, write_json
 
 
 class Monitor:
-    def __init__(self, directory):
+    def __init__(self, directory, identity=None):
         self.directory = directory
+        self.identity = identity
         self.receipts = {}
         self.error = None
         self.stop = threading.Event()
@@ -33,7 +34,7 @@ class Monitor:
             self.error = str(error)
 
     def __enter__(self):
-        self.ownership = pinned_directory(self.directory)
+        self.ownership = pinned_directory(self.directory, self.identity)
         self.check_directory, self.directory = self.ownership.__enter__()
         self.start = time.monotonic_ns()
         self.thread = threading.Thread(target=self.watch, daemon=True)

@@ -402,6 +402,18 @@ the original directory handle, so replacing a pathname cannot redirect recovery
 writes into another campaign area. A replaced active or control directory stops
 collection with the existing unfinished checkpoint; it is never resealed or
 retried. Offline validation also rejects symlinked bundle and slot directories.
+New slots, warm-up directories, analysis directories and missing output parents are first opened in
+a private random staging namespace. The empty staging inode is pinned before
+Linux `renameat2(RENAME_NOREPLACE)` publishes its name relative to the retained
+parent descriptor. No public pathname is reopened to acquire the new directory;
+publication refuses even an existing empty destination and checks the published
+inode before writing. Unsupported filesystems fail closed without a replacing
+rename fallback. Staging bootstrap, like the collector process itself, requires
+an account under the collector operator's control; it is not a sandbox against
+another process with that account's full permissions.
+The retained slot or warm-up inode identity also accompanies every command and
+stream observer. Reopening its registered pathname must match that identity
+before a receipt, stream record or command output can be written.
 Every collection boundary compares the exact prior-slot directory set and each
 slot's seal digest with the progress checkpoint. Deleting a slot, inserting one,
 or rewriting and resealing earlier evidence stops collection before another
@@ -425,8 +437,17 @@ the exact collected prefix. The source also includes a shell-quoted replay
 command and its argv using the frozen tool. Its deterministic sibling destination
 `<bundle-name>-analysis-replay` must be new; select another new directory if it
 already exists. After relocating a bundle, update the command paths accordingly.
-Malformed product/baseline JSON structures are operational slot failures and
+Malformed command receipts and product/baseline JSON structures are operational slot failures and
 remain in the 600-slot accounting, rather than aborting the entire reduction.
+Command fields are validated before reduction: lifecycle flags are booleans,
+duration is finite and nonnegative, exit is an integer or null, and error is text
+or null. Invalid receipts retain `command_receipt_valid=false` and null command
+metrics; an explicitly true `started` flag still contributes to started counts.
+Product execution and fingerprint counts must be integers, not booleans or text.
+The collection checkpoint applies the same command schema to measured, warm-up
+and lifecycle-hook receipts before accepting process containment. A missing flag
+cannot be treated as proof that a command never started, even when host cleanup
+succeeded; malformed command evidence stops collection without a replacement.
 Completed artifacts require exactly one command timing root with all spans
 attached to it, nonnegative integer clock fields and a root duration no greater
 than the finite outer invocation duration. Missing, duplicate or overlong roots
@@ -461,6 +482,10 @@ and timing stays unknown, as the protocol requires.
 Unknown alignment uses the protocol's interval bounds; absent or ambiguous
 timing stays unknown. Domain discovery, receipt of usable evidence, stable
 confirmation and clean final completion are separate fields.
+Cell `stable_confirmations` counts validated confirmation blocks even if later
+observation or cleanup fails; status counts retain that operational failure.
+Inconsistent domain rows, execution stages or traversal evidence invalidate
+confirmation instead of entering that numerator.
 Command receipts retain `collector_start_ns`, the collector monotonic origin used
 for invocation duration. Product validation records its elapsed time from that
 same origin as a zero-width interval; validation after the cap is late even when

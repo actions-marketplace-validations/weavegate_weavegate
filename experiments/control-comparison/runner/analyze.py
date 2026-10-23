@@ -225,6 +225,13 @@ def product(root, slot, command, expected):
     require(len(manifests) == 1, 'one original product run required')
     directory = manifests[0].parent
     m = read_json(manifests[0]); o = read_json(directory / 'observation.json')
+    require(all(type(o.get(key)) is int and o[key] >= 0
+                for key in ('repeat', 'violation_runs', 'schedules_explored', 'explore_passes')),
+            'invalid product execution counts')
+    require(type(o.get('flaky')) is bool and isinstance(o.get('fingerprints'), dict)
+            and all(isinstance(key, str) and re.fullmatch(r'[0-9a-f]{64}', key)
+                    and type(count) is int and count > 0 for key, count in o['fingerprints'].items()),
+            'invalid product fingerprint counts')
     scenario = read_json(directory / 'scenario.json'); trace = read_json(directory / 'trace.json')
     merged = read_json(directory / 'report.json')
     require(merged['manifest'] == m and merged['scenario'] == scenario and merged['observation'] == o,
@@ -337,7 +344,25 @@ def product(root, slot, command, expected):
                                                       cmd['duration_ns'] / 1e9, command['seconds'])
     result['unexpected_miss'] = (result['search_exhausted'] and slot['variant'] == 'vulnerable'
                                 and not result['quality_reasons'] and not result['operational_reasons'])
+    # Operational cleanup does not undo confirmation. Inconsistent domain,
+    # traversal or execution evidence cannot establish a validated confirmation.
+    result['stable_confirmation'] = result['stable_confirmation'] and not result['quality_reasons']
     return result
+
+
+def command_receipt(value):
+    """Validate every field consumed by reduction before trusting any metrics."""
+    require(isinstance(value, dict), 'object required')
+    for key in ('started', 'finished', 'interrupted', 'timeout', 'containment_proven'):
+        require(type(value[key]) is bool, 'invalid ' + key)
+    require(type(value['seconds']) in (int, float) and math.isfinite(value['seconds'])
+            and value['seconds'] >= 0, 'invalid seconds')
+    require(value['exit'] is None or type(value['exit']) is int, 'invalid exit')
+    require(value['error'] is None or isinstance(value['error'], str), 'invalid error')
+    if 'collector_start_ns' in value:
+        require(type(value['collector_start_ns']) is int and value['collector_start_ns'] >= 0,
+                'invalid collector clock')
+    return value
 
 
 def reduce_slot(root, slot, manifest):
@@ -364,23 +389,32 @@ def reduce_slot(root, slot, manifest):
         result.update(status='preparation_failed', cleanup_proven=state.get('cleanup_proven') is True,
                       reasons=operational if state.get('error') else ['preparation incomplete'] + operational)
         return result
-    command = read_json(root / 'run.command.json')
-    result.update(started=command['started'], invocation_seconds=command['seconds'], exit=command['exit'],
-                  budget_expired=command['timeout'] or command['seconds'] > slot['cap_seconds'])
+    command = None
+    result.update(invocation_seconds=None, exit=None, budget_expired=None, command_receipt_valid=False)
     expected = manifest['inputs'][slot['workload']][slot['variant']]
     try:
-        evidence = (baseline if slot['arm'].startswith('B') else product)(root, slot, command, expected)
+        raw_command = read_json(root / 'run.command.json')
+        if isinstance(raw_command, dict): result['started'] = raw_command.get('started') is True
+        command = command_receipt(raw_command)
     except EVIDENCE_ERRORS as error:
-        evidence = {'operational_reasons': ['missing/invalid evidence: ' + str(error)],
+        evidence = {'operational_reasons': ['missing/invalid command receipt: ' + str(error)],
                     'quality_reasons': [], 'cleanup_proven': False, 'first_event_seconds': None}
+    else:
+        result.update(command_receipt_valid=True, started=command['started'], invocation_seconds=command['seconds'],
+                      exit=command['exit'], budget_expired=command['timeout'] or command['seconds'] > slot['cap_seconds'])
+        try:
+            evidence = (baseline if slot['arm'].startswith('B') else product)(root, slot, command, expected)
+        except EVIDENCE_ERRORS as error:
+            evidence = {'operational_reasons': ['missing/invalid evidence: ' + str(error)],
+                        'quality_reasons': [], 'cleanup_proven': False, 'first_event_seconds': None}
     result.update(evidence)
     operational = evidence['operational_reasons'] + operational
-    if command['error'] or not command['started'] or not command['containment_proven']:
+    if command and (command['error'] or not command['started'] or not command['containment_proven']):
         operational.append('command spawn/containment failure')
-    if command.get('finished') is not True or command.get('interrupted') is not False:
+    if command and (command['finished'] is not True or command['interrupted'] is not False):
         operational.append('command unfinished/interrupted')
     received = state.get('evidence_received_seconds')
-    if 'evidence_received_seconds' in state:
+    if command is not None and 'evidence_received_seconds' in state:
         try:
             require(isinstance(received, list) and len(received) == 2
                     and all(type(v) in (int, float) and math.isfinite(v) for v in received)
@@ -481,7 +515,7 @@ def analyze_locked(bundle, output, check_lock):
                                                              for r in complete]) if arm in ('B1','T-R') else None,
                         'observed_detections': sum(detected_in_budget(r) for r in values),
                         'valid_exposure_blocks': sum(r.get('valid_evaluations', 0) > 0 for r in values),
-                        'stable_confirmations': sum(r.get('stable_confirmation', False) and r['status'] == 'complete' for r in values),
+                        'stable_confirmations': sum(r.get('stable_confirmation', False) for r in values),
                         'first_lower_seconds_conditional': stats([r['first_event_seconds'][0] for r in values if r.get('first_event_seconds')]),
                         'first_upper_seconds_conditional': stats([r['first_event_seconds'][1] for r in values if r.get('first_event_seconds')])})
     pairs = []
