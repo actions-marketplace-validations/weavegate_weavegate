@@ -1,7 +1,6 @@
 """Reuse the E1/E2 standard-library process and bundle primitives, not its design."""
 import os
 import sys
-import importlib
 import fcntl
 import math
 import re
@@ -13,8 +12,8 @@ import runpy
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
 from urllib.parse import urlsplit
-runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
-              init_globals={'dependencies': ('fixture_contract', 'snapshot')})
+_imports = runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
+                         init_globals={'dependencies': ('fixture_contract', 'snapshot')})
 from fixture_contract import FIXTURE_INPUTS, FIXTURE_REVISION, REFERENCE_BUILD
 from snapshot import frozen_launch, runtime_identity
 
@@ -23,7 +22,7 @@ SHARED = HERE / 'shared'
 if not SHARED.is_dir():
     SHARED = HERE.parents[1] / 'gate-performance' / 'harness'
 SHARED = SHARED.resolve()
-SHARED_MODULES = ('common', 'plan', 'redaction', 'execution')
+SHARED_MODULES = _imports['SHARED_MODULES']
 sys.path.insert(0, str(SHARED))
 # Check cached modules before execution can import them transitively, too.
 for name in SHARED_MODULES:
@@ -31,7 +30,7 @@ for name in SHARED_MODULES:
     if module is not None and Path(getattr(module, '__file__', '') or '').resolve() != SHARED / (name + '.py'):
         raise ValueError('shared module location differs: ' + name)
 for name in SHARED_MODULES:
-    module = importlib.import_module(name)
+    module = _imports['load_source'](name, SHARED, 'shared')
     if Path(getattr(module, '__file__', '') or '').resolve() != SHARED / (name + '.py'):
         raise ValueError('shared module location differs: ' + name)
 # The shared harness also has a tool.py. Restore runner import precedence once
@@ -41,9 +40,7 @@ from common import (canonical, child, digest, files, json_equal, positive, read_
                     timestamp, utc, verify as shared_verify, write_bytes, write_json)  # noqa: E402
 from execution import defer_interrupts, execute as shared_execute, succeeded  # noqa: E402
 
-RUNNER_SOURCES = ('analyze.py', 'fixture_contract.py', 'imports.py', 'prepare.py',
-                  'record_fixture_contract.py', 'smoke.py', 'stream.py', 'support.py',
-                  'test_runner.py', 'tool.py', 'snapshot.py')
+RUNNER_SOURCES = _imports['RUNNER_SOURCES']
 
 SEED = 'weavegate-e5-v1-20261019'
 PROTOCOL_SHA256 = 'e2d1b47e705665772fca53d3f53f209778f4790af8b6c269c8e113379fbd8959'
@@ -187,6 +184,7 @@ def frozen_sources(bundle):
     expected = read_json(bundle / 'frozen' / 'manifest.json').get('source_inventory')
     names = set(RUNNER_SOURCES) | {'shared/' + m + '.py' for m in SHARED_MODULES}
     require(isinstance(expected, dict) and set(expected) == names, 'registered source inventory differs')
+    _imports['check_source_inventory'](bundle / 'frozen' / 'source')
     for directory, actual, names in (('source', HERE, RUNNER_SOURCES),
                                      ('source/shared', SHARED, tuple(m + '.py' for m in SHARED_MODULES))):
         retained = bundle / 'frozen' / directory

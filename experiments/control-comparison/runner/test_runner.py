@@ -3,14 +3,21 @@
 import copy
 import fcntl
 import json
+import importlib.util
+import py_compile
+import runpy
 import shutil
 import signal
 import socket
 import subprocess
+import struct
 import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
+from pathlib import Path
+runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
+              init_globals={'dependencies': ('support', 'analyze', 'tool')})
 from support import *
 from analyze import analyze, baseline, bound, membership, product, reduce_slot, stages, stats, validate_trace
 from tool import collect, freeze, registered, validate, proof, hook_snapshot, unchanged
@@ -1157,6 +1164,71 @@ class RunnerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('shared module location differs', result.stderr)
 
+    def test_frozen_replay_rejects_unregistered_bytecode_before_import(self):
+        bundle, _ = self.bundle()
+        source = bundle/'frozen/source'
+        marker = self.root/'bytecode-executed'
+        payload = self.root/'payload.py'
+        payload.write_text('from pathlib import Path\nPath('+repr(str(marker))+').touch()\nraise SystemExit(42)\n')
+        for name in ('support', 'analyze', 'fixture_contract', 'shared/common', 'shared/execution'):
+            with self.subTest(module=name):
+                original = source/(name+'.py')
+                cache = Path(importlib.util.cache_from_source(str(original)))
+                cache.parent.mkdir(exist_ok=True)
+                py_compile.compile(str(payload), cfile=str(cache), dfile=str(original), doraise=True,
+                                   invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+                data = cache.read_bytes()
+                cache.write_bytes(data[:8] + struct.pack('<II', int(original.stat().st_mtime), original.stat().st_size) + data[16:])
+                seal(bundle/'frozen')  # Local resealing does not register bytecode.
+                result = subprocess.run([sys.executable, '-B', str(source/'tool.py'), 'analyze',
+                                         str(bundle), str(self.root/'analysis')], text=True, capture_output=True)
+                executed = marker.exists()
+                if executed: marker.unlink()
+                shutil.rmtree(cache.parent)
+                self.assertFalse(executed, name+' bytecode ran before validation')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('source inventory', result.stderr)
+                self.assertFalse((self.root/'analysis').exists())
+
+    def test_frozen_source_inventory_rejects_non_source_entries(self):
+        bundle, _ = self.bundle()
+        for name in ('source/__pycache__', 'source/shared/__pycache__', 'source/support.pyc',
+                     'source/shared/common.so', 'source/unregistered.txt'):
+            with self.subTest(name=name):
+                path = bundle/'frozen'/name
+                if name.endswith('__pycache__'): path.mkdir()
+                else: path.write_bytes(b'unregistered')
+                seal(bundle/'frozen')
+                try:
+                    with self.assertRaisesRegex(ValueError, 'source inventory'):
+                        analyze(bundle, self.root/'analysis')
+                finally:
+                    if path.is_dir(): path.rmdir()
+                    else: path.unlink()
+
+    def test_frozen_imports_ignore_external_bytecode_cache(self):
+        bundle, _ = self.bundle()
+        source = bundle/'frozen/source'
+        prefix = self.root/'external-cache'
+        marker = self.root/'bytecode-executed'
+        payload = self.root/'payload.py'
+        payload.write_text('from pathlib import Path\nPath('+repr(str(marker))+').touch()\nraise SystemExit(42)\n')
+        for name in ('support', 'analyze', 'fixture_contract', 'shared/common', 'shared/plan', 'shared/execution'):
+            original = source/(name+'.py')
+            with patch.object(sys, 'pycache_prefix', str(prefix)):
+                cache = Path(importlib.util.cache_from_source(str(original)))
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            py_compile.compile(str(payload), cfile=str(cache), dfile=str(original), doraise=True,
+                               invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            data = cache.read_bytes()
+            cache.write_bytes(data[:8] + struct.pack('<II', int(original.stat().st_mtime), original.stat().st_size) + data[16:])
+        result = subprocess.run([sys.executable, '-B', str(source/'tool.py'), 'analyze',
+                                 str(bundle), str(self.root/'analysis')],
+            env=dict(os.environ, PYTHONPYCACHEPREFIX=str(prefix)), text=True, capture_output=True)
+        self.assertFalse(marker.exists(), result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.root/'analysis/results.json').is_file())
+
     def test_preloaded_local_modules_cannot_replace_frozen_tools(self):
         bundle, _ = self.bundle()
         ambient = self.root/'ambient'; ambient.mkdir()
@@ -2157,12 +2229,16 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
                 if operation == 'collect':
                     self.assertEqual(read_json(bundle/'progress/checkpoint.json')['active'], order()[0]['id'])
 
-    def retained_product_bundle(self):
-        root, _, _, expected = self.product_raw('T-E')
-        slot = next(s for s in order() if s['arm'] == 'T-E' and s['variant'] == 'vulnerable'
+    def retained_product_bundle(self, arm='T-E', variant='vulnerable'):
+        root, _, _, expected = self.product_raw(arm)
+        slot = next(s for s in order() if s['arm'] == arm and s['variant'] == variant
                     and s['workload'] == 'matching')
+        directory = root/'raw/runs/constructed'
+        product_manifest = read_json(directory/'manifest.json'); product_manifest['variant'] = variant
+        merged = read_json(directory/'report.json'); merged['manifest'] = product_manifest
+        write_json(directory/'manifest.json', product_manifest); write_json(directory/'report.json', merged)
         m = self.manifest()
-        m['inputs']['matching']['vulnerable'] = expected
+        m['inputs']['matching'][variant] = expected
         write_json(self.root/'input.json', m)
         bundle = self.root/'bundle'; freeze(self.root/'input.json', bundle)
         consumed = {}
@@ -2174,6 +2250,64 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
         retained = bundle/'slots'/slot['id']; root.rename(retained)
         consumed[slot['id']] = digest(retained/'SHA256SUMS'); save_progress(bundle, consumed)
         return bundle, retained, slot, consumed
+
+    def test_fixed_product_detection_survives_expected_outcome_failure(self):
+        parent = self.root
+        for arm in ('T-R', 'T-E'):
+            with self.subTest(arm=arm):
+                self.root = parent/arm; self.root.mkdir()
+                bundle, root, slot, consumed = self.retained_product_bundle(arm, 'fixed')
+                state = read_json(root/'slot.json'); state['evidence_received_seconds'] = [2, 2]
+                write_json(root/'slot.json', state); seal(root)
+                consumed[slot['id']] = digest(root/'SHA256SUMS'); save_progress(bundle, consumed)
+                result = analyze(bundle, self.root/'analysis')
+                row = result['slots'][slot['ordinal']-1]
+                self.assertEqual(row['status'], 'quality_failed')
+                self.assertIn('fixed domain violation', row['reasons'])
+                self.assertEqual(row['usable_evidence_seconds'], [2, 2])
+                cell = next(c for c in result['cells'] if all(c[k] == slot[k]
+                            for k in ('workload','variant','cache','arm')))
+                self.assertEqual(cell['observed_detections'], 1)
+                self.assertEqual(cell['statuses']['complete'], 0)
+                directory = root/'raw/runs/constructed'
+                originals = {name:read_json(directory/(name+'.json'))
+                             for name in ('manifest', 'observation', 'trace', 'report')}
+                for defect in ('rows', 'trace', 'stage', 'count', 'receipt'):
+                    with self.subTest(defect=defect):
+                        documents = copy.deepcopy(originals)
+                        current_state = dict(state)
+                        if defect == 'rows':
+                            documents['observation']['assertion_violations'][0]['rows'] = [{'wrong':1}]
+                        elif defect == 'trace': documents['trace']['events'] = []
+                        elif defect == 'stage':
+                            next(s for s in documents['manifest']['timings']['spans']
+                                 if s['name'] == 'fixture_reset')['name'] = 'invalid_stage'
+                        elif defect == 'count': documents['observation']['violation_runs'] = 1
+                        else: current_state['evidence_received_seconds'] = [0, 0]
+                        documents['report'].update(manifest=documents['manifest'], observation=documents['observation'])
+                        for name, value in documents.items(): write_json(directory/(name+'.json'), value)
+                        write_json(root/'slot.json', current_state); seal(root)
+                        row = reduce_slot(root, slot, read_json(bundle/'frozen/manifest.json'))
+                        self.assertIsNone(row['usable_evidence_seconds'])
+                        self.assertNotEqual(row['status'], 'complete')
+
+    def test_exhausted_search_rejects_phantom_fingerprints(self):
+        root, slot, command, expected = self.product_raw('T-E', exhausted=True)
+        directory = root/'raw/runs/constructed'
+        manifest = self.manifest(); manifest['inputs']['matching']['vulnerable'] = expected
+        self.assertEqual(reduce_slot(root, slot, manifest)['status'], 'complete')
+        original = read_json(directory/'observation.json')
+        for change in ({'fingerprints':{'a'*64:2}}, {'discovery_fingerprint':'b'*64},
+                       {'discovery_fingerprint':''}, {'discovery_fingerprint':False}):
+            with self.subTest(change=change):
+                observation = dict(original, **change)
+                merged = read_json(directory/'report.json'); merged['observation'] = observation
+                write_json(directory/'report.json', merged); write_json(directory/'observation.json', observation)
+                seal(root); result = reduce_slot(root, slot, manifest)
+                self.assertEqual(result['status'], 'quality_failed')
+                self.assertIn('exhausted search contains confirmation/discovery fingerprints', result['reasons'])
+                self.assertFalse(result['unexpected_miss'])
+                self.assertFalse(result['stable_confirmation'])
 
     def test_confirmation_aggregate_survives_later_operational_failures(self):
         bundle, root, slot, consumed = self.retained_product_bundle()

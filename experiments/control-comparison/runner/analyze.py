@@ -294,8 +294,9 @@ def product(root, slot, command, expected):
     assertion = WORKLOADS[slot['workload']][2]
     violations = o['assertion_violations']
     domain = any(v['oracle_id'] == assertion and v['rows'] for v in violations)
+    outcome_reasons = []
     if any(v['oracle_id'] != assertion for v in violations): result['quality_reasons'].append('receipt assertion failed')
-    if domain and slot['variant'] == 'fixed': result['quality_reasons'].append('fixed domain violation')
+    if domain and slot['variant'] == 'fixed': outcome_reasons.append('fixed domain violation')
     if o['flaky'] or command['exit'] == 3: result['quality_reasons'].append('flaky')
     if command['exit'] not in (0, 2, 3) and not command['timeout']: result['operational_reasons'].append('product operational exit')
     repeat = expected['counts']['T-R']
@@ -315,7 +316,13 @@ def product(root, slot, command, expected):
         stable = o['repeat'] == repeat and list(o['fingerprints'].values()) == [repeat] and not o['flaky']
         if not stable: result['quality_reasons'].append('repeat/fingerprint mismatch')
         want = repeat if slot['variant'] == 'vulnerable' else 0
-        if o['violation_runs'] != want or (want > 0) != domain: result['quality_reasons'].append('unexpected domain outcome')
+        if o['violation_runs'] != want or (want > 0) != domain:
+            # A fully reproduced violation in a fixed control is an unexpected
+            # outcome, but remains valid detection evidence. Contradictory
+            # counts/outcomes still invalidate the receipt.
+            reasons = (outcome_reasons if slot['variant'] == 'fixed' and domain
+                       and o['violation_runs'] == repeat else result['quality_reasons'])
+            reasons.append('unexpected domain outcome')
         if slot['arm'] == 'T-E' and (not domain or not o.get('discovery_fingerprint')):
             result['quality_reasons'].append('saved exploration schedule lacks discovery evidence')
         if domain and not domain_rows_match(violations, assertion, expected):
@@ -326,6 +333,8 @@ def product(root, slot, command, expected):
     else:
         if o['schedules_explored'] != len(expected['candidates']) * 3 or o['explore_passes'] != 3:
             result['quality_reasons'].append('incomplete exhaustive search')
+        if o['fingerprints'] or o.get('discovery_fingerprint') is not None:
+            result['quality_reasons'].append('exhausted search contains confirmation/discovery fingerprints')
         if o['violation_runs'] != 0 or violations or o['flaky'] or command['exit'] != 0:
             result['quality_reasons'].append('exhausted search has non-clean outcome')
     if (command['exit'] == 0 and (domain or o['flaky'])) or (command['exit'] == 2 and (not domain or o['flaky'])):
@@ -383,6 +392,8 @@ def product(root, slot, command, expected):
                 event, cmd = evaluations[0], commands[0]
                 result['first_event_seconds'] = bound((event['start_ns'] + event['duration_ns'] - cmd['start_ns']) / 1e9,
                                                       cmd['duration_ns'] / 1e9, command['seconds'])
+    result['receipt_valid'] = not result['quality_reasons']
+    result['quality_reasons'].extend(outcome_reasons)
     result['unexpected_miss'] = (result['search_exhausted'] and slot['variant'] == 'vulnerable'
                                 and not result['quality_reasons'] and not result['operational_reasons'])
     # Operational cleanup does not undo confirmation. Inconsistent domain,
@@ -446,7 +457,8 @@ def reduce_slot(root, slot, manifest):
                       exit=command['exit'], budget_expired=command['timeout'] or command['seconds'] > slot['cap_seconds'])
         try:
             evidence = (baseline if slot['arm'].startswith('B') else product)(root, slot, command, expected)
-            evidence_valid = not evidence.get('evidence_absence') and not evidence['quality_reasons']
+            evidence_valid = (not evidence.get('evidence_absence')
+                              and evidence.get('receipt_valid', not evidence['quality_reasons']))
         except EVIDENCE_ERRORS as error:
             evidence = {'operational_reasons': ['missing/invalid evidence: ' + str(error)],
                         'quality_reasons': [], 'cleanup_proven': False, 'first_event_seconds': None}

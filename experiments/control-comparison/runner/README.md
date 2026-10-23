@@ -108,8 +108,12 @@ and shared process/bundle primitives into `frozen/source/`, including the
 redaction module's `plan.py` dependency. Runner and shared imports take precedence
 over ambient Python packages and their resolved locations are checked before use,
 including modules already loaded by Python startup code. Entrypoints execute the
-local import guard by absolute path so a cached guard cannot replace it. These
-origin checks do not sandbox arbitrary Python startup code.
+local import guard by absolute path so a cached guard cannot replace it. Before
+dependency imports, frozen source directories must contain exactly the registered
+files and the `shared/` directory; caches, extra files and symlinks are rejected.
+Runner and shared dependencies compile directly from `.py` bytes, ignoring cached
+bytecode even with an external `PYTHONPYCACHEPREFIX`. `-B` alone only prevents cache
+writes. These checks do not sandbox arbitrary Python startup code.
 Freeze generates `source_inventory` in the manifest with the exact required
 local/shared module names and SHA-256 digests. The public manifest hash therefore
 binds the source bytes too. Collection and analysis reject missing, added or
@@ -503,9 +507,9 @@ The saved discovery must be the final explored execution and retain a discovery
 fingerprint and domain evidence, including for fixed slots. A clean saved schedule
 cannot replace the fixed arm's three exhaustive passes. A missing or different
 candidate is a quality failure and cannot receive stable confirmation. An
-exhausted search requires zero violation runs, no assertion violations, a
-non-flaky outcome and exit zero; contradictory evidence cannot count as an
-unexpected miss.
+exhausted search requires zero violation runs, no assertion violations, an empty
+confirmation fingerprint map, no discovery fingerprint, a non-flaky outcome and
+exit zero; contradictory evidence cannot count as an unexpected miss.
 When confirmation reproduces zero violations, the CLI retains the original
 discovery's assertion rows. That mapped discovery keeps its first-event bound
 even though its fingerprint is absent from confirmation and the outcome is flaky.
@@ -518,6 +522,10 @@ Cell `stable_confirmations` counts validated confirmation blocks even if later
 observation or cleanup fails; status counts retain that operational failure.
 Valid product receipt timing and in-budget detection likewise survive those later
 failures; malformed receipt times or invalid evidence never enter that numerator.
+A structurally valid, fully reproduced fixed-arm domain violation also retains
+its detection and receipt timing while the unexpected outcome makes the slot
+quality-failed. Receipt validity is separate from expected-outcome classification;
+this does not admit inconsistent counts, traces, domain rows or execution stages.
 Inconsistent domain rows, execution stages or traversal evidence invalidate
 confirmation instead of entering that numerator.
 Command receipts retain `collector_start_ns`, the collector monotonic origin used
