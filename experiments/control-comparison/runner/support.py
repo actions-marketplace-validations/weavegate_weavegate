@@ -79,6 +79,13 @@ def campaign_deviations(manifest):
     return value
 
 
+def campaign_id(manifest):
+    value = manifest.get('campaign_id')
+    require(isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', value),
+            'campaign ID must start with an ASCII letter or digit and contain only letters, digits, dot, underscore or hyphen')
+    return value
+
+
 def unsupported_declarations(manifest):
     declarations = manifest.get('unsupported', {})
     require(isinstance(declarations, dict), 'unsupported must be a workload/arm mapping')

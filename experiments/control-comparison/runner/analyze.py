@@ -3,6 +3,7 @@ from collections import Counter, defaultdict
 import html
 import runpy
 import shlex
+import signal
 from pathlib import Path
 runpy.run_path(str(Path(__file__).resolve().with_name('imports.py')),
               init_globals={'dependencies': ('support',)})
@@ -85,6 +86,11 @@ def baseline(root, slot, command, expected):
               'stable_confirmation': False, 'cleanup_proven': False, 'executions': []}
     raw = root / 'raw'
     final_receipt = (raw / 'run.json').is_file()
+    cap_killed = (not final_receipt and command['timeout']
+                  and command['exit'] in (-signal.SIGTERM, -signal.SIGKILL,
+                                          128 + signal.SIGTERM, 128 + signal.SIGKILL)
+                  and command['started'] and command['finished'] and not command['interrupted']
+                  and command['error'] is None and command['containment_proven'])
     if final_receipt:
         run = read_json(raw / 'run.json')
         require(run.get('arm') == slot['arm'] and run.get('variant') == slot['variant'],
@@ -95,9 +101,15 @@ def baseline(root, slot, command, expected):
         # A killed process may have already published valid evaluations. Keep
         # those observations; missing final cleanup/timing cannot erase them.
         run = {'cleanup_proven': False, 'timings': {'spans': []}}
-        result['operational_reasons'].append('missing final baseline receipt')
+        if cap_killed:
+            # Allocation cleanup is independently required by reduce_slot.
+            # A killed driver cannot publish its deferred final receipt.
+            result['evidence_absence'] = 'collection_cap_before_publication'
+        else:
+            result['operational_reasons'].append('missing final baseline receipt')
     result['cleanup_proven'] = run.get('cleanup_proven') is True
-    if not result['cleanup_proven']: result['operational_reasons'].append('fixture cleanup unproven')
+    if not result['cleanup_proven'] and not cap_killed:
+        result['operational_reasons'].append('fixture cleanup unproven')
     if run.get('error') and not (command['timeout'] and run.get('cancellation_only') is True):
         result['operational_reasons'].append(run['error'])
     if command['exit'] != 0 and not command['timeout']:
@@ -105,7 +117,10 @@ def baseline(root, slot, command, expected):
     whole = command['seconds']
     result['stages'] = stages(run['timings']['spans'], whole, allow_missing=not final_receipt)
     if slot['arm'] == 'B0':
-        require(run['executions'] == 0 and run.get('seed') is not None, 'B0 lifecycle evidence missing')
+        if final_receipt:
+            require(run['executions'] == 0 and run.get('seed') is not None, 'B0 lifecycle evidence missing')
+        else:
+            require(not list(raw.glob('execution-*.json')), 'B0 contains execution evidence')
         return result
     assertion = WORKLOADS[slot['workload']][2]
     names = [a['ID'] for a in expected['config']['Oracle']['Assertions']]
@@ -263,6 +278,9 @@ def product(root, slot, command, expected):
     require(m.get('image') == expected['config']['Target']['DB'], 'product image differs from effective config')
     require(o.get('mode') == {'T-R': 'replay', 'T-E': 'explore'}[slot['arm']],
             'product mode differs from requested arm')
+    if slot['arm'] == 'T-R':
+        require(o['schedules_explored'] == 0 and o['explore_passes'] == 0,
+                'replay contains exploration')
     require(m['sut_sha256'] == 'sha256:' + expected['jar_sha256'] and m['isolation_level'] == 'REPEATABLE-READ', 'product input/isolation differs')
     require(o['oracles'] == [{'id': a['ID'], 'sql': a['SQL'], 'expect_rows': a['ExpectRows']}
                              for a in expected['config']['Oracle']['Assertions']], 'product assertions differ')
@@ -505,6 +523,7 @@ def analyze_locked(bundle, output, check_lock):
     verify(bundle / 'progress')
     retained_registration(bundle, read_json(bundle / 'progress' / 'checkpoint.json'))
     manifest = read_json(bundle / 'frozen' / 'manifest.json')
+    campaign_id(manifest)
     domain_expectations(manifest)
     prerequisite_completion(manifest, bundle / 'frozen' / 'inputs')
     if manifest['phase'] == 'measurement':

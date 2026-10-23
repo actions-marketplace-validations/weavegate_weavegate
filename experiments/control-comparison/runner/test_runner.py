@@ -111,6 +111,33 @@ class RunnerTests(unittest.TestCase):
         m = self.manifest(); m['inputs']['quota']['fixed']['candidates'].reverse()
         with self.assertRaisesRegex(ValueError, 'candidate'): validate(m)
 
+    def test_campaign_id_rejects_report_markup_before_freeze(self):
+        m = self.manifest()
+        for value in ('campaign\n\n## Complete results', 'campaign\rreplacement',
+                      '<b>campaign</b>', '[campaign](https://example.com)',
+                      'campaign\x00', 'two words', '', None, 7):
+            with self.subTest(value=value):
+                if (self.root/'invalid-campaign').exists(): shutil.rmtree(self.root/'invalid-campaign')
+                m['campaign_id'] = value
+                write_json(self.root/'input.json', m)
+                with self.assertRaisesRegex(ValueError, 'campaign ID'):
+                    freeze(self.root/'input.json', self.root/'invalid-campaign')
+                self.assertFalse((self.root/'invalid-campaign').exists())
+        m['campaign_id'] = 'E5-2026.10_23'
+        write_json(self.root/'input.json', m)
+        freeze(self.root/'input.json', self.root/'valid-campaign')
+        analyze(self.root/'valid-campaign', self.root/'valid-analysis')
+        self.assertIn('Campaign: E5-2026.10_23\n', (self.root/'valid-analysis/report.md').read_text())
+
+    def test_offline_analysis_rejects_campaign_markup(self):
+        bundle, manifest = self.bundle()
+        manifest = read_json(bundle/'frozen/manifest.json')
+        manifest['campaign_id'] = 'campaign\n\n## Complete results'
+        write_json(bundle/'frozen/manifest.json', manifest); seal(bundle/'frozen')
+        with self.assertRaisesRegex(ValueError, 'campaign ID'):
+            analyze(bundle, self.root/'analysis')
+        self.assertFalse((self.root/'analysis').exists())
+
     def test_measurement_cannot_use_short_counts(self):
         m = self.manifest(); m['phase'] = 'measurement'
         with self.assertRaisesRegex(ValueError, 'counts'): validate(m)
@@ -465,6 +492,60 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(r['domain_violations'],2)
         self.assertTrue(r['operational_reasons'])
         self.assertIsNone(r['first_event_seconds'])
+
+    def test_cap_killed_baselines_preserve_exposure_as_budget_exhausted(self):
+        manifest = self.manifest()
+        for arm in ('B0', 'B1', 'B2'):
+            with self.subTest(arm=arm):
+                if (self.root/'slot').exists(): shutil.rmtree(self.root/'slot')
+                slot = dict(order()[0], workload='quota', variant='vulnerable', arm=arm)
+                root, slot, command = self.raw(slot)
+                (root/'raw/run.json').unlink()
+                if arm == 'B0':
+                    for path in (root/'raw').glob('execution-*.json'): path.unlink()
+                command.update(timeout=True, exit=-signal.SIGKILL, seconds=slot['cap_seconds']+1)
+                write_json(root/'run.command.json', command); seal(root)
+                result = reduce_slot(root, slot, manifest)
+                self.assertEqual(result['status'], 'budget_exhausted', result['reasons'])
+                self.assertEqual(result['evidence_absence'], 'collection_cap_before_publication')
+                self.assertFalse(result['cleanup_proven'])
+                self.assertTrue(result['allocation_cleanup_proven'])
+                self.assertIsNone(result['first_event_seconds'])
+                self.assertIsNone(result['usable_evidence_seconds'])
+                self.assertEqual(result['valid_evaluations'], 0 if arm == 'B0' else 2)
+                self.assertEqual(result['domain_violations'], 0 if arm == 'B0' else 2)
+                for code in (-signal.SIGTERM, 128 + signal.SIGTERM, 128 + signal.SIGKILL):
+                    write_json(root/'run.command.json', dict(command, exit=code)); seal(root)
+                    self.assertEqual(reduce_slot(root, slot, manifest)['status'], 'budget_exhausted')
+                write_json(root/'run.command.json', command)
+                if arm != 'B0':
+                    path = root/'raw/execution-002.json'; execution = read_json(path); path.unlink()
+                    seal(root); result = reduce_slot(root, slot, manifest)
+                    self.assertEqual(result['status'], 'budget_exhausted')
+                    self.assertEqual((result['valid_evaluations'], result['unobserved']), (1, 1))
+                    self.assertEqual(result['unobserved_slots'], [{'index':2, 'reason':'collection_cap'}])
+                    write_json(path, execution)
+                for changes in ({'timeout':False}, {'exit':1}, {'exit':0}, {'started':False},
+                                {'finished':False}, {'interrupted':True},
+                                {'error':'wait failed'}, {'containment_proven':False}):
+                    with self.subTest(changes=changes):
+                        write_json(root/'run.command.json', dict(command, **changes)); seal(root)
+                        self.assertEqual(reduce_slot(root, slot, manifest)['status'], 'operational_failed')
+                write_json(root/'run.command.json', command)
+                write_json(root/'slot.json', {'slot':slot, 'cleanup_proven':False}); seal(root)
+                self.assertEqual(reduce_slot(root, slot, manifest)['status'], 'operational_failed')
+                write_json(root/'slot.json', {'slot':slot, 'cleanup_proven':True})
+                (root/'raw/run.json').write_text('{partial'); seal(root)
+                self.assertEqual(reduce_slot(root, slot, manifest)['status'], 'operational_failed')
+                (root/'raw/run.json').unlink()
+                if arm != 'B0':
+                    path = root/'raw/execution-002.json'
+                    execution = read_json(path); execution['error'] = 'database failed'
+                    write_json(path, execution); seal(root)
+                    result = reduce_slot(root, slot, manifest)
+                    self.assertEqual(result['status'], 'operational_failed')
+                    self.assertEqual(result['valid_evaluations'], 1)
+                shutil.rmtree(root)
 
     def test_matching_fixed_skip_requires_prior_terminal(self):
         saved={'id':'saved','steps':[{'worker':'w1','point':'before_insert_assignment'},
@@ -2161,6 +2242,24 @@ name={'prepare':'preparation','observe':'observation','cleanup':'cleanup','warm_
                 if partial: (root/'raw/runs/incomplete').mkdir(parents=True)
                 command['exit'] = code; write_json(root/'run.command.json', command); seal(root)
                 self.assertEqual(reduce_slot(root, slot, manifest)['status'], 'operational_failed')
+
+    def test_replay_rejects_consistent_exploration_evidence(self):
+        root, slot, command, expected = self.product_raw('T-E')
+        directory = root/'raw/runs/constructed'
+        slot['arm'] = 'T-R'
+        manifest = self.manifest(); manifest['inputs']['matching']['vulnerable'] = expected
+        original = read_json(directory/'observation.json')
+        for counts in ({}, {'schedules_explored':0}, {'explore_passes':0}):
+            with self.subTest(counts=counts):
+                observation = dict(original, mode='replay', **counts)
+                merged = read_json(directory/'report.json'); merged['observation'] = observation
+                write_json(directory/'report.json', merged)
+                write_json(directory/'observation.json', observation)
+                write_json(root/'slot.json', {'slot':slot, 'cleanup_proven':True}); seal(root)
+                result = reduce_slot(root, slot, manifest)
+                self.assertEqual(result['status'], 'operational_failed')
+                self.assertIn('replay contains exploration', ' '.join(result['reasons']))
+                self.assertIsNone(result['usable_evidence_seconds'])
 
     def test_baseline_domain_endpoint_precedes_secondary_assertion(self):
         root, slot, command = self.raw()

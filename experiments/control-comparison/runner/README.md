@@ -185,7 +185,7 @@ This reference build is not E1 registration or acceptance evidence.
 
 | Manifest field | Required content |
 | --- | --- |
-| `schema`, `protocol_revision`, `phase`, `campaign_id`, `seed` | `1`, `1`, `measurement`, unique ID, fixed protocol seed |
+| `schema`, `protocol_revision`, `phase`, `campaign_id`, `seed` | `1`, `1`, `measurement`, unique ASCII ID (`[A-Za-z0-9][A-Za-z0-9._-]*`), fixed protocol seed |
 | `protocol` | Original protocol `path` and SHA-256; its published hash is checked |
 | `fixture_revision` | The reviewed fixture commit named by the protocol |
 | `pins` | Absolute path to SHA-256 for every binary, launcher, library, script, source, config, SQL, schedule and prerequisite file used |
@@ -568,6 +568,13 @@ exits 130 solely on the collection cap may have no published run. Its absence is
 explicitly `collection_cap_before_publication`; independent allocation cleanup
 proof is still required. Partial published runs, unrelated exits, malformed
 evidence and unproven cleanup remain operational failures.
+The same absence classification applies to a baseline terminated by TERM or KILL
+at its collection cap before the deferred final receipt is published, with
+finished command containment and independent allocation cleanup proven. Driver
+cleanup remains unproven in the row; completed execution receipts still count
+toward baseline exposure. Ordinary exit codes, malformed final receipts and
+execution errors do not qualify. T-R requires zero explored schedules and zero
+exploration passes; exploration evidence cannot enter replay cost summaries.
 Complete-pair cost summaries use paired differences/ratios, never a
 difference of medians. B2 retains attempted/valid/violating counts, `x/m`,
 `x/planned`, and missing exposure. Repeated executions are not independent host

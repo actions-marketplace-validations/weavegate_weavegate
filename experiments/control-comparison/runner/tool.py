@@ -22,7 +22,7 @@ def validate(m):
     require(m.get('phase') in ('feasibility', 'measurement'), 'phase required')
     campaign_deviations(m)
     unsupported_declarations(m)
-    require(isinstance(m.get('campaign_id'), str) and m['campaign_id'], 'campaign ID required')
+    campaign_id(m)
     require(m.get('seed') == SEED, 'protocol seed differs')
     require(m.get('protocol', {}).get('sha256') == PROTOCOL_SHA256, 'frozen protocol differs')
     require(m.get('pins'), 'live input inventory required')
