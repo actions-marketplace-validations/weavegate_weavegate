@@ -89,6 +89,50 @@ development control, not E1's published `v0.2.0` baseline. The reviewed
 candidate still needs E1's independent allocations, resource accounting and
 published-baseline comparison. Public headline results remain unchanged.
 
+## Retained local result (2026-10-25 UTC)
+
+All eight gates completed on one shared WSL host with Corretto 21.0.8,
+Spring Boot 4.0.8 and MySQL 8.4. The same original application JAR was used in
+each pair. All deterministic files matched byte for byte; cleanup observations
+found no new MySQL container, snapshot JVM or leftover JAR snapshot. The
+parent is `6584060`; candidate production sources match `d929c11`. The binary
+was built before that commit; its original build metadata and SHA-256 remain
+in the bundle. No binary or application JAR bytes are bundled.
+
+| Workload | Parent seconds | Candidate seconds | Change | Executions per arm |
+| --- | ---: | ---: | ---: | ---: |
+| fixed replay | 125.573 | 116.888 | -6.9% | 20 |
+| fixed explore | 114.396 | 106.605 | -6.8% | 18 |
+| vulnerable replay | 109.505 | 99.189 | -9.4% | 20 |
+| vulnerable explore | 115.402 | 104.564 | -9.4% | 21 |
+
+| Java stage (median of 3 startups) | Parent ms | Candidate ms |
+| --- | ---: | ---: |
+| initialize | 2291.338 | 1775.072 |
+| registration | 24.350 | 48.884 |
+| probe | 680.143 | 583.440 |
+
+These are descriptive paired differences, with one pair per workload. The
+primary fixed replay was 6.9% shorter here, below E1's 15% point-estimate
+criterion; there is no confidence interval or confirmation claim. Both
+Spring initialization and the first DB probe were shorter in the separate
+three-startup attribution sample, while registration was slower. That small
+sample is not a decomposition of the later whole-gate differences. The latter
+include variable database provisioning and teardown as well as JVM startup.
+The probe does not distinguish JDBC class loading from connection establishment.
+
+The [original evidence bundle](results.tar.gz) contains both attribution
+runs, all whole-gate artifacts and command vectors, source/build identities,
+collector sources, the implementation patch and a complete SHA-256 inventory.
+Reproduce the tables and validate counts, budgets, manifest facts and artifact
+equality without Docker or a JVM:
+
+```bash
+mkdir -p /tmp/startup-evidence
+tar -xzf experiments/gate-performance/startup/results.tar.gz -C /tmp/startup-evidence
+python3 -B experiments/gate-performance/startup/summarize.py /tmp/startup-evidence/evidence
+```
+
 ## Review boundary
 
 The production patch changes compilation policy only. C1 can reduce throughput

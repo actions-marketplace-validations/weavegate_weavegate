@@ -93,9 +93,8 @@ process. It leaves class verification, Spring initialization, registration,
 the database probe and every run/cleanup budget intact. It requires a Java 21
 VM supporting that HotSpot option. Set `jvm_tuning: none` for a different VM
 or a compute-heavy workflow that benefits from higher compilation tiers;
-startup tuning is not a throughput guarantee. An unsupported option fails
-startup through the existing supervision path; the CLI does not retry with a
-different policy. The manifest records the selected policy as `sut_jvm_tuning`.
+startup tuning is not a throughput guarantee. If the VM rejects the option, startup fails through the existing
+supervision path; the CLI does not retry with a different policy. The manifest records the selected policy as `sut_jvm_tuning`.
 This adds no JAR packaging, training run, cache or SDK upgrade requirement.
 
 A Spring Boot executable JAR built by `spring-boot-maven-plugin` `repackage`
