@@ -142,5 +142,53 @@ the lease-returning DB probe, single-use adapters, process reaping and fixture
 quarantine remain in their original paths. Unit tests exercise both argv forms;
 the mini JVM integration observes the actual argument in two fresh sessions
 and the selected manifest policy. Repeated Go acceptance and the Spring paired
-suite cover lifecycle failures and deterministic outcomes. Candidate freeze and
-the complete Go/Java/paired manifests remain the A4/E1 handoff gate.
+suite cover lifecycle failures and deterministic outcomes. Complete
+Go/Java/paired manifests are retained below; independent A4 review and
+candidate freeze still precede E1 confirmation.
+
+## Repeated acceptance and release compatibility
+
+The separate [validation bundle](validation.tar.gz) retains logs and complete
+Go/Java/paired manifests for production implementation `d929c11`, plus the
+Docker-backed Go package checks and adoption-example artifacts. The later
+commits only add evidence and documentation. Reproduce manifest accounting
+from the repository root after extracting the bundle:
+
+```bash
+mkdir -p /tmp/startup-validation
+tar -xzf experiments/gate-performance/startup/validation.tar.gz -C /tmp/startup-validation
+(cd /tmp/startup-validation/validation && sha256sum -c SHA256SUMS)
+for result in go/go.json java/java.json paired.json; do
+  python3 scripts/check-external-sut-acceptance.py \
+    --results "/tmp/startup-validation/validation/acceptance/$result" --require-complete
+done
+```
+
+The Go adapter ran 20 repetitions and 20 race-enabled repetitions. Java ran
+2,124 tests without failures, errors or skips, with 20 repetitions for its
+acceptance witnesses. Its Surefire VM used `-XX:TieredStopAtLevel=1`; existing
+child-process test launchers retain their own argv. The paired suite exercises
+the product launcher and actual Spring/JDBC path, with 20 repetitions each
+for vulnerable and fixed replay, rollback, process death and cancellation,
+plus exploration with 20 confirmation replays. It checks process reaping,
+connection cleanup and fixture state before reuse. Go, Java and paired
+manifests pass `--require-complete` with 72, 60 and 2 passing rows respectively.
+
+The first paired attempt was interrupted by session shutdown during rollback.
+Its unmodified `paired-interrupted.log` is retained separately and does not
+satisfy any acceptance row; the completed rerun supplies `paired.log`.
+
+The retained adoption-example sources from the earlier local pilot were built
+with the published SDK **0.2.0**. Both that release's checksum-verified CLI
+and the candidate replayed each variant 20 times: vulnerable produced 20/20
+violations, fixed produced 20/20 PASS, each retained one fingerprint and
+`sch_6f1ffd61cc07`, and all five deterministic files matched byte for byte.
+The same application JAR was used for each comparison; its dependency
+inventory and SHA-256 are retained. Build/launch commands and original
+artifacts are in `adoption/`, `run-adoption-checks.sh` and
+`run-release-comparison.sh`. These are compatibility checks, not additional
+performance observations. The workflows ran concurrently with other tests,
+so their durations do not enter the tuning table or E1.
+
+A4 still owns independent review and candidate freeze; the registered E1
+confirmation and its public performance claims remain separate work.
