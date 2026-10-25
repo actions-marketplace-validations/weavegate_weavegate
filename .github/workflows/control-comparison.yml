@@ -1,0 +1,66 @@
+name: E5 control feasibility
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e5-feasibility-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  feasibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Build fixed fixture inputs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          mkdir -p e5-evidence/build
+          sdk/java/mvnw -B -f sdk/java/pom.xml -Dmaven.test.skip=true install 2>&1 | tee e5-evidence/build/sdk.log
+          for fixture in spring-matching spring-quota spring-job-claim; do
+            sdk/java/mvnw -B -f "fixtures/$fixture/app/pom.xml" package 2>&1 | tee "e5-evidence/build/$fixture.log"
+          done
+          docker pull mysql:8.4
+          docker image inspect mysql:8.4 > e5-evidence/build/mysql-image.json
+          git rev-parse HEAD > e5-evidence/build/revision.txt
+          java -version > e5-evidence/build/java.txt 2>&1
+          go version > e5-evidence/build/go.txt
+      - name: Check accounting and real uncontrolled execution
+        run: |
+          go test ./experiments/control-comparison/driver -v -count=20 2>&1 | tee e5-evidence/reap.log
+          grep -F 'E5_REAP_RESULT deadline=shared kill=bounded exit=retained' e5-evidence/reap.log
+          sudo python3 -B experiments/control-comparison/runner/test_runner.py 2>&1 | tee e5-evidence/accounting.log
+          grep -F 'E5_RUNNER_RESULT order=600 accounting=all_slots cleanup=quarantine analysis=deterministic' e5-evidence/accounting.log
+          sudo env "PATH=$PATH" "JAVA_HOME=$JAVA_HOME" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" \
+            python3 -B experiments/control-comparison/runner/smoke.py "$GITHUB_WORKSPACE/e5-evidence/smoke" 2>&1 | tee e5-evidence/smoke.log
+          for workload in matching quota job; do
+            for variant in vulnerable fixed; do
+              grep -F "E5_BASELINE_RESULT workload=$workload variant=$variant executions=20 proxy=original hooks=inactive oracle=existing resets=checked cleanup=proved" e5-evidence/smoke.log
+            done
+          done
+          grep -F 'E5_SMOKE_RESULT arms=B0,B1,B2,T-R,T-E sample=feasibility raw=json analysis=identical' e5-evidence/smoke.log
+      - name: Retain original feasibility evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e5-control-feasibility
+          path: e5-evidence/
+          retention-days: 30
