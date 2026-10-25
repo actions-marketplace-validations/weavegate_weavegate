@@ -127,6 +127,9 @@ func TestSpringMatchingPairedReplay(t *testing.T) {
 			dir := newestRunDir(t, replayOut)
 			requireRunTimings(t, dir)
 			observation := readObservation(t, dir)
+			if got := readManifest(t, dir).SUTJVMTuning; got != "startup" {
+				t.Fatalf("JVM tuning = %q, want startup", got)
+			}
 			if observation.Flaky || len(observation.Fingerprints) != 1 || observation.Repeat != springRepeat {
 				t.Fatalf("replay determinism: flaky=%v fingerprints=%v repeat=%d", observation.Flaky, observation.Fingerprints, observation.Repeat)
 			}

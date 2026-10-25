@@ -42,7 +42,9 @@ public final class MiniPeer {
             if (type.equals("start")) {
                 run = field(frame, "run");
                 session = field(frame, "session");
-                Files.writeString(Path.of(field(frame, "wire_log")), run + " " + session + "\n",
+                String tuning = java.lang.management.ManagementFactory.getRuntimeMXBean()
+                    .getInputArguments().contains("-XX:TieredStopAtLevel=1") ? "startup" : "none";
+                Files.writeString(Path.of(field(frame, "wire_log")), run + " " + session + " " + tuning + "\n",
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
                 field(frame, "password");
                 if (!frame.contains("\"commands\":[\"ping\"]") || !frame.contains("\"points\":[\"at\"]"))

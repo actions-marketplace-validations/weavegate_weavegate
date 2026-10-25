@@ -283,6 +283,15 @@ run:
 The [configuration reference](../reference/config.md#external-jvm) defines each
 key and its limits.
 
+For source builds after `v0.2.0`, the CLI defaults to
+`java -XX:TieredStopAtLevel=1 -jar <snapshot>` to reduce work in each fresh
+JVM's startup. The existing executable JAR and SDK work without rebuilding
+for this option. Java 21 HotSpot supports it; use `jvm_tuning: none` under
+`target.sut.external` for a VM without it or to keep the JVM's ordinary
+compilation policy. This key is not supported by the `v0.2.0` CLI used in
+this guide's captured examples. Compare the complete gate for a compute-heavy
+workflow because higher compilation tiers can improve application throughput.
+
 ## 7. Reproduce the race locally
 
 Build the JARs, then let weavegate explore candidate schedules for the two

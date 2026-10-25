@@ -33,6 +33,7 @@ func TestExternalConfigLoad(t *testing.T) {
 		t.Fatalf("java path = %q", javaCfg.Target.SUT.External.Java)
 	}
 	cases := map[string]string{
+		"unknown JVM tuning":     strings.Replace(base, "      java: java\n", "      java: java\n      jvm_tuning: fast\n", 1),
 		"missing launch":         strings.Replace(base, "    external:\n", "    absent:\n", 1),
 		"entrypoint combination": strings.Replace(base, "    variant: vulnerable\n", "    entrypoint: matching-slice\n    variant: vulnerable\n", 1),
 		"missing java":           strings.Replace(base, "      java: java\n", "", 1),
@@ -41,6 +42,12 @@ func TestExternalConfigLoad(t *testing.T) {
 		"startup budget":         strings.Replace(base, "      startup_timeout_ms: 30000\n", "      startup_timeout_ms: 0\n", 1),
 		"cancel exceeds stop":    strings.Replace(base, "      cancel_timeout_ms: 5000\n", "      cancel_timeout_ms: 20000\n", 1),
 		"unknown protocol key":   strings.Replace(base, "      capacity: 2\n", "      capacity: 2\n      wire_version: 2\n", 1),
+	}
+	for _, tuning := range []string{"startup", "none"} {
+		cfg, err := Load(writeConfig(t, strings.Replace(base, "      java: java\n", "      java: java\n      jvm_tuning: "+tuning+"\n", 1)))
+		if err != nil || cfg.Target.SUT.External.JVMTuning != tuning {
+			t.Fatalf("JVM tuning %s: cfg=%+v err=%v", tuning, cfg, err)
+		}
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {

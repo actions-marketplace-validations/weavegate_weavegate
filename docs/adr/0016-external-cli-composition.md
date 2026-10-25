@@ -5,12 +5,27 @@
 
 The CLI accepts `target.sut.adapter: external` with one owned `java -jar`
 launch. `target.sut.external` supplies an executable, a prebuilt executable
-JAR, worker capacity, and startup/cancellation/stop budgets. It accepts no
-shell string, extra argv, environment overrides, attach mode, or configured
+JAR, worker capacity, a closed JVM tuning choice, and startup/cancellation/stop
+budgets. It accepts no shell string, arbitrary extra argv, environment overrides, attach mode, or configured
 database credential. The fixture descriptor supplies the application account
 and password only in the private `start` frame after provisioning. Schema,
 seed, scenario, worker parameters, and SQL assertions remain config data.
 The Go-native entrypoint registry and its variant list remain independent.
+
+For [#172](https://github.com/weavegate/weavegate/issues/172), omitted or
+`startup` tuning adds the fixed HotSpot `-XX:TieredStopAtLevel=1` option before
+`-jar`. Each schedule's short-lived JVM avoids higher-tier compilation work;
+application initialization and readiness checks still finish before admission.
+`none` keeps the original launch for unsupported VMs or workloads that benefit
+from higher compilation tiers. This is a startup/throughput tradeoff, not a
+timeout change or an assertion that every application is faster. There is no
+automatic fallback that could execute application initialization twice.
+The self-contained JAR snapshot, fresh process, protocol and cleanup rules
+are unchanged. No extra build step or persistent cache is introduced. Local
+attribution and whole-gate evidence are separate from E1 confirmation; see
+[startup tuning](../../experiments/gate-performance/startup/README.md).
+`manifest.sut_jvm_tuning` retains the selected policy as additive volatile
+metadata under [ADR 0007](0007-artifact-version-policy.md).
 
 Before provisioning, the CLI resolves the Java executable and JAR relative to
 the config file (except a bare Java command resolved from `PATH`), checks that

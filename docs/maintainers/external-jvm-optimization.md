@@ -1,6 +1,6 @@
-# External JVM optimization proposal
+# External JVM startup optimization
 
-- Status: **Proposed; maintainer decision pending** (A2 / D-050).
+- Status: **A3 candidate implemented; A4 review and E1 confirmation pending**.
 - Date: 2026-10-19.
 - Issue: [#172](https://github.com/weavegate/weavegate/issues/172).
 - Evidence: [local tuning campaign](../../experiments/gate-performance/local-pilot/README.md), merged in [PR #182](https://github.com/weavegate/weavegate/pull/182).
@@ -15,18 +15,20 @@ readiness checks. This targets the largest observed stage in every workload
 while preserving the isolation boundary selected by
 [ADR 0010](../adr/0010-external-sut-protocol.md).
 
-The proposed decision selects that direction for the next implementation
-task. It does not select a proven Java optimization: the retained measurements
-do not separate class loading, Spring initialization, command validation,
-database probing and protocol overhead. The implementation task must first
-separate those costs, then present a measured candidate within this boundary.
-An extracted layout or startup cache is a separate contract proposal if the
-existing launch boundary cannot deliver a useful reduction.
+The A3 implementation follows this direction with a fixed HotSpot compilation
+option, `-XX:TieredStopAtLevel=1`, and the explicit `jvm_tuning: none` escape
+path. The [local implementation evidence](../../experiments/gate-performance/startup/README.md)
+separates Spring initialization, registration and database probing before
+comparing complete gates with an unmodified application JAR. The launch
+contract and throughput tradeoff are recorded in
+[ADR 0016](../adr/0016-external-cli-composition.md).
 
-This is a decision draft, not an accepted ADR or an implementation. D-050
-remains open until the maintainer records a choice. The local campaign is
-adequate for prioritizing an engineering investigation; it does not complete
-E1's registered pilot or establish that this direction will meet E1's target.
+This is an implementation candidate, not a frozen E1 treatment or an audited
+performance claim. The original A2 proposal and its comparison of alternatives
+below remain the design rationale. An extracted layout, startup cache,
+parallel execution or JVM reuse still requires its own contract proposal.
+The local campaigns do not complete E1's registered pilot or establish that
+this direction will meet E1's target.
 
 ## Evidence and its limits
 
@@ -124,8 +126,8 @@ assumed equivalent merely because this small fixture retains its verdict.
 Any such proposal must establish the application's initialization and
 transaction semantics, including failures.
 
-CDS and Spring AOT are possibilities to investigate, not features selected by
-this draft. For the pinned Java 21 / Boot 4.0.8 baseline, Spring's documented
+CDS and Spring AOT remain possibilities to investigate, not implemented features.
+For the pinned Java 21 / Boot 4.0.8 baseline, Spring's documented
 [CDS procedure](https://docs.spring.io/spring-boot/4.0/reference/packaging/aot-cache.html)
 requires a training run, an extracted application and an archive parameter.
 That page documents Boot's JVM AOT-cache route for Java 25 and above; it is not
@@ -136,7 +138,7 @@ references external libraries through the JAR manifest.
 Today's [preflight and snapshot code](../../cmd/weavegate/external.go)
 rejects a manifest `Class-Path` and snapshots a single self-contained JAR for
 each execution. The [launcher](../../internal/sut/external/process.go) passes
-only `java -jar <snapshot>`. Consequently the documented extracted/CDS path
+`java -jar <snapshot>` with the selected compiler policy. Consequently the documented extracted/CDS path
 does not fit the existing contract. Do not bypass validation with an undocumented
 wrapper or environment flag. Propose the bundle identity, immutable snapshot,
 launch configuration and adoption contract first if that path is needed.
@@ -154,7 +156,7 @@ comparison rather than being hidden inside the candidate treatment.
 
 ## Implementation handoff and decision boundary
 
-After the maintainer selects a direction, the implementation task should:
+The implementation and its follow-up review/confirmation must:
 
 1. Retain the additional startup attribution and prototype results as separate
    tuning evidence, including unsuccessful candidates. Do not count them as
@@ -188,10 +190,8 @@ isolated execution resources and retain the
 discovery/confirmation counts and cleanup of any speculative work. A reuse
 design needs a new ADR and proof of state isolation before it can be selected.
 
-Accepting this draft means selecting fresh-JVM startup reduction as the first
-direction, with these implementation boundaries. Publishing or merging the
-proposal alone does not record that selection, complete #172, or authorize a
-performance claim. The later implementation, review, E1 confirmation and audit
+Merging the implementation does not complete #172 or authorize an E1
+performance claim. A4 review, candidate freeze, E1 confirmation and audit
 remain separate work; public headline measurements stay at their current
 evidence-backed values until that work is complete.
 

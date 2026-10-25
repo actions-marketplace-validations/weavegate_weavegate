@@ -17,7 +17,7 @@ type child struct {
 	kill   func() error
 }
 
-func launchJVM(java, jar string) (*child, error) {
+func launchJVM(java, jar string, defaultJVM bool) (*child, error) {
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		return nil, errTransport
@@ -36,7 +36,14 @@ func launchJVM(java, jar string) (*child, error) {
 		_ = outW.Close()
 		return nil, errTransport
 	}
-	cmd := exec.Command(java, "-jar", jar)
+	args := []string{"-jar", jar}
+	if !defaultJVM {
+		// Each schedule gets a short-lived JVM. Limit compilation to C1 to
+		// avoid spending its startup budget profiling and compiling for C2.
+		// No application initialization, verification or readiness check is skipped.
+		args = append([]string{"-XX:TieredStopAtLevel=1"}, args...)
+	}
+	cmd := exec.Command(java, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
 	err = cmd.Start()
 	_ = inR.Close()

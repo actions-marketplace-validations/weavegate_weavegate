@@ -18,6 +18,17 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
 
 ## [Unreleased]
 
+### Changed
+
+- External JVM runs now use `-XX:TieredStopAtLevel=1` by default to reduce
+  compilation work during each fresh JVM's startup. Set
+  `target.sut.external.jvm_tuning: none` to keep the VM's ordinary compilation
+  policy, including for VMs without that HotSpot option or compute-heavy
+  workflows. No JAR rebuild or startup cache is required. Manifests record
+  the selected policy in `sut_jvm_tuning`; verdicts, fingerprints, repetition
+  counts and supervision budgets retain their existing contracts. See
+  `docs/reference/config.md`.
+
 ### Added
 
 - Synthetic Spring quota and job-claim fixtures provide serial and overlapping

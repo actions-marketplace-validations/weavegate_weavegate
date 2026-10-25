@@ -56,6 +56,9 @@ bump; additive fields remain compatible under the same tolerance rule.
   same v2/v3 policy. Older artifacts may omit it, and no existing field's
   meaning changes. Its addition does not change deterministic artifacts or
   fingerprint inputs; see [run timings](../reference/report-schema.md#run-timings).
+- Optional `manifest.sut_jvm_tuning` records the external launch policy under
+  the same additive v2/v3 rule. Its absence in an older artifact does not
+  identify that artifact's compiler policy. It is not a fingerprint input.
 
 ## What didn't work
 
