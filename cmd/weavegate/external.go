@@ -294,7 +294,14 @@ func (a *snapshotAdapter) Start(ctx context.Context, cfg sut.SUTConfig, db *fixt
 		return nil, err
 	}
 	a.adapter, a.path = adapter, snapshot
-	return adapter.Start(ctx, cfg, db)
+	handle, err := adapter.Start(ctx, cfg, db)
+	if err != nil && !a.opts.DefaultJVM && ctx.Err() == nil {
+		// The compiler option is the one launch argument the adopter did not
+		// write. Name its escape without claiming it caused this failure;
+		// child stderr stays private.
+		err = fmt.Errorf("%w; the JVM was launched with -XX:TieredStopAtLevel=1 (jvm_tuning: startup): if the VM rejected that option, set target.sut.external.jvm_tuning: none", err)
+	}
+	return handle, err
 }
 
 func (a *snapshotAdapter) Stop(ctx context.Context) error {
