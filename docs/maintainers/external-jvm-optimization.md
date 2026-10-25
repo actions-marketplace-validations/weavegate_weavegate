@@ -1,6 +1,6 @@
 # External JVM startup optimization
 
-- Status: **A3 candidate implemented; A4 review and E1 confirmation pending**.
+- Status: **A3 candidate implemented and reviewed (A4); E1 confirmation pending**.
 - Date: 2026-10-19.
 - Issue: [#172](https://github.com/weavegate/weavegate/issues/172).
 - Evidence: [local tuning campaign](../../experiments/gate-performance/local-pilot/README.md), merged in [PR #182](https://github.com/weavegate/weavegate/pull/182).
@@ -191,8 +191,10 @@ discovery/confirmation counts and cleanup of any speculative work. A reuse
 design needs a new ADR and proof of state isolation before it can be selected.
 
 Merging the implementation does not complete #172 or authorize an E1
-performance claim. A4 review, candidate freeze, E1 confirmation and audit
-remain separate work; public headline measurements stay at their current
+performance claim. The A4 review found no isolation or determinism regression;
+its one adopter-facing gap, an unexplained startup failure when a VM rejects
+the option, is addressed in [#193](https://github.com/weavegate/weavegate/issues/193).
+Candidate freeze, E1 confirmation and audit remain separate work; public headline measurements stay at their current
 evidence-backed values until that work is complete.
 
 ## Reproduce the evidence and sensitivity calculation
