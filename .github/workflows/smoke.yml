@@ -315,7 +315,8 @@ jobs:
       - name: Check the diagnostic namespace
         run: |
           bash scripts/diagnostic-namespace.sh --self-test | tee /tmp/diagnostic-namespace-selftest.out
-          for marker in GATE_BITES BARE_RG_CAUGHT LOWER_RG_CAUGHT; do
+          for marker in GATE_BITES BARE_RG_CAUGHT LOWER_RG_CAUGHT \
+            BINARY_IGNORED ARCHIVE_NAMED_TEXT_CAUGHT; do
             grep -qF "$marker" /tmp/diagnostic-namespace-selftest.out
           done
           bash scripts/diagnostic-namespace.sh . | tee /tmp/diagnostic-namespace.out

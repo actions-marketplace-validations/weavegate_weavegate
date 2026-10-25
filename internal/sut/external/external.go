@@ -29,8 +29,11 @@ import (
 // must not spawn descendants. Budgets bound supervision, never coordination.
 // RunID may correlate several adapters; each adapter generates a fresh session.
 type Options struct {
-	Java           string
-	JAR            string
+	Java string
+	JAR  string
+	// DefaultJVM omits startup tuning for VMs without HotSpot's tiered compiler
+	// or workloads that need its higher compilation tiers.
+	DefaultJVM     bool
 	RunID          string
 	Commands       []string
 	Points         []string
@@ -124,7 +127,8 @@ func New(opts Options, client syncpoint.Client) (sut.Adapter, error) {
 	}
 	opts.Commands = append([]string{}, opts.Commands...)
 	opts.Points = append([]string{}, opts.Points...)
-	return &adapter{opts: opts, client: client, launch: launchJVM, id: randomID, now: time.Now,
+	launch := func(java, jar string) (*child, error) { return launchJVM(java, jar, opts.DefaultJVM) }
+	return &adapter{opts: opts, client: client, launch: launch, id: randomID, now: time.Now,
 		launchDone: make(chan struct{}), readyDone: make(chan struct{}), readDone: make(chan struct{}),
 		writeDone: make(chan struct{}), stderrDone: make(chan struct{}), exitDone: make(chan struct{}),
 		stopDone: make(chan struct{}), startDelivered: make(chan struct{}), stopDelivered: make(chan struct{}), queue: make(chan outbound, 2048),

@@ -94,7 +94,8 @@ func bindExternal(cfg config.Config, selected config.Scenario, variant string) (
 	runMS := int64(e.StartupTimeoutMS) + 60*arrive
 	opts := external.Options{
 		Java: java, Commands: commands, RunID: hex.EncodeToString(wireRun[:]),
-		Points: append([]string(nil), selected.SyncPoints...), Capacity: e.Capacity,
+		DefaultJVM: e.EffectiveJVMTuning() == "none",
+		Points:     append([]string(nil), selected.SyncPoints...), Capacity: e.Capacity,
 		StartupTimeout: time.Duration(e.StartupTimeoutMS) * time.Millisecond,
 		CancelTimeout:  time.Duration(e.CancelTimeoutMS) * time.Millisecond,
 		StopTimeout:    time.Duration(e.StopTimeoutMS) * time.Millisecond,

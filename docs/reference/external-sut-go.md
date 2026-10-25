@@ -2,7 +2,9 @@
 
 [`internal/sut/external`](../../internal/sut/external/) implements the Go peer
 of [wire v1](external-sut-v1.md). It launches one owned process with
-`exec(java, "-jar", jar)` and communicates over framed stdin/stdout. The
+`exec(java, "-XX:TieredStopAtLevel=1", "-jar", jar)` by default and communicates
+over framed stdin/stdout. `Options.DefaultJVM` restores `exec(java, "-jar", jar)`;
+the CLI exposes it as [`jvm_tuning: none`](config.md#external-jvm). The
 [Java peer](external-sut-java.md) is a separate implementation. The CLI can
 select this adapter through [configuration](config.md#external-jvm). Its isolated
 Go acceptance gate runs in smoke CI.
@@ -12,7 +14,7 @@ Go acceptance gate runs in smoke CI.
 `external.New(Options, syncpoint.Client)` returns a single-use `sut.Adapter`.
 Construct a fresh adapter with the schedule's runtime client for every repeat.
 Options declare the Java executable, prebuilt JAR, commands, points, capacity,
-startup/cancellation/stop budgets, and an optional correlation run ID. The
+startup/cancellation/stop budgets, compiler policy, and an optional correlation run ID. The
 adapter generates a random session and distinct invocation IDs. It does not
 build a JAR, accept shell commands, attach to a process, or provision a database.
 The selected child must not spawn descendants.

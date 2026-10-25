@@ -13,11 +13,21 @@ import (
 )
 
 // The test binary stands in for the prebuilt JVM, through the exact production
-// exec(java, "-jar", jar) launch path. No shell, inherited extra FD, or listener
-// is needed. The helper exercises OS pipes and Wait, not an in-memory process.
+// JVM launch path, including the selected compilation policy. No shell,
+// inherited extra FD, or listener is needed. The helper exercises OS pipes
+// and Wait, not an in-memory process.
 func TestMain(m *testing.M) {
-	if len(os.Args) == 3 && os.Args[1] == "-jar" && strings.HasPrefix(os.Args[2], "external-test-") {
-		os.Exit(runChild(strings.TrimPrefix(os.Args[2], "external-test-")))
+	args := os.Args[1:]
+	tuned := len(args) == 3 && args[0] == "-XX:TieredStopAtLevel=1"
+	if tuned {
+		args = args[1:]
+	}
+	if len(args) == 2 && args[0] == "-jar" && strings.HasPrefix(args[1], "external-test-") {
+		mode := strings.TrimPrefix(args[1], "external-test-")
+		if (mode == "default_jvm") == tuned {
+			os.Exit(14)
+		}
+		os.Exit(runChild(mode))
 	}
 	os.Exit(m.Run())
 }
@@ -107,7 +117,7 @@ func TestOwnedChildRealPipes(t *testing.T) {
 	// Child race reports are synchronous; omit the race runtime's unrelated
 	// one-second exit delay so it does not model application shutdown work.
 	t.Setenv("GORACE", "atexit_sleep_ms=0")
-	for _, mode := range []string{"healthy", "startup_eof", "blocked_start", "active_eof", "post_terminal_eof", "missing_stopped", "nonzero_stop", "silent_stop", "blocked_writer", "broken_writer"} {
+	for _, mode := range []string{"healthy", "default_jvm", "startup_eof", "blocked_start", "active_eof", "post_terminal_eof", "missing_stopped", "nonzero_stop", "silent_stop", "blocked_writer", "broken_writer"} {
 		t.Run(mode, func(t *testing.T) {
 			executable, err := os.Executable()
 			if err != nil {
@@ -116,6 +126,7 @@ func TestOwnedChildRealPipes(t *testing.T) {
 			opts := testOptions()
 			opts.Java = executable
 			opts.JAR = "external-test-" + mode
+			opts.DefaultJVM = mode == "default_jvm"
 			opts.StartupTimeout = 2 * time.Second
 			opts.StopTimeout = 500 * time.Millisecond
 			if mode == "blocked_start" {
@@ -182,10 +193,11 @@ func TestOwnedChildRealPipes(t *testing.T) {
 				}
 			}
 			err = a.Stop(context.Background())
-			if mode == "healthy" && err != nil {
+			healthy := mode == "healthy" || mode == "default_jvm"
+			if healthy && err != nil {
 				t.Fatal(err)
 			}
-			if mode != "healthy" && err == nil {
+			if !healthy && err == nil {
 				t.Fatal("unproven cleanup succeeded")
 			}
 			select {
