@@ -26,8 +26,9 @@ and final release sections follow the rule in `CONTRIBUTING.md` under
   policy, including for VMs without that HotSpot option or compute-heavy
   workflows. No JAR rebuild or startup cache is required. Manifests record
   the selected policy in `sut_jvm_tuning`; verdicts, fingerprints, repetition
-  counts and supervision budgets retain their existing contracts. See
-  `docs/reference/config.md`.
+  counts and supervision budgets retain their existing contracts. A startup
+  failure under the default policy names the option and the `none` setting
+  without reporting child stderr. See `docs/reference/config.md`.
 
 ### Added
 
