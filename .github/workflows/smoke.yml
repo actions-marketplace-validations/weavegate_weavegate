@@ -67,9 +67,13 @@ jobs:
           ./internal/syncpoint/... ./internal/timing/... ./internal/sut/...
           ./fixtures/matching-slice/...
           ./cmd/weavegate/... ./internal/config/... ./internal/ci/...
+          ./experiments/control-comparison/driver/...
           ./internal/diagnostic/... ./internal/report/...
           -coverprofile=cov.out -covermode=atomic -coverpkg=./internal/...
           -v -count=1 -timeout 12m | tee fixture.log
+
+      - name: Assert experiment process cleanup
+        run: grep -F 'E5_REAP_RESULT deadline=shared kill=bounded exit=retained' fixture.log
 
       - name: Report engine coverage
         run: |
@@ -174,6 +178,7 @@ jobs:
       - name: Assert the command-line contract
         run: |
           grep -F 'EXTERNAL_CLI_RESULT separate_jvm=true config_only=true repeat=2 manifest_sha256=true' fixture.log
+          grep -F 'EXTERNAL_CLI_TUNING_REJECTED startup=exit5_hint raw_stderr=withheld none=pass' fixture.log
           grep -F 'FIXTURE_DIGEST_RESULT migration=sha256_full seed=sha256_full framing=byte_length collision=distinct' fixture.log
           grep -F 'CONFIG_LOAD_RESULT scenarios=1 workers=2 sync_points=2 assertions=1 repeat=20 arrive_timeout_ms=250 explore_passes=3 defaults=applied relative_paths=resolved unknown_key=error report_section=error trailing_document=error missing_required=error non_mysql_db=error path_entrypoint=error bad_expect_rows=error missing_expect_rows=error bad_assertion_id=error duplicate_worker=error duplicate_sync_point=error nonpositive_run_value=error explicit_zero_run_value=error worker_args_mismatch=error worker_args_key_presence_mismatch=error unsupported_adapter=error' fixture.log
           grep -F 'EXIT_CODE_RESULT pass=0 violation=2 flaky=3 fixture=4 input=5 output=5 interrupted=130 unclassified=5 error_beats_verdict=true flaky_beats_violation=true cleanup_on_pass=4 cleanup_keeps_violation=2 cleanup_never_masks=true' fixture.log
@@ -311,7 +316,8 @@ jobs:
       - name: Check the diagnostic namespace
         run: |
           bash scripts/diagnostic-namespace.sh --self-test | tee /tmp/diagnostic-namespace-selftest.out
-          for marker in GATE_BITES BARE_RG_CAUGHT LOWER_RG_CAUGHT; do
+          for marker in GATE_BITES BARE_RG_CAUGHT LOWER_RG_CAUGHT \
+            BINARY_IGNORED ARCHIVE_NAMED_TEXT_CAUGHT; do
             grep -qF "$marker" /tmp/diagnostic-namespace-selftest.out
           done
           bash scripts/diagnostic-namespace.sh . | tee /tmp/diagnostic-namespace.out
@@ -329,6 +335,15 @@ jobs:
           grep -F 'LOCAL_PILOT_TEST_RESULT overlap=union evidence=checksummed missing=unknown' /tmp/local-pilot.out
           python3 -B experiments/gate-performance/local-pilot/verify_results.py | tee /tmp/local-pilot-evidence.out
           grep -F 'LOCAL_PILOT_EVIDENCE_RESULT bundles=2 analysis=reproduced raw=checksummed' /tmp/local-pilot-evidence.out
+
+      - name: Check E5 control accounting without running measurements
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # The frozen launcher is executed from a sealed memfd; root avoids
+          # the hosted image's pathname-based unprivileged-userns policy.
+          sudo python3 -B experiments/control-comparison/runner/test_runner.py 2>&1 | tee /tmp/e5-runner.out
+          grep -F 'E5_RUNNER_RESULT order=600 accounting=all_slots cleanup=quarantine analysis=deterministic' /tmp/e5-runner.out
 
       - name: Check the documentation index
         run: |

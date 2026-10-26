@@ -182,6 +182,28 @@ func TestExternalResolvePreflight(t *testing.T) {
 	}
 }
 
+func TestExternalJVMTuning(t *testing.T) {
+	for _, tuning := range []string{"", "startup", "none"} {
+		t.Run(tuning, func(t *testing.T) {
+			cfg := externalResolveConfig(t)
+			cfg.Target.SUT.External.JVMTuning = tuning
+			resolved, err := Resolve(cfg, "concurrent-assign", "fixed")
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := syncpoint.New()
+			defer client.Close()
+			adapter, err := resolved.NewAdapter(client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := adapter.(*snapshotAdapter).opts.DefaultJVM; got != (tuning == "none") {
+				t.Fatalf("jvm_tuning=%q: DefaultJVM=%v", tuning, got)
+			}
+		})
+	}
+}
+
 func TestExternalManifestLaunchAttributes(t *testing.T) {
 	for _, tc := range []struct {
 		name, wantError string

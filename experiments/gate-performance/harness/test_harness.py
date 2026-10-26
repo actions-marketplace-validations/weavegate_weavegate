@@ -262,6 +262,31 @@ if step=='cleanup':
         shutil.copytree(bundle, copied, copy_function=shutil.copyfile)
         self.assertFalse(analyzed_trial(copied, self.manifest, slot, slot['arms'][0])['cleanup_proven'])
 
+    def test_copied_cleanup_ignores_collection_filesystem_inode_collisions(self):
+        bundle, registration = self.frozen()
+        slot = order(self.manifest)[0]
+        self.assertTrue(collect(bundle, slot['block'], registration))
+        expected = {arm: analyzed_trial(bundle, self.manifest, slot, arm) for arm in slot['arms']}
+        copied = self.root/'copied-inode-collision'
+        shutil.copytree(bundle, copied, copy_function=shutil.copyfile)
+        verify(copied)
+        real_stat = Path.stat
+        for arm in slot['arms']:
+            directory = copied/'blocks'/slot['block']/arm
+            old = read_json(directory/'cleanup-inputs.json')['identities']
+            current = {(s.st_dev, s.st_ino) for p in directory.iterdir() if p.is_file()
+                       for s in [p.stat()]}
+            identity = next(pair for pair in old if tuple(pair) not in current)
+            proof = directory/'cleanup.log'
+            def colliding_stat(path, *args, **kwargs):
+                stat = real_stat(path, *args, **kwargs)
+                if path == proof:
+                    values = list(stat); values[1], values[2] = identity[1], identity[0]
+                    return os.stat_result(values)
+                return stat
+            with self.subTest(arm=arm), patch.object(Path, 'stat', colliding_stat):
+                self.assertEqual(analyzed_trial(copied, self.manifest, slot, arm), expected[arm])
+
     def test_cleanup_rejects_hard_links_to_command_outputs(self):
         from collector import execute as real_execute
         for suffix in ('.stdout', '.stderr'):

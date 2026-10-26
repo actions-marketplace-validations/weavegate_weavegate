@@ -16,6 +16,28 @@ import (
 )
 
 func TestExternalCLISeparateJVM(t *testing.T) {
+	for _, tuning := range []string{"startup", "none"} {
+		t.Run(tuning, func(t *testing.T) { testExternalCLISeparateJVM(t, tuning, false) })
+	}
+}
+
+// A VM that rejects the default compiler option must leave the adopter a
+// way out in the failure itself, while none launches that VM normally.
+func TestExternalCLIRejectedJVMTuning(t *testing.T) {
+	requireDocker(t)
+	for _, tool := range []string{"java", "javac", "jar"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s unavailable: %v", tool, err)
+		}
+	}
+	startup := t.Run("startup", func(t *testing.T) { testExternalCLISeparateJVM(t, "startup", true) })
+	none := t.Run("none", func(t *testing.T) { testExternalCLISeparateJVM(t, "none", true) })
+	if startup && none {
+		t.Log("EXTERNAL_CLI_TUNING_REJECTED startup=exit5_hint raw_stderr=withheld none=pass")
+	}
+}
+
+func testExternalCLISeparateJVM(t *testing.T, tuning string, rejecting bool) {
 	requireDocker(t)
 	java, err := exec.LookPath("java")
 	if err != nil {
@@ -30,6 +52,23 @@ func TestExternalCLISeparateJVM(t *testing.T) {
 		t.Skipf("jar unavailable: %v", err)
 	}
 	dir := t.TempDir()
+	if rejecting {
+		// Stands in for a VM without the option; everything else is the real JVM.
+		wrapper := filepath.Join(dir, "rejecting-java")
+		script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do
+  case "$a" in -XX:TieredStopAtLevel=*)
+    echo "Unrecognized VM option '${a#-XX:}'" >&2
+    exit 1;;
+  esac
+done
+exec '%s' "$@"
+`, java)
+		if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		java = wrapper
+	}
 	classes := filepath.Join(dir, "classes")
 	if err := os.Mkdir(classes, 0o755); err != nil {
 		t.Fatal(err)
@@ -45,6 +84,10 @@ func TestExternalCLISeparateJVM(t *testing.T) {
 	}
 	root := repoRoot(t)
 	configPath := filepath.Join(dir, "config.yaml")
+	tuningField := ""
+	if tuning == "none" {
+		tuningField = "      jvm_tuning: none\n"
+	}
 	content := fmt.Sprintf(`target:
   db: mysql:8.4
   schema:
@@ -56,7 +99,7 @@ func TestExternalCLISeparateJVM(t *testing.T) {
     external:
       java: %s
       jar: %s
-      capacity: 1
+%s      capacity: 1
       startup_timeout_ms: 10000
       cancel_timeout_ms: 3000
       stop_timeout_ms: 5000
@@ -77,7 +120,7 @@ oracle:
 run:
   repeat: 2
   arrive_timeout_ms: 1000
-`, filepath.Join(root, "fixtures/matching-slice/db/migration"), filepath.Join(root, "fixtures/matching-slice/db/seed.sql"), java, jarPath, wireLog)
+`, filepath.Join(root, "fixtures/matching-slice/db/migration"), filepath.Join(root, "fixtures/matching-slice/db/seed.sql"), java, jarPath, tuningField, wireLog)
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +135,18 @@ run:
 	}
 	var stdout, stderr bytes.Buffer
 	err = runScenario(context.Background(), &stdout, &stderr, runFlags{config: configPath, scenario: "mini", replay: schedulePath, replaySet: true, out: out}, fixture.NewMySQLFixture)
+	if rejecting && tuning == "startup" {
+		if exitCodeFromError(err) != 5 || !strings.Contains(stderr.String(), "set target.sut.external.jvm_tuning: none") {
+			t.Fatalf("rejected tuning: exit=%d err=%v\nstderr=%s", exitCodeFromError(err), err, stderr.String())
+		}
+		if strings.Contains(stderr.String(), "Unrecognized VM option") {
+			t.Fatalf("raw child stderr reached the CLI error:\n%s", stderr.String())
+		}
+		return
+	}
+	if strings.Contains(stderr.String(), "jvm_tuning") {
+		t.Fatalf("stderr names JVM tuning without a startup-tuned failure:\n%s", stderr.String())
+	}
 	if exitCodeFromError(err) != 0 {
 		t.Fatalf("external CLI: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
@@ -101,7 +156,7 @@ run:
 		t.Fatal(err)
 	}
 	wantDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(jarBytes))
-	if manifest.Adapter != "external" || manifest.SUTSHA256 != wantDigest {
+	if manifest.Adapter != "external" || manifest.SUTSHA256 != wantDigest || manifest.SUTJVMTuning != tuning {
 		t.Fatalf("manifest provenance = %+v", manifest)
 	}
 	if !strings.Contains(stdout.String(), "PASS") {
@@ -116,8 +171,11 @@ run:
 		t.Fatalf("wire identities = %q, want two sessions", wireIDs)
 	}
 	first, second := strings.Fields(lines[0]), strings.Fields(lines[1])
-	if len(first) != 2 || len(second) != 2 || first[0] != second[0] || first[1] == second[1] {
+	if len(first) != 3 || len(second) != 3 || first[0] != second[0] || first[1] == second[1] {
 		t.Fatalf("wire identities = %q, want shared run and distinct sessions", wireIDs)
+	}
+	if first[2] != tuning || second[2] != tuning {
+		t.Fatalf("child JVM launch policy = %q, want %q", wireIDs, tuning)
 	}
 	t.Log("EXTERNAL_CLI_RESULT separate_jvm=true config_only=true repeat=2 manifest_sha256=true")
 }

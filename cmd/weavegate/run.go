@@ -168,6 +168,9 @@ func runScenarioWithDiagnosticDeriver(
 		return reportRunFailure(stderr, ci.FixtureError(fmt.Errorf("run: collect manifest: %w", err)))
 	}
 	manifest.SUTSHA256 = plan.Resolved.SUTSHA256
+	if external := plan.Config.Target.SUT.External; external != nil {
+		manifest.SUTJVMTuning = external.EffectiveJVMTuning()
+	}
 
 	executor, err := orchestrator.New(orchestrator.Config{
 		Fixture:               fx,

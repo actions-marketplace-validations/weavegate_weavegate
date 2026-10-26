@@ -224,10 +224,19 @@ afterward so freed inodes cannot be reused by new cleanup originals. Validation
 also rejects aliases of live controls, including `cleanup-inputs.json`, which
 cannot inventory its own inode before it is written. Earlier product evidence,
 command output or control receipts cannot substitute for teardown evidence.
+Recorded device/inode numbers are used only at the live cleanup boundary.
+Offline analysis requires the sealed successful boundary result and rechecks
+hashes, fresh paths and aliases against the current retained files. It never
+compares copied files to inode numbers from the collection filesystem, where
+unrelated files can have the same numbers. A failed collection-time cleanup
+check remains failed after copying, even when the copy breaks hard links.
 Malformed observations, operational exits and timeouts remain failed attempts;
 the mate still runs after proven cleanup. Unproven cleanup leaves the mate not
 started, writes `stopped.json` and prohibits further collection.
 
+Command receipts retain `collector_start_ns`, the collector monotonic origin used
+for `seconds`. It permits receipt-time alignment within the same collector only;
+it must not be compared with child-process clocks or another collector's origin.
 Command receipts persist `started` after successful process creation and retain
 `finished`, `interrupted`, exit, error, timestamps and elapsed seconds. The
 collector defers cancellation during spawn until it owns the child handle;

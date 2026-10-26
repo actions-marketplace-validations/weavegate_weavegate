@@ -56,10 +56,19 @@ type SUT struct {
 type ExternalSUT struct {
 	Java             string `yaml:"java"`
 	JAR              string `yaml:"jar"`
+	JVMTuning        string `yaml:"jvm_tuning,omitempty"`
 	Capacity         int    `yaml:"capacity"`
 	StartupTimeoutMS int    `yaml:"startup_timeout_ms"`
 	CancelTimeoutMS  int    `yaml:"cancel_timeout_ms"`
 	StopTimeoutMS    int    `yaml:"stop_timeout_ms"`
+}
+
+// EffectiveJVMTuning names the launch policy, including the omitted default.
+func (e ExternalSUT) EffectiveJVMTuning() string {
+	if e.JVMTuning == "" {
+		return "startup"
+	}
+	return e.JVMTuning
 }
 
 // Scenario names one scenario's workers and required sync-point order.
@@ -176,6 +185,9 @@ func (t Target) validate() error {
 
 // Validate rejects incomplete external launch settings before provisioning.
 func (e ExternalSUT) Validate() error {
+	if e.JVMTuning != "" && e.JVMTuning != "startup" && e.JVMTuning != "none" {
+		return errors.New("target.sut.external.jvm_tuning must be startup or none")
+	}
 	if strings.TrimSpace(e.Java) == "" {
 		return errors.New("target.sut.external.java is required")
 	}

@@ -40,6 +40,8 @@ type Manifest struct {
 	// SUTSHA256 identifies the configured external JAR checked at preflight
 	// and against each child launch snapshot. It is absent for gonative.
 	SUTSHA256 string `json:"sut_sha256,omitempty"`
+	// SUTJVMTuning records the selected launch policy, not measured VM flags.
+	SUTJVMTuning string `json:"sut_jvm_tuning,omitempty"`
 	// Timings never enters deterministic artifacts or execution fingerprints.
 	Timings *Timings `json:"timings,omitempty"`
 

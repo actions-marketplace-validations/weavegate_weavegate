@@ -326,7 +326,7 @@ class Collection:
                     self.save(directory / 'cleanup-inputs.json', cleanup_inventory(directory))
             finally:
                 self.command(directory, context, 'cleanup', commands['cleanup'], teardown=True)
-            cleanup_valid(directory)
+            cleanup_valid(directory, collection_boundary=True)
             verify_execution_pins(self.manifest)
             state['cleanup_inputs_valid'] = pins_match and self.contained and self.guard.error is None
         except EVIDENCE_ERRORS:

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # This script contains the legacy-prefix patterns and self-test fixtures, so it
-# is the only tracked file excluded from its own repository scan.
+# is the only tracked text file excluded from its own repository scan.
 readonly script_path='scripts/diagnostic-namespace.sh'
 readonly legacy_pattern='[Rr][Gg][0-9]{3}|\bRG\b'
 self_test_root=''
@@ -34,7 +34,8 @@ scan_repository() {
       continue
     fi
 
-    if grep -nHE "$legacy_pattern" -- "$absolute_path"; then
+    # Compressed evidence and other binary bytes are not diagnostic text.
+    if grep -InHE "$legacy_pattern" -- "$absolute_path"; then
       found=1
     else
       grep_status=$?
@@ -85,6 +86,22 @@ run_self_test() {
     echo 'diagnostic namespace guard rejected a clean fixture' >&2
     return 1
   fi
+
+  printf '\0RG001\0RG\0rg090\n' > "$self_test_root/evidence.bin"
+  git -C "$self_test_root" add evidence.bin
+  if ! scan_repository "$self_test_root" > /dev/null; then
+    echo 'diagnostic namespace guard treated binary bytes as diagnostic text' >&2
+    return 1
+  fi
+  echo 'BINARY_IGNORED'
+
+  printf 'error[RG001]\n' > "$self_test_root/evidence.tar.gz"
+  git -C "$self_test_root" add evidence.tar.gz
+  if scan_repository "$self_test_root" > /dev/null; then
+    echo 'diagnostic namespace guard skipped text with an archive extension' >&2
+    return 1
+  fi
+  echo 'ARCHIVE_NAMED_TEXT_CAUGHT'
 }
 
 if [[ ${1:-} == '--self-test' ]]; then

@@ -20,6 +20,10 @@ class ReceiptIntegrityError(ValueError):
     """A hook changed the collector's in-progress receipt or output paths."""
 
 
+class LaunchContainmentError(OSError):
+    """A launcher spawned a supervisor but could not establish workload ownership."""
+
+
 def verify_output(path, stream):
     """Authenticate the path against the still-open collector descriptor."""
     try:
@@ -90,7 +94,7 @@ def wait_group(group, deadline):
 def kill_group(process, grace):
     deadline = time.monotonic() + grace
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        signal_group(process, signal.SIGKILL)
     except ProcessLookupError:
         pass
     try:
@@ -102,7 +106,17 @@ def kill_group(process, grace):
     return code
 
 
-def execute(spec, context, directory, step, secrets):
+def signal_group(process, signum):
+    """A launch adapter may supervise a distinct workload session."""
+    # Only a declared launch-adapter method changes ownership. Dynamic
+    # attributes (including unconstrained process test doubles) are not an opt-in.
+    if callable(getattr(type(process), 'signal_group', None)):
+        process.signal_group(signum)
+    else:
+        os.killpg(process.pid, signum)
+
+
+def execute(spec, context, directory, step, secrets, *, launch=None):
     validate_redaction_secrets(secrets)
     argv, cwd, env = expand_command(spec, context)
     # Secrets are passed by named environment variable, never logged as values.
@@ -121,6 +135,9 @@ def execute(spec, context, directory, step, secrets):
     write_json(receipt, result)
     checkpoints = {digest(receipt)}
     start = time.monotonic_ns()
+    # Consumers in this collector may align receipt observations to this exact
+    # invocation origin. This clock is never compared with a child process.
+    result['collector_start_ns'] = start
     completed_ns = None
     process = None
     try:
@@ -128,8 +145,8 @@ def execute(spec, context, directory, step, secrets):
                 (directory / (step + '.stderr')).open('wb') as err:
             try:
                 with defer_interrupts():
-                    process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=out, stderr=err,
-                                               start_new_session=True)
+                    process = (launch or subprocess.Popen)(argv, cwd=cwd, env=env, stdout=out, stderr=err,
+                                                           start_new_session=True)
                     result['started'] = True
                     result['containment_proven'] = False
                 if digest(receipt) not in checkpoints:
@@ -157,7 +174,7 @@ def execute(spec, context, directory, step, secrets):
                     grace = spec.get('cancel_grace_seconds', 25)
                     deadline = time.monotonic() + grace
                     try:
-                        os.killpg(process.pid, signal.SIGTERM)
+                        signal_group(process, signal.SIGTERM)
                     except ProcessLookupError:
                         pass  # The leader may exit between the watchdog and TERM.
                     try:
@@ -179,6 +196,9 @@ def execute(spec, context, directory, step, secrets):
                 verify_output(directory / (step + '.stdout'), out)
                 verify_output(directory / (step + '.stderr'), err)
     except OSError as error:
+        if isinstance(error, LaunchContainmentError):
+            result['started'] = True
+            result['containment_proven'] = False
         result['error'] = str(error)
     except BaseException:
         result['interrupted'] = True

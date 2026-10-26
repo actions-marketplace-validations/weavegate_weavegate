@@ -53,7 +53,7 @@ the list of known values.
 ## External JVM
 
 `adapter: external` launches exactly one prebuilt executable JAR per schedule
-run with `java -jar <jar>`. Its child uses [wire v1](external-sut-v1.md) over
+run with `java -XX:TieredStopAtLevel=1 -jar <jar>` by default. Its child uses [wire v1](external-sut-v1.md) over
 owned stdin/stdout. The JAR must contain `Main-Class` in the manifest's main
 section and be self-contained; a nonempty manifest `Class-Path` entry is
 rejected because the private JAR snapshot does not include sibling files.
@@ -84,8 +84,22 @@ target:
 | --- | --- |
 | `java` | Required executable path, or a bare command found on `PATH`. Paths containing a directory component are relative to the config directory. |
 | `jar` | Required readable, regular, self-contained `.jar` file with exactly one manifest, one nonempty `Main-Class` in its main section, and no nonempty or duplicate `Class-Path`. Relative to the config directory. |
+| `jvm_tuning` | Optional `startup` (default, also used for an empty value) or `none`. `startup` adds the fixed HotSpot option `-XX:TieredStopAtLevel=1`; `none` uses `java -jar <jar>` without a compiler option. Other values fail before provisioning. |
 | `capacity` | Required integer from 1 to 1024, at least the selected scenario's worker count. |
 | `startup_timeout_ms`, `cancel_timeout_ms`, `stop_timeout_ms` | Required positive integers at most 2147483647. Cancellation cannot exceed stop. |
+
+Startup tuning keeps the JVM's compiler at C1 for each short-lived schedule
+process. It leaves class verification, Spring initialization, registration,
+the database probe and every run/cleanup budget intact. It requires a Java 21
+VM supporting that HotSpot option. Set `jvm_tuning: none` for a different VM
+or a compute-heavy workflow that benefits from higher compilation tiers;
+startup tuning is not a throughput guarantee. If the VM rejects the option, startup fails through the existing
+supervision path; the CLI does not retry with a different policy. Under
+`startup`, any startup failure other than cancellation appends that the JVM
+was launched with the option and that `jvm_tuning: none` removes it if the VM
+rejected it. The note does not identify the cause, and child stderr is not
+reported. The manifest records the selected policy as `sut_jvm_tuning`.
+This adds no JAR packaging, training run, cache or SDK upgrade requirement.
 
 A Spring Boot executable JAR built by `spring-boot-maven-plugin` `repackage`
 meets these rules: its nested `BOOT-INF/lib` dependencies are inside the file
