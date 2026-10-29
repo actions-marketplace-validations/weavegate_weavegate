@@ -522,7 +522,7 @@ jobs:
           grep -F 'ACTION_SUMMARY_RESULT version=installed verdict=stored report=byte_identical missing=explicit token=not_printed' /tmp/actions-gate.out
 
       - name: Lint Markdown
-        uses: DavidAnson/markdownlint-cli2-action@v24
+        uses: DavidAnson/markdownlint-cli2-action@v25
         with:
           globs: "**/*.md"
 
